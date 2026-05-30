@@ -51,6 +51,13 @@ export {
 	type ReadToolOptions,
 } from "./read.ts";
 export {
+	createReloadTool,
+	createReloadToolDefinition,
+	type ReloadToolDetails,
+	type ReloadToolInput,
+	type ReloadToolOptions,
+} from "./reload.ts";
+export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	formatSize,
@@ -76,18 +83,20 @@ import { createFindTool, createFindToolDefinition, type FindToolOptions } from "
 import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
+import { createReloadTool, createReloadToolDefinition, type ReloadToolOptions } from "./reload.ts";
 import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
-export type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
-export const allToolNames: Set<ToolName> = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+export type ToolName = "read" | "bash" | "edit" | "write" | "reload" | "grep" | "find" | "ls";
+export const allToolNames: Set<ToolName> = new Set(["read", "bash", "edit", "write", "reload", "grep", "find", "ls"]);
 
 export interface ToolsOptions {
 	read?: ReadToolOptions;
 	bash?: BashToolOptions;
 	write?: WriteToolOptions;
 	edit?: EditToolOptions;
+	reload?: ReloadToolOptions;
 	grep?: GrepToolOptions;
 	find?: FindToolOptions;
 	ls?: LsToolOptions;
@@ -103,6 +112,8 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createEditToolDefinition(cwd, options?.edit);
 		case "write":
 			return createWriteToolDefinition(cwd, options?.write);
+		case "reload":
+			return createReloadToolDefinition(cwd, options?.reload);
 		case "grep":
 			return createGrepToolDefinition(cwd, options?.grep);
 		case "find":
@@ -124,6 +135,8 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createEditTool(cwd, options?.edit);
 		case "write":
 			return createWriteTool(cwd, options?.write);
+		case "reload":
+			return createReloadTool(cwd, options?.reload);
 		case "grep":
 			return createGrepTool(cwd, options?.grep);
 		case "find":
@@ -141,6 +154,7 @@ export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions)
 		createBashToolDefinition(cwd, options?.bash),
 		createEditToolDefinition(cwd, options?.edit),
 		createWriteToolDefinition(cwd, options?.write),
+		createReloadToolDefinition(cwd, options?.reload),
 	];
 }
 
@@ -159,6 +173,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		bash: createBashToolDefinition(cwd, options?.bash),
 		edit: createEditToolDefinition(cwd, options?.edit),
 		write: createWriteToolDefinition(cwd, options?.write),
+		reload: createReloadToolDefinition(cwd, options?.reload),
 		grep: createGrepToolDefinition(cwd, options?.grep),
 		find: createFindToolDefinition(cwd, options?.find),
 		ls: createLsToolDefinition(cwd, options?.ls),
@@ -171,6 +186,7 @@ export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
 		createBashTool(cwd, options?.bash),
 		createEditTool(cwd, options?.edit),
 		createWriteTool(cwd, options?.write),
+		createReloadTool(cwd, options?.reload),
 	];
 }
 
@@ -189,6 +205,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		bash: createBashTool(cwd, options?.bash),
 		edit: createEditTool(cwd, options?.edit),
 		write: createWriteTool(cwd, options?.write),
+		reload: createReloadTool(cwd, options?.reload),
 		grep: createGrepTool(cwd, options?.grep),
 		find: createFindTool(cwd, options?.find),
 		ls: createLsTool(cwd, options?.ls),

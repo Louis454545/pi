@@ -2,8 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a built-in `reload` tool so the agent can reload runtime resources after modifying agent-affecting files.
+
+### Changed
+
+- Strengthened reload tool prompt guidance so agents call it autonomously after changing slash commands, extensions, skills, themes, keybindings, prompts, or loaded project instructions.
+
 ### Fixed
 
+- Fixed tool-triggered reloads so interactive slash commands and extension shortcuts refresh without requiring a manual `/reload`.
 - Fixed opening and listing very large JSONL session files by reading session entries line-by-line instead of materializing the full file as one string ([#5231](https://github.com/earendil-works/pi/issues/5231)).
 
 ## [0.78.0] - 2026-05-29

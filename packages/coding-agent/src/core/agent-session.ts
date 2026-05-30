@@ -18,6 +18,7 @@ import { basename, dirname } from "node:path";
 import type {
 	Agent,
 	AgentEvent,
+	AgentLoopTurnUpdate,
 	AgentMessage,
 	AgentState,
 	AgentTool,
@@ -143,6 +144,7 @@ export type AgentSessionEvent =
 			willRetry: boolean;
 			errorMessage?: string;
 	  }
+	| { type: "session_reloaded" }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string };
 
@@ -166,7 +168,7 @@ export interface AgentSessionConfig {
 	customTools?: ToolDefinition[];
 	/** Model registry for API key resolution and model discovery */
 	modelRegistry: ModelRegistry;
-	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
+	/** Initial active built-in tool names. Default: [read, bash, edit, write, reload] */
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
 	allowedToolNames?: string[];
@@ -314,6 +316,7 @@ export class AgentSession {
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
+	private _reloadAfterToolTurn = false;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -339,6 +342,7 @@ export class AgentSession {
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
+		this._installAgentPrepareNextTurn();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -445,6 +449,38 @@ export class AgentSession {
 				isError: hookResult.isError ?? isError,
 			};
 		};
+	}
+
+	private _installAgentPrepareNextTurn(): void {
+		const previousPrepareNextTurn = this.agent.prepareNextTurn;
+		this.agent.prepareNextTurn = async (signal?: AbortSignal): Promise<AgentLoopTurnUpdate | undefined> => {
+			const previousUpdate = await previousPrepareNextTurn?.(signal);
+			if (!this._reloadAfterToolTurn) {
+				return previousUpdate;
+			}
+
+			this._reloadAfterToolTurn = false;
+			if (signal?.aborted) {
+				return previousUpdate;
+			}
+
+			await this.reload();
+			const previousContext = previousUpdate?.context;
+			return {
+				...previousUpdate,
+				context: {
+					systemPrompt: this.agent.state.systemPrompt,
+					messages: previousContext?.messages ?? this.agent.state.messages.slice(),
+					tools: this.agent.state.tools.slice(),
+				},
+				model: previousUpdate?.model ?? this.agent.state.model,
+				thinkingLevel: previousUpdate?.thinkingLevel ?? this.agent.state.thinkingLevel,
+			};
+		};
+	}
+
+	private _scheduleReloadAfterToolTurn(): void {
+		this._reloadAfterToolTurn = true;
 	}
 
 	// =========================================================================
@@ -2383,6 +2419,7 @@ export class AgentSession {
 			: createAllToolDefinitions(this._cwd, {
 					read: { autoResizeImages },
 					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					reload: { scheduleReload: () => this._scheduleReloadAfterToolTurn() },
 				});
 
 		this._baseToolDefinitions = new Map(
@@ -2411,7 +2448,7 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: ["read", "bash", "edit", "write"];
+			: ["read", "bash", "edit", "write", "reload"];
 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		this._refreshToolRegistry({
 			activeToolNames: baseActiveToolNames,
@@ -2419,7 +2456,7 @@ export class AgentSession {
 		});
 	}
 
-	async reload(): Promise<void> {
+	async reload(options?: { emitEvent?: boolean }): Promise<void> {
 		const previousFlagValues = this._extensionRunner.getFlagValues();
 		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
 		await this.settingsManager.reload();
@@ -2439,6 +2476,9 @@ export class AgentSession {
 		if (hasBindings) {
 			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
 			await this.extendResourcesFromExtensions("reload");
+		}
+		if (options?.emitEvent !== false) {
+			this._emit({ type: "session_reloaded" });
 		}
 	}
 

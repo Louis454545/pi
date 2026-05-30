@@ -2682,6 +2682,12 @@ export class InteractiveMode {
 		this.footer.invalidate();
 
 		switch (event.type) {
+			case "session_reloaded":
+				this.resetExtensionUI();
+				this.applyReloadedRuntime({ rebuildChat: false, showLoadedResources: false });
+				this.showStatus("Reloaded keybindings, extensions, skills, prompts, themes");
+				break;
+
 			case "agent_start":
 				this.pendingTools.clear();
 				if (this.settingsManager.getShowTerminalProgress()) {
@@ -4921,6 +4927,48 @@ export class InteractiveMode {
 	// Command handlers
 	// =========================================================================
 
+	private applyReloadedRuntime(options: { rebuildChat: boolean; showLoadedResources: boolean }): void {
+		configureHttpDispatcher(this.settingsManager.getHttpIdleTimeoutMs());
+		this.keybindings.reload();
+		const activeHeader = this.customHeader ?? this.builtInHeader;
+		if (isExpandable(activeHeader)) {
+			activeHeader.setExpanded(this.toolOutputExpanded);
+		}
+		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
+		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
+		const themeName = this.settingsManager.getTheme();
+		const themeResult = themeName ? setTheme(themeName, true) : { success: true };
+		if (!themeResult.success) {
+			this.showError(`Failed to load theme "${themeName}": ${themeResult.error}\nFell back to dark theme.`);
+		}
+		const editorPaddingX = this.settingsManager.getEditorPaddingX();
+		const autocompleteMaxVisible = this.settingsManager.getAutocompleteMaxVisible();
+		this.defaultEditor.setPaddingX(editorPaddingX);
+		this.defaultEditor.setAutocompleteMaxVisible(autocompleteMaxVisible);
+		if (this.editor !== this.defaultEditor) {
+			this.editor.setPaddingX?.(editorPaddingX);
+			this.editor.setAutocompleteMaxVisible?.(autocompleteMaxVisible);
+		}
+		this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
+		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
+		this.setupAutocompleteProvider();
+		const runner = this.session.extensionRunner;
+		this.setupExtensionShortcuts(runner);
+		if (options.rebuildChat) {
+			this.rebuildChatFromMessages();
+		}
+		if (options.showLoadedResources) {
+			this.showLoadedResources({
+				force: false,
+				showDiagnosticsWhenQuiet: true,
+			});
+		}
+		const modelsJsonError = this.session.modelRegistry.getError();
+		if (modelsJsonError) {
+			this.showError(`models.json error: ${modelsJsonError}`);
+		}
+	}
+
 	private async handleReloadCommand(): Promise<void> {
 		if (this.session.isStreaming) {
 			this.showWarning("Wait for the current response to finish before reloading.");
@@ -4958,43 +5006,9 @@ export class InteractiveMode {
 		};
 
 		try {
-			await this.session.reload();
-			configureHttpDispatcher(this.settingsManager.getHttpIdleTimeoutMs());
-			this.keybindings.reload();
-			const activeHeader = this.customHeader ?? this.builtInHeader;
-			if (isExpandable(activeHeader)) {
-				activeHeader.setExpanded(this.toolOutputExpanded);
-			}
-			setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
-			this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
-			const themeName = this.settingsManager.getTheme();
-			const themeResult = themeName ? setTheme(themeName, true) : { success: true };
-			if (!themeResult.success) {
-				this.showError(`Failed to load theme "${themeName}": ${themeResult.error}\nFell back to dark theme.`);
-			}
-			const editorPaddingX = this.settingsManager.getEditorPaddingX();
-			const autocompleteMaxVisible = this.settingsManager.getAutocompleteMaxVisible();
-			this.defaultEditor.setPaddingX(editorPaddingX);
-			this.defaultEditor.setAutocompleteMaxVisible(autocompleteMaxVisible);
-			if (this.editor !== this.defaultEditor) {
-				this.editor.setPaddingX?.(editorPaddingX);
-				this.editor.setAutocompleteMaxVisible?.(autocompleteMaxVisible);
-			}
-			this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
-			this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
-			this.setupAutocompleteProvider();
-			const runner = this.session.extensionRunner;
-			this.setupExtensionShortcuts(runner);
-			this.rebuildChatFromMessages();
+			await this.session.reload({ emitEvent: false });
+			this.applyReloadedRuntime({ rebuildChat: true, showLoadedResources: true });
 			dismissReloadBox(this.editor as Component);
-			this.showLoadedResources({
-				force: false,
-				showDiagnosticsWhenQuiet: true,
-			});
-			const modelsJsonError = this.session.modelRegistry.getError();
-			if (modelsJsonError) {
-				this.showError(`models.json error: ${modelsJsonError}`);
-			}
 			this.showStatus("Reloaded keybindings, extensions, skills, prompts, themes");
 		} catch (error) {
 			dismissReloadBox(previousEditor as Component);
