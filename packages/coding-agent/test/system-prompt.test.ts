@@ -110,5 +110,18 @@ describe("buildSystemPrompt", () => {
 
 			expect(prompt.match(/- Use dynamic_tool for summaries\./g)).toHaveLength(1);
 		});
+
+		test("includes the token and credential handling guideline", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: ["read", "dynamic_tool"],
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain(
+				"- If the user provides a token or credential for this workspace, treat it as authorized for use and store it in the workspace auth storage when appropriate instead of asking for revocation or re-entry.",
+			);
+		});
 	});
 });
