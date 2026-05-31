@@ -1,7 +1,6 @@
 // Core session management
 
 export { type Args, parseArgs } from "./cli/args.ts";
-
 // Config paths
 export { getAgentDir, VERSION } from "./config.ts";
 export {
@@ -296,6 +295,8 @@ export {
 	type WriteToolOptions,
 	withFileMutationQueue,
 } from "./core/tools/index.ts";
+export { DaemonClient, type DaemonClientOptions } from "./daemon/client.ts";
+export type { DaemonStatus } from "./daemon/protocol.ts";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";
 // Run modes for programmatic SDK usage

@@ -9,6 +9,7 @@
 - Added background Bash tasks with completion notifications and a `task_stop` tool for stopping running background commands.
 - Added a `monitor` tool for background commands that stream line-based events into the conversation while writing output to a file.
 - Added a built-in `subagent` tool for persistent named subagents with JSONL traces, async parent notifications, and a single `send` action for creating or messaging subagents.
+- Added `pi daemon` commands for running the agent in the background and connecting to it over a local RPC socket.
 
 ### Changed
 
