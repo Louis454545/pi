@@ -1322,8 +1322,7 @@
 			"license": "MIT",
 			"bin": {
 				"jiti": "lib/jiti-cli.mjs"
-			},
-			"peer": true
+			}
 		},
 		"node_modules/json-bigint": {
 			"version": "1.0.0",
@@ -1776,8 +1775,7 @@
 			"license": "MIT",
 			"funding": {
 				"url": "https://github.com/sponsors/colinhacks"
-			},
-			"peer": true
+			}
 		},
 		"node_modules/zod-to-json-schema": {
 			"version": "3.25.2",
