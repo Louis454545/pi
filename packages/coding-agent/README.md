@@ -474,7 +474,7 @@ Pi is aggressively extensible so it doesn't have to dictate your workflow. Featu
 
 **No MCP.** Build CLI tools with READMEs (see [Skills](#skills)), or build an extension that adds MCP support. [Why?](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/)
 
-**No sub-agents.** There's many ways to do this. Spawn pi instances via tmux, or build your own with [extensions](#extensions), or install a package that does it your way.
+**Sub-agents are tools, not magic state.** The built-in `subagent` tool creates named child sessions with their own JSONL traces. Parent and child agents can exchange asynchronous notifications, and `task_stop` can stop running subagents.
 
 **No permission popups.** Run in a container, or build your own confirmation flow with [extensions](#extensions) inline with your environment and security requirements.
 
@@ -482,7 +482,7 @@ Pi is aggressively extensible so it doesn't have to dictate your workflow. Featu
 
 **No built-in to-dos.** They confuse models. Use a TODO.md file, or build your own with [extensions](#extensions).
 
-**No background bash.** Use tmux. Full observability, direct interaction.
+**Background bash is explicit.** Use `bash` background mode or `monitor` when the agent needs managed background work with traceable notifications.
 
 Read the [blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/) for the full rationale.
 
@@ -557,7 +557,7 @@ cat README.md | pi -p "Summarize this text"
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools by default but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools by default |
 
-Available built-in tools: `read`, `bash`, `edit`, `write`, `reload`, `task_stop`, `monitor`, `grep`, `find`, `ls`
+Available built-in tools: `read`, `bash`, `edit`, `write`, `reload`, `task_stop`, `monitor`, `subagent`, `grep`, `find`, `ls`
 
 ### Resource Options
 

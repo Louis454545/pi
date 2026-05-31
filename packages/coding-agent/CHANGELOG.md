@@ -8,10 +8,12 @@
 - Added a built-in `reload` tool so the agent can reload runtime resources after modifying agent-affecting files.
 - Added background Bash tasks with completion notifications and a `task_stop` tool for stopping running background commands.
 - Added a `monitor` tool for background commands that stream line-based events into the conversation while writing output to a file.
+- Added a built-in `subagent` tool for persistent named subagents with JSONL traces, async parent notifications, and a single `send` action for creating or messaging subagents.
 
 ### Changed
 
 - Strengthened reload tool prompt guidance so agents call it autonomously after changing slash commands, extensions, skills, themes, keybindings, prompts, or loaded project instructions.
+- Rendered built-in task, monitor, and subagent notifications in structured TUI cards instead of raw XML.
 
 ### Fixed
 

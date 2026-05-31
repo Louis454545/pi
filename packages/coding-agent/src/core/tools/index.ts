@@ -65,6 +65,17 @@ export {
 	type ReloadToolOptions,
 } from "./reload.ts";
 export {
+	createSubagentTool,
+	createSubagentToolDefinition,
+	type SubagentInfo,
+	type SubagentStatus,
+	type SubagentToolActionHandler,
+	type SubagentToolActionResult,
+	type SubagentToolDetails,
+	type SubagentToolInput,
+	type SubagentToolOptions,
+} from "./subagent.ts";
+export {
 	createTaskStopTool,
 	createTaskStopToolDefinition,
 	type TaskStopToolDetails,
@@ -99,12 +110,24 @@ import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.t
 import { createMonitorTool, createMonitorToolDefinition, type MonitorToolOptions } from "./monitor.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { createReloadTool, createReloadToolDefinition, type ReloadToolOptions } from "./reload.ts";
+import { createSubagentTool, createSubagentToolDefinition, type SubagentToolOptions } from "./subagent.ts";
 import { createTaskStopTool, createTaskStopToolDefinition, type TaskStopToolOptions } from "./task-stop.ts";
 import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
-export type ToolName = "read" | "bash" | "edit" | "write" | "reload" | "task_stop" | "monitor" | "grep" | "find" | "ls";
+export type ToolName =
+	| "read"
+	| "bash"
+	| "edit"
+	| "write"
+	| "reload"
+	| "task_stop"
+	| "monitor"
+	| "subagent"
+	| "grep"
+	| "find"
+	| "ls";
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
 	"bash",
@@ -113,6 +136,7 @@ export const allToolNames: Set<ToolName> = new Set([
 	"reload",
 	"task_stop",
 	"monitor",
+	"subagent",
 	"grep",
 	"find",
 	"ls",
@@ -126,6 +150,7 @@ export interface ToolsOptions {
 	reload?: ReloadToolOptions;
 	taskStop?: TaskStopToolOptions;
 	monitor?: MonitorToolOptions;
+	subagent?: SubagentToolOptions;
 	grep?: GrepToolOptions;
 	find?: FindToolOptions;
 	ls?: LsToolOptions;
@@ -147,6 +172,8 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createTaskStopToolDefinition(cwd, options?.taskStop);
 		case "monitor":
 			return createMonitorToolDefinition(cwd, options?.monitor);
+		case "subagent":
+			return createSubagentToolDefinition(cwd, options?.subagent);
 		case "grep":
 			return createGrepToolDefinition(cwd, options?.grep);
 		case "find":
@@ -174,6 +201,8 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createTaskStopTool(cwd, options?.taskStop);
 		case "monitor":
 			return createMonitorTool(cwd, options?.monitor);
+		case "subagent":
+			return createSubagentTool(cwd, options?.subagent);
 		case "grep":
 			return createGrepTool(cwd, options?.grep);
 		case "find":
@@ -194,6 +223,7 @@ export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions)
 		createReloadToolDefinition(cwd, options?.reload),
 		createTaskStopToolDefinition(cwd, options?.taskStop),
 		createMonitorToolDefinition(cwd, options?.monitor),
+		createSubagentToolDefinition(cwd, options?.subagent),
 	];
 }
 
@@ -215,6 +245,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		reload: createReloadToolDefinition(cwd, options?.reload),
 		task_stop: createTaskStopToolDefinition(cwd, options?.taskStop),
 		monitor: createMonitorToolDefinition(cwd, options?.monitor),
+		subagent: createSubagentToolDefinition(cwd, options?.subagent),
 		grep: createGrepToolDefinition(cwd, options?.grep),
 		find: createFindToolDefinition(cwd, options?.find),
 		ls: createLsToolDefinition(cwd, options?.ls),
@@ -230,6 +261,7 @@ export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
 		createReloadTool(cwd, options?.reload),
 		createTaskStopTool(cwd, options?.taskStop),
 		createMonitorTool(cwd, options?.monitor),
+		createSubagentTool(cwd, options?.subagent),
 	];
 }
 
@@ -251,6 +283,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		reload: createReloadTool(cwd, options?.reload),
 		task_stop: createTaskStopTool(cwd, options?.taskStop),
 		monitor: createMonitorTool(cwd, options?.monitor),
+		subagent: createSubagentTool(cwd, options?.subagent),
 		grep: createGrepTool(cwd, options?.grep),
 		find: createFindTool(cwd, options?.find),
 		ls: createLsTool(cwd, options?.ls),

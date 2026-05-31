@@ -13,16 +13,17 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import type {
+import {
 	Agent,
-	AgentEvent,
-	AgentLoopTurnUpdate,
-	AgentMessage,
-	AgentState,
-	AgentTool,
-	ThinkingLevel,
+	type AgentEvent,
+	type AgentLoopTurnUpdate,
+	type AgentMessage,
+	type AgentState,
+	type AgentTool,
+	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai";
 import {
@@ -93,14 +94,27 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.ts";
-import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
+import type { BranchSummaryEntry, CompactionEntry } from "./session-manager.ts";
+import {
+	CURRENT_SESSION_VERSION,
+	getLatestCompactionEntry,
+	type SessionHeader,
+	SessionManager,
+} from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
+import {
+	normalizeSubagentAction,
+	type SubagentInfo,
+	type SubagentStatus,
+	type SubagentToolActionResult,
+	type SubagentToolInput,
+} from "./tools/subagent.ts";
+import type { StopSubagentTaskRecord, StopSubagentTaskResult, TaskStopResult } from "./tools/task-stop.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 
 // ============================================================================
@@ -113,6 +127,16 @@ export interface ParsedSkillBlock {
 	location: string;
 	content: string;
 	userMessage: string | undefined;
+}
+
+export interface SubagentNotification {
+	name: string;
+	taskId: string;
+	sessionFile: string | undefined;
+	parentSessionFile: string | undefined;
+	status: "started" | "message" | "completed" | "failed" | "stopped";
+	summary: string;
+	message: string | undefined;
 }
 
 /**
@@ -148,6 +172,7 @@ export type AgentSessionEvent =
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| { type: "task_notification"; notification: BackgroundTaskNotification; xml: string }
 	| { type: "monitor_event"; notification: MonitorEventNotification; xml: string }
+	| { type: "subagent_notification"; notification: SubagentNotification; xml: string }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -197,6 +222,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Parent bridge present when this session is itself a subagent. */
+	subagentParent?: SubagentParentBridge;
 }
 
 export interface ExtensionBindings {
@@ -227,6 +254,13 @@ export interface ModelCycleResult {
 	thinkingLevel: ThinkingLevel;
 	/** Whether cycling through scoped models (--models flag) or all available */
 	isScoped: boolean;
+}
+
+interface SubagentParentBridge {
+	name: string;
+	taskId: string;
+	parentSessionFile: string | undefined;
+	sendMessage(message: string): Promise<SubagentToolActionResult>;
 }
 
 /** Session statistics for /session command */
@@ -260,6 +294,32 @@ interface ToolDefinitionEntry {
 
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+
+function escapeXml(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&apos;");
+}
+
+function formatSubagentNotificationXml(notification: SubagentNotification): string {
+	const lines = [
+		"<subagent-notification>",
+		`<name>${escapeXml(notification.name)}</name>`,
+		`<task-id>${escapeXml(notification.taskId)}</task-id>`,
+		`<session-file>${escapeXml(notification.sessionFile ?? "")}</session-file>`,
+		`<parent-session-file>${escapeXml(notification.parentSessionFile ?? "")}</parent-session-file>`,
+		`<status>${notification.status}</status>`,
+		`<summary>${escapeXml(notification.summary)}</summary>`,
+	];
+	if (notification.message) {
+		lines.push(`<message>${escapeXml(notification.message)}</message>`);
+	}
+	lines.push("</subagent-notification>");
+	return lines.join("\n");
+}
 
 // ============================================================================
 // AgentSession Class
@@ -299,6 +359,8 @@ export class AgentSession {
 	private _bashAbortController: AbortController | undefined = undefined;
 	private _pendingBashMessages: BashExecutionMessage[] = [];
 	private _backgroundTaskManager: BackgroundTaskManager;
+	private _subagentManager: SubagentManager;
+	private _subagentParent: SubagentParentBridge | undefined;
 	private _taskNotificationContinuation: Promise<void> = Promise.resolve();
 
 	// Extension system
@@ -351,10 +413,12 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._subagentParent = config.subagentParent;
 		this._backgroundTaskManager = new BackgroundTaskManager(
 			(notification) => this._handleBackgroundTaskNotification(notification),
 			(notification) => this._handleMonitorEvent(notification),
 		);
+		this._subagentManager = new SubagentManager(this);
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -772,6 +836,7 @@ export class AgentSession {
 			this.abortBranchSummary();
 			this.abortBash();
 			this._backgroundTaskManager.dispose();
+			this._subagentManager.dispose();
 			this.agent.abort();
 		} catch {
 			// Dispose must succeed even if an abort hook throws.
@@ -2453,7 +2518,7 @@ export class AgentSession {
 							}),
 					},
 					reload: { scheduleReload: () => this._scheduleReloadAfterToolTurn() },
-					taskStop: { stopTask: async (taskId) => await this.stopBackgroundTask(taskId) },
+					taskStop: { stopTask: async (taskId) => await this.stopTask(taskId) },
 					monitor: {
 						commandPrefix: shellCommandPrefix,
 						shellPath,
@@ -2469,6 +2534,7 @@ export class AgentSession {
 								shellPath,
 							}),
 					},
+					subagent: { handleAction: async (input) => await this.handleSubagentToolAction(input) },
 				});
 
 		this._baseToolDefinitions = new Map(
@@ -2497,7 +2563,7 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: ["read", "bash", "edit", "write", "reload", "task_stop", "monitor"];
+			: ["read", "bash", "edit", "write", "reload", "task_stop", "monitor", "subagent"];
 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		this._refreshToolRegistry({
 			activeToolNames: baseActiveToolNames,
@@ -2644,6 +2710,112 @@ export class AgentSession {
 	// Bash Execution
 	// =========================================================================
 
+	async handleSubagentToolAction(input: SubagentToolInput): Promise<SubagentToolActionResult> {
+		const message = input.message?.trim();
+		const action = normalizeSubagentAction(input);
+		if (action === "send" && !input.name?.trim() && this._subagentParent && message) {
+			return await this._subagentParent.sendMessage(message);
+		}
+		return await this._subagentManager.handleAction(input);
+	}
+
+	createSubagentSession(name: string, taskId: string): AgentSession {
+		const parentSessionFile = this.sessionFile;
+		const sessionManager = this.sessionManager.isPersisted()
+			? SessionManager.create(this._cwd, this.sessionManager.getSessionDir(), { parentSession: parentSessionFile })
+			: SessionManager.inMemory(this._cwd);
+		const extensionRunnerRef: { current?: ExtensionRunner } = {};
+		const childAgent = new Agent({
+			initialState: {
+				systemPrompt: "",
+				model: this.model,
+				thinkingLevel: this.thinkingLevel,
+				tools: [],
+			},
+			convertToLlm: this.agent.convertToLlm,
+			streamFn: this.agent.streamFn,
+			onPayload: async (payload) => {
+				const runner = extensionRunnerRef.current;
+				if (!runner?.hasHandlers("before_provider_request")) {
+					return payload;
+				}
+				return runner.emitBeforeProviderRequest(payload);
+			},
+			onResponse: async (response) => {
+				const runner = extensionRunnerRef.current;
+				if (!runner?.hasHandlers("after_provider_response")) {
+					return;
+				}
+				await runner.emit({
+					type: "after_provider_response",
+					status: response.status,
+					headers: response.headers,
+				});
+			},
+			sessionId: sessionManager.getSessionId(),
+			transformContext: async (messages) => {
+				const runner = extensionRunnerRef.current;
+				if (!runner) return messages;
+				return runner.emitContext(messages);
+			},
+			steeringMode: this.settingsManager.getSteeringMode(),
+			followUpMode: this.settingsManager.getFollowUpMode(),
+			transport: this.settingsManager.getTransport(),
+			thinkingBudgets: this.settingsManager.getThinkingBudgets(),
+			maxRetryDelayMs: this.settingsManager.getProviderRetrySettings().maxRetryDelayMs,
+		});
+
+		if (this.model) {
+			sessionManager.appendModelChange(this.model.provider, this.model.id);
+		}
+		sessionManager.appendThinkingLevelChange(this.thinkingLevel);
+
+		return new AgentSession({
+			agent: childAgent,
+			sessionManager,
+			settingsManager: this.settingsManager,
+			cwd: this._cwd,
+			scopedModels: this._scopedModels,
+			resourceLoader: this._resourceLoader,
+			customTools: this._customTools,
+			modelRegistry: this._modelRegistry,
+			extensionRunnerRef,
+			sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile: parentSessionFile },
+			subagentParent: {
+				name,
+				taskId,
+				parentSessionFile,
+				sendMessage: async (message) => await this._subagentManager.receiveFromSubagent(name, taskId, message),
+			},
+		});
+	}
+
+	notifySubagent(notification: SubagentNotification): void {
+		this._handleSubagentNotification(notification);
+	}
+
+	async stopTask(taskId: string): Promise<TaskStopResult> {
+		const backgroundResult = await this._backgroundTaskManager.stopTask(taskId);
+		if (backgroundResult.status !== "not_found") {
+			return backgroundResult;
+		}
+		return await this._subagentManager.stop(taskId);
+	}
+
+	hasRunningSubagents(): boolean {
+		return this._subagentManager.hasRunning();
+	}
+
+	async waitForSubagents(): Promise<void> {
+		while (this._subagentManager.hasRunning()) {
+			await this._subagentManager.waitForAll();
+			await this._taskNotificationContinuation;
+			await this.agent.waitForIdle();
+		}
+		await this._taskNotificationContinuation;
+		await this.agent.waitForIdle();
+	}
+
 	async startBackgroundBashTask(input: BackgroundTaskStartInput): Promise<BackgroundTaskStartResult> {
 		return await this._backgroundTaskManager.startBash(input);
 	}
@@ -2684,6 +2856,12 @@ export class AgentSession {
 		const xml = formatMonitorEventXml(notification);
 		this._emit({ type: "monitor_event", notification, xml });
 		this._queueNotificationMessage("monitor_event", xml, notification);
+	}
+
+	private _handleSubagentNotification(notification: SubagentNotification): void {
+		const xml = formatSubagentNotificationXml(notification);
+		this._emit({ type: "subagent_notification", notification, xml });
+		this._queueNotificationMessage("subagent_notification", xml, notification);
 	}
 
 	private _queueNotificationMessage<TDetails>(customType: string, xml: string, details: TDetails): void {
@@ -3291,5 +3469,336 @@ export class AgentSession {
 	 */
 	get extensionRunner(): ExtensionRunner {
 		return this._extensionRunner;
+	}
+}
+
+interface ManagedSubagent {
+	name: string;
+	taskId: string;
+	session: AgentSession;
+	sessionFile: string | undefined;
+	parentSessionFile: string | undefined;
+	startedAt: number;
+	endedAt: number | undefined;
+	status: SubagentStatus;
+	lastSummary: string | undefined;
+	currentRun: Promise<void> | undefined;
+}
+
+class SubagentManager {
+	private readonly owner: AgentSession;
+	private readonly subagents = new Map<string, ManagedSubagent>();
+
+	constructor(owner: AgentSession) {
+		this.owner = owner;
+	}
+
+	async handleAction(input: SubagentToolInput): Promise<SubagentToolActionResult> {
+		const action = normalizeSubagentAction(input);
+		switch (action) {
+			case "send":
+				return await this.send(input.name?.trim() ?? "", input.message?.trim() ?? "");
+			case "list":
+				return {
+					action: "list",
+					message: this.formatListMessage(),
+					subagents: this.list(),
+				};
+			case "status":
+				return this.status(input.name?.trim());
+		}
+	}
+
+	async receiveFromSubagent(name: string, taskId: string, message: string): Promise<SubagentToolActionResult> {
+		const record = this.findByNameOrTaskId(name) ?? this.findByNameOrTaskId(taskId);
+		const sessionFile = record?.sessionFile;
+		const parentSessionFile = record?.parentSessionFile ?? this.owner.sessionFile;
+		this.owner.notifySubagent({
+			name,
+			taskId,
+			sessionFile,
+			parentSessionFile,
+			status: "message",
+			summary: `Subagent "${name}" sent a message to the parent.`,
+			message,
+		});
+		return {
+			action: "send",
+			name,
+			taskId,
+			status: record?.status,
+			sessionFile,
+			parentSessionFile,
+			message: `Message sent to parent from subagent "${name}".`,
+		};
+	}
+
+	async stop(nameOrTaskId: string): Promise<StopSubagentTaskResult> {
+		const record = this.findByNameOrTaskId(nameOrTaskId);
+		if (!record) {
+			return { type: "subagent", status: "not_found", taskId: nameOrTaskId };
+		}
+		if (record.status !== "running") {
+			return { type: "subagent", status: "already_finished", task: this.toStopTaskRecord(record) };
+		}
+		record.status = "stopped";
+		record.endedAt = Date.now();
+		record.session.agent.abort();
+		await record.session.agent.waitForIdle();
+		this.owner.notifySubagent({
+			name: record.name,
+			taskId: record.taskId,
+			sessionFile: record.sessionFile,
+			parentSessionFile: record.parentSessionFile,
+			status: "stopped",
+			summary: `Subagent "${record.name}" stopped.`,
+			message: undefined,
+		});
+		return { type: "subagent", status: "stopped", task: this.toStopTaskRecord(record) };
+	}
+
+	dispose(): void {
+		for (const record of this.subagents.values()) {
+			if (record.status === "running") {
+				record.status = "stopped";
+				record.endedAt = Date.now();
+			}
+			record.session.dispose();
+		}
+		this.subagents.clear();
+	}
+
+	hasRunning(): boolean {
+		return Array.from(this.subagents.values()).some((record) => record.status === "running");
+	}
+
+	async waitForAll(): Promise<void> {
+		await Promise.all(
+			Array.from(this.subagents.values())
+				.map((record) => record.currentRun)
+				.filter((run): run is Promise<void> => run !== undefined),
+		);
+	}
+
+	private async start(name: string, message: string): Promise<SubagentToolActionResult> {
+		if (!name) {
+			throw new Error(
+				'subagent action "send" requires name unless it is used inside a subagent to message the parent.',
+			);
+		}
+		if (!message) {
+			throw new Error('subagent action "send" requires message.');
+		}
+
+		const taskId = `subagent_${randomUUID()}`;
+		const session = this.owner.createSubagentSession(name, taskId);
+		const record: ManagedSubagent = {
+			name,
+			taskId,
+			session,
+			sessionFile: session.sessionFile,
+			parentSessionFile: this.owner.sessionFile,
+			startedAt: Date.now(),
+			endedAt: undefined,
+			status: "idle",
+			lastSummary: undefined,
+			currentRun: undefined,
+		};
+		this.subagents.set(name, record);
+
+		await session.bindExtensions({});
+		await session.sendCustomMessage(
+			{
+				customType: "subagent_context",
+				content: this.formatSubagentContext(record),
+				display: false,
+				details: {
+					name: record.name,
+					taskId: record.taskId,
+					sessionFile: record.sessionFile,
+					parentSessionFile: record.parentSessionFile,
+				},
+			},
+			{ triggerTurn: false },
+		);
+		this.startRun(record, message);
+
+		return {
+			action: "send",
+			name,
+			taskId,
+			status: record.status,
+			sessionFile: record.sessionFile,
+			parentSessionFile: record.parentSessionFile,
+			message: [
+				`Subagent "${name}" started.`,
+				`Task id: ${taskId}`,
+				`Trace file: ${record.sessionFile ?? "(not persisted)"}`,
+				`Parent trace file: ${record.parentSessionFile ?? "(not persisted)"}`,
+			].join("\n"),
+		};
+	}
+
+	private async send(name: string, message: string): Promise<SubagentToolActionResult> {
+		const record = this.subagents.get(name);
+		if (!record) {
+			return await this.start(name, message);
+		}
+		if (record.status === "running" || record.session.isStreaming) {
+			await record.session.prompt(message, {
+				expandPromptTemplates: false,
+				streamingBehavior: "steer",
+				source: "extension",
+			});
+		} else {
+			this.startRun(record, message);
+		}
+		return {
+			action: "send",
+			name,
+			taskId: record.taskId,
+			status: record.status,
+			sessionFile: record.sessionFile,
+			parentSessionFile: record.parentSessionFile,
+			message: `Message sent to subagent "${name}".`,
+		};
+	}
+
+	private status(name: string | undefined): SubagentToolActionResult {
+		if (!name) {
+			return {
+				action: "status",
+				message: this.formatListMessage(),
+				subagents: this.list(),
+			};
+		}
+		const record = this.subagents.get(name);
+		if (!record) {
+			throw new Error(`Subagent not found: "${name}".`);
+		}
+		return {
+			action: "status",
+			name: record.name,
+			taskId: record.taskId,
+			status: record.status,
+			sessionFile: record.sessionFile,
+			parentSessionFile: record.parentSessionFile,
+			message: [
+				`Subagent "${record.name}" is ${record.status}.`,
+				`Task id: ${record.taskId}`,
+				`Trace file: ${record.sessionFile ?? "(not persisted)"}`,
+				record.lastSummary ? `Last summary: ${record.lastSummary}` : undefined,
+			]
+				.filter((line): line is string => line !== undefined)
+				.join("\n"),
+		};
+	}
+
+	private startRun(record: ManagedSubagent, prompt: string): void {
+		record.status = "running";
+		record.endedAt = undefined;
+		record.currentRun = this.runPrompt(record, prompt);
+	}
+
+	private async runPrompt(record: ManagedSubagent, prompt: string): Promise<void> {
+		try {
+			await record.session.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
+			if (record.status === "stopped") {
+				return;
+			}
+			record.status = "idle";
+			record.endedAt = Date.now();
+			const message = record.session.getLastAssistantText();
+			const summary = `Subagent "${record.name}" completed a turn.`;
+			record.lastSummary = message || summary;
+			this.owner.notifySubagent({
+				name: record.name,
+				taskId: record.taskId,
+				sessionFile: record.sessionFile,
+				parentSessionFile: record.parentSessionFile,
+				status: "completed",
+				summary,
+				message,
+			});
+		} catch (error) {
+			if (record.status === "stopped") {
+				return;
+			}
+			record.status = "failed";
+			record.endedAt = Date.now();
+			const message = error instanceof Error ? error.message : String(error);
+			record.lastSummary = message;
+			this.owner.notifySubagent({
+				name: record.name,
+				taskId: record.taskId,
+				sessionFile: record.sessionFile,
+				parentSessionFile: record.parentSessionFile,
+				status: "failed",
+				summary: `Subagent "${record.name}" failed.`,
+				message,
+			});
+		}
+	}
+
+	private findByNameOrTaskId(nameOrTaskId: string): ManagedSubagent | undefined {
+		const byName = this.subagents.get(nameOrTaskId);
+		if (byName) {
+			return byName;
+		}
+		for (const record of this.subagents.values()) {
+			if (record.taskId === nameOrTaskId) {
+				return record;
+			}
+		}
+		return undefined;
+	}
+
+	private list(): SubagentInfo[] {
+		return Array.from(this.subagents.values()).map((record) => ({
+			name: record.name,
+			taskId: record.taskId,
+			status: record.status,
+			sessionFile: record.sessionFile,
+			parentSessionFile: record.parentSessionFile,
+			startedAt: record.startedAt,
+			endedAt: record.endedAt,
+			lastSummary: record.lastSummary,
+		}));
+	}
+
+	private formatListMessage(): string {
+		const subagents = this.list();
+		if (subagents.length === 0) {
+			return "No subagents are registered in this session.";
+		}
+		return subagents
+			.map((subagent) => {
+				const trace = subagent.sessionFile ?? "(not persisted)";
+				return `${subagent.name}: ${subagent.status}, task id ${subagent.taskId}, trace ${trace}`;
+			})
+			.join("\n");
+	}
+
+	private formatSubagentContext(record: ManagedSubagent): string {
+		return [
+			"<subagent-context>",
+			`<name>${escapeXml(record.name)}</name>`,
+			`<task-id>${escapeXml(record.taskId)}</task-id>`,
+			`<session-file>${escapeXml(record.sessionFile ?? "")}</session-file>`,
+			`<parent-session-file>${escapeXml(record.parentSessionFile ?? "")}</parent-session-file>`,
+			"You are running as a subagent. You have the same tool surface as the parent, including the subagent tool.",
+			"Use the subagent tool with only message and no name to send useful progress, answers, or questions to your parent.",
+			"Your JSONL trace is your session-file. The parent JSONL trace is parent-session-file.",
+			"</subagent-context>",
+		].join("\n");
+	}
+
+	private toStopTaskRecord(record: ManagedSubagent): StopSubagentTaskRecord {
+		return {
+			taskId: record.taskId,
+			name: record.name,
+			sessionFile: record.sessionFile,
+			finalStatus: record.status === "idle" || record.status === "failed" ? record.status : "stopped",
+		};
 	}
 }

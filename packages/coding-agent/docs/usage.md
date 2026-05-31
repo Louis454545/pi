@@ -190,7 +190,7 @@ cat README.md | pi -p "Summarize this text"
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools |
 
-Built-in tools: `read`, `bash`, `edit`, `write`, `reload`, `task_stop`, `monitor`, `grep`, `find`, `ls`.
+Built-in tools: `read`, `bash`, `edit`, `write`, `reload`, `task_stop`, `monitor`, `subagent`, `grep`, `find`, `ls`.
 
 ### Resource Options
 
@@ -283,6 +283,6 @@ pi --exclude-tools ask_question
 
 Pi keeps the core small and pushes workflow-specific behavior into extensions, skills, prompt templates, and packages.
 
-It intentionally does not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages, or use external tools such as containers and tmux.
+It intentionally does not include built-in MCP, permission popups, plan mode, or to-dos. Built-in subagents and background tasks are exposed as explicit tools with JSONL/session traces and can still be replaced by extensions.
 
 For the full rationale, read the [blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/).

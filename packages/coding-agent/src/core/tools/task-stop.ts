@@ -12,14 +12,31 @@ export type TaskStopToolInput = Static<typeof taskStopSchema>;
 
 export interface TaskStopToolDetails {
 	taskId: string;
-	status: StopBackgroundTaskResult["status"];
+	status: TaskStopResult["status"];
+	taskType?: "background" | "subagent";
+	name?: string;
 	outputFile?: string;
+	sessionFile?: string;
 	finalStatus?: string;
 	exitCode?: number;
 }
 
+export interface StopSubagentTaskRecord {
+	taskId: string;
+	name: string;
+	sessionFile: string | undefined;
+	finalStatus: "idle" | "stopped" | "failed";
+}
+
+export type StopSubagentTaskResult =
+	| { type: "subagent"; status: "not_found"; taskId: string }
+	| { type: "subagent"; status: "already_finished"; task: StopSubagentTaskRecord }
+	| { type: "subagent"; status: "stopped"; task: StopSubagentTaskRecord };
+
+export type TaskStopResult = ({ type?: "background" } & StopBackgroundTaskResult) | StopSubagentTaskResult;
+
 export interface TaskStopToolOptions {
-	stopTask?: (taskId: string) => Promise<StopBackgroundTaskResult>;
+	stopTask?: (taskId: string) => Promise<TaskStopResult>;
 }
 
 export function createTaskStopToolDefinition(
@@ -30,8 +47,8 @@ export function createTaskStopToolDefinition(
 		name: "task_stop",
 		label: "task_stop",
 		description:
-			"Stop a running background task by task id. Stops the whole process tree and returns a clear status.",
-		promptSnippet: "Stop running background tasks by task id",
+			"Stop a running background task by task id, or a running subagent by task id or name. Returns a clear status.",
+		promptSnippet: "Stop running background tasks or subagents",
 		parameters: taskStopSchema,
 		async execute(_toolCallId, { task_id }: TaskStopToolInput) {
 			if (!options?.stopTask) {
@@ -39,7 +56,38 @@ export function createTaskStopToolDefinition(
 			}
 			const result = await options.stopTask(task_id);
 			if (result.status === "not_found") {
-				throw new Error(`Background task not found: ${result.taskId}`);
+				throw new Error(`Task not found: ${result.taskId}`);
+			}
+			if (result.type === "subagent") {
+				if (result.status === "already_finished") {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Subagent ${result.task.name} already finished with status ${result.task.finalStatus}.`,
+							},
+						],
+						details: {
+							taskId: result.task.taskId,
+							taskType: "subagent",
+							name: result.task.name,
+							status: result.status,
+							sessionFile: result.task.sessionFile,
+							finalStatus: result.task.finalStatus,
+						},
+					};
+				}
+				return {
+					content: [{ type: "text", text: `Subagent ${result.task.name} stopped.` }],
+					details: {
+						taskId: result.task.taskId,
+						taskType: "subagent",
+						name: result.task.name,
+						status: result.status,
+						sessionFile: result.task.sessionFile,
+						finalStatus: result.task.finalStatus,
+					},
+				};
 			}
 			if (result.status === "already_finished") {
 				const status = result.task.finalStatus ?? "finished";
@@ -52,6 +100,7 @@ export function createTaskStopToolDefinition(
 					],
 					details: {
 						taskId: result.task.taskId,
+						taskType: "background",
 						status: result.status,
 						outputFile: result.task.outputFile,
 						finalStatus: result.task.finalStatus,
@@ -63,6 +112,7 @@ export function createTaskStopToolDefinition(
 				content: [{ type: "text", text: `Background task ${result.task.taskId} stopped.` }],
 				details: {
 					taskId: result.task.taskId,
+					taskType: "background",
 					status: result.status,
 					outputFile: result.task.outputFile,
 					finalStatus: result.task.finalStatus,
