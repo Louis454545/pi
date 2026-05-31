@@ -20,6 +20,7 @@
 
 - Fixed tool-triggered reloads so interactive slash commands and extension shortcuts refresh without requiring a manual `/reload`.
 - Fixed opening and listing very large JSONL session files by reading session entries line-by-line instead of materializing the full file as one string ([#5231](https://github.com/earendil-works/pi/issues/5231)).
+- Fixed `pi daemon attach` to open a daemon-backed TUI instead of the line-based prompt client.
 
 ## [0.78.0] - 2026-05-29
 

@@ -247,12 +247,12 @@ export class RpcClient {
 	/**
 	 * Cycle to next model.
 	 */
-	async cycleModel(): Promise<{
+	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<{
 		model: { provider: string; id: string };
 		thinkingLevel: ThinkingLevel;
 		isScoped: boolean;
 	} | null> {
-		const response = await this.send({ type: "cycle_model" });
+		const response = await this.send({ type: "cycle_model", direction });
 		return this.getData(response);
 	}
 
@@ -325,8 +325,8 @@ export class RpcClient {
 	/**
 	 * Execute a bash command.
 	 */
-	async bash(command: string): Promise<BashResult> {
-		const response = await this.send({ type: "bash", command });
+	async bash(command: string, options?: { excludeFromContext?: boolean }): Promise<BashResult> {
+		const response = await this.send({ type: "bash", command, excludeFromContext: options?.excludeFromContext });
 		return this.getData(response);
 	}
 
@@ -401,6 +401,13 @@ export class RpcClient {
 	 */
 	async setSessionName(name: string): Promise<void> {
 		await this.send({ type: "set_session_name", name });
+	}
+
+	/**
+	 * Reload keybindings, extensions, skills, prompts, and themes.
+	 */
+	async reload(): Promise<void> {
+		await this.send({ type: "reload" });
 	}
 
 	/**

@@ -1,9 +1,19 @@
 import { statSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { APP_NAME } from "../config.ts";
+import type { SessionStats } from "../core/agent-session.ts";
+import type { BashResult } from "../core/bash-executor.ts";
+import type { CompactionResult } from "../core/compaction/index.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "../modes/rpc/jsonl.ts";
-import type { RpcCommand, RpcResponse } from "../modes/rpc/rpc-types.ts";
+import type {
+	RpcCommand,
+	RpcExtensionUIResponse,
+	RpcResponse,
+	RpcSessionState,
+	RpcSlashCommand,
+} from "../modes/rpc/rpc-types.ts";
 import { getDaemonPaths } from "./paths.ts";
 import type { DaemonAdminCommand, DaemonAdminResponse, DaemonPromptDoneEvent, DaemonStatus } from "./protocol.ts";
 
@@ -167,9 +177,183 @@ export class DaemonClient {
 		}
 	}
 
+	async steer(message: string, images?: ImageContent[]): Promise<void> {
+		const response = await this.sendRpc({ type: "steer", message, images });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async followUp(message: string, images?: ImageContent[]): Promise<void> {
+		const response = await this.sendRpc({ type: "follow_up", message, images });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async abort(): Promise<void> {
+		const response = await this.sendRpc({ type: "abort" });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async newSession(parentSession?: string): Promise<{ cancelled: boolean }> {
+		const response = await this.sendRpc({ type: "new_session", parentSession });
+		return this.getRpcData(response);
+	}
+
+	async getState(): Promise<RpcSessionState> {
+		const response = await this.sendRpc({ type: "get_state" });
+		return this.getRpcData(response);
+	}
+
+	async setModel(provider: string, modelId: string): Promise<{ provider: string; id: string }> {
+		const response = await this.sendRpc({ type: "set_model", provider, modelId });
+		return this.getRpcData(response);
+	}
+
+	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<{
+		model: { provider: string; id: string };
+		thinkingLevel: ThinkingLevel;
+		isScoped: boolean;
+	} | null> {
+		const response = await this.sendRpc({ type: "cycle_model", direction });
+		return this.getRpcData(response);
+	}
+
+	async getAvailableModels(): Promise<Array<{ provider: string; id: string; name: string; reasoning: boolean }>> {
+		const response = await this.sendRpc({ type: "get_available_models" });
+		return this.getRpcData<{ models: Array<{ provider: string; id: string; name: string; reasoning: boolean }> }>(
+			response,
+		).models;
+	}
+
+	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
+		const response = await this.sendRpc({ type: "set_thinking_level", level });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
+		const response = await this.sendRpc({ type: "cycle_thinking_level" });
+		return this.getRpcData(response);
+	}
+
+	async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {
+		const response = await this.sendRpc({ type: "set_steering_mode", mode });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
+		const response = await this.sendRpc({ type: "set_follow_up_mode", mode });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async compact(customInstructions?: string): Promise<CompactionResult> {
+		const response = await this.sendRpc({ type: "compact", customInstructions });
+		return this.getRpcData(response);
+	}
+
+	async setAutoCompaction(enabled: boolean): Promise<void> {
+		const response = await this.sendRpc({ type: "set_auto_compaction", enabled });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async setAutoRetry(enabled: boolean): Promise<void> {
+		const response = await this.sendRpc({ type: "set_auto_retry", enabled });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async abortRetry(): Promise<void> {
+		const response = await this.sendRpc({ type: "abort_retry" });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async bash(command: string, options?: { excludeFromContext?: boolean }): Promise<BashResult> {
+		const response = await this.sendRpc({ type: "bash", command, excludeFromContext: options?.excludeFromContext });
+		return this.getRpcData(response);
+	}
+
+	async abortBash(): Promise<void> {
+		const response = await this.sendRpc({ type: "abort_bash" });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async getSessionStats(): Promise<SessionStats> {
+		const response = await this.sendRpc({ type: "get_session_stats" });
+		return this.getRpcData(response);
+	}
+
+	async exportHtml(outputPath?: string): Promise<{ path: string }> {
+		const response = await this.sendRpc({ type: "export_html", outputPath });
+		return this.getRpcData(response);
+	}
+
+	async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
+		const response = await this.sendRpc({ type: "switch_session", sessionPath });
+		return this.getRpcData(response);
+	}
+
+	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
+		const response = await this.sendRpc({ type: "fork", entryId });
+		return this.getRpcData(response);
+	}
+
+	async clone(): Promise<{ cancelled: boolean }> {
+		const response = await this.sendRpc({ type: "clone" });
+		return this.getRpcData(response);
+	}
+
+	async getForkMessages(): Promise<Array<{ entryId: string; text: string }>> {
+		const response = await this.sendRpc({ type: "get_fork_messages" });
+		return this.getRpcData<{ messages: Array<{ entryId: string; text: string }> }>(response).messages;
+	}
+
 	async getLastAssistantText(): Promise<string | null> {
 		const response = await this.sendRpc({ type: "get_last_assistant_text" });
 		return this.getRpcData<{ text: string | null }>(response).text;
+	}
+
+	async setSessionName(name: string): Promise<void> {
+		const response = await this.sendRpc({ type: "set_session_name", name });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async reload(): Promise<void> {
+		const response = await this.sendRpc({ type: "reload" });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async getMessages(): Promise<AgentMessage[]> {
+		const response = await this.sendRpc({ type: "get_messages" });
+		return this.getRpcData<{ messages: AgentMessage[] }>(response).messages;
+	}
+
+	async getCommands(): Promise<RpcSlashCommand[]> {
+		const response = await this.sendRpc({ type: "get_commands" });
+		return this.getRpcData<{ commands: RpcSlashCommand[] }>(response).commands;
+	}
+
+	sendExtensionUiResponse(response: RpcExtensionUIResponse): void {
+		this.writeNotification(response);
 	}
 
 	async promptAndWaitText(message: string, images?: ImageContent[], timeoutMs = 60000): Promise<string | null> {
@@ -234,6 +418,14 @@ export class DaemonClient {
 				reject(writeError);
 			}
 		});
+	}
+
+	private writeNotification(value: RpcExtensionUIResponse): void {
+		const socket = this.socket;
+		if (!socket || socket.destroyed || !socket.writable) {
+			throw this.socketError ?? new Error("Daemon client is not connected");
+		}
+		socket.write(serializeJsonLine(value));
 	}
 
 	private handleLine(line: string): void {

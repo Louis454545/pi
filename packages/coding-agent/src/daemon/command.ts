@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
-import { createInterface } from "node:readline";
 import chalk from "chalk";
 import { APP_NAME } from "../config.ts";
 import { sleep } from "../utils/sleep.ts";
 import { DaemonClient } from "./client.ts";
+import { runDaemonInteractiveMode } from "./interactive.ts";
 import { getDaemonPaths } from "./paths.ts";
 import type { DaemonStatus } from "./protocol.ts";
 import { createDaemonRunInvocation, runDaemonServer } from "./server.ts";
@@ -36,7 +36,7 @@ Commands:
   status     Show daemon process and socket information
   restart    Restart the daemon
   prompt     Send one prompt to the daemon and print the last assistant response
-  attach     Open a simple line-based client connected to the daemon
+  attach     Open the interactive TUI connected to the daemon
 
 Agent options after "--" are passed to the headless agent process.
 Examples:
@@ -275,40 +275,12 @@ async function runPrompt(messageArg: string | undefined): Promise<void> {
 }
 
 async function runAttach(): Promise<void> {
-	const client = new DaemonClient();
 	try {
-		await client.connect();
-		const status = await client.getStatus();
-		console.log(chalk.dim(`connected to ${APP_NAME} daemon pid ${status.pid}. Type /exit to quit.`));
-
-		const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
-		rl.prompt();
-		for await (const line of rl) {
-			const message = line.trim();
-			if (message === "/exit" || message === "/quit") {
-				break;
-			}
-			if (!message) {
-				rl.prompt();
-				continue;
-			}
-			try {
-				const text = await client.promptAndWaitText(message);
-				if (text) {
-					process.stdout.write(`${text}\n`);
-				}
-			} catch (error: unknown) {
-				process.stderr.write(chalk.red(`${error instanceof Error ? error.message : String(error)}\n`));
-			}
-			rl.prompt();
-		}
-		rl.close();
+		await runDaemonInteractiveMode();
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
 		process.exitCode = 1;
-	} finally {
-		client.close();
 	}
 }
 

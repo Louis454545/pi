@@ -110,6 +110,96 @@ describe("DaemonClient", () => {
 		}
 	});
 
+	test("sends daemon-backed TUI RPC commands and extension UI responses", async () => {
+		const socketPath = makeSocketPath();
+		const receivedCommands: Array<Record<string, unknown>> = [];
+		let resolveExtensionResponse: (value: Record<string, unknown>) => void = () => {};
+		const extensionResponse = new Promise<Record<string, unknown>>((resolve) => {
+			resolveExtensionResponse = resolve;
+		});
+		const server = createServer((socket) => {
+			const detach = attachJsonlLineReader(socket, (line) => {
+				const command = JSON.parse(line) as Record<string, unknown>;
+				receivedCommands.push(command);
+				if (command.type === "extension_ui_response") {
+					resolveExtensionResponse(command);
+					return;
+				}
+
+				const id = typeof command.id === "string" ? command.id : undefined;
+				const commandType = typeof command.type === "string" ? command.type : undefined;
+				if (!id || !commandType) {
+					return;
+				}
+				const success = (data: unknown) => {
+					write(socket, { id, type: "response", command: commandType, success: true, data });
+				};
+
+				switch (command.type) {
+					case "get_state":
+						success({
+							model: { provider: "test", id: "alpha", name: "Alpha", reasoning: false, contextWindow: 1000 },
+							thinkingLevel: "off",
+							isStreaming: false,
+							isCompacting: false,
+							steeringMode: "all",
+							followUpMode: "all",
+							sessionFile: "/tmp/session.jsonl",
+							sessionId: "session-1",
+							sessionName: "Daemon test",
+							autoCompactionEnabled: true,
+							messageCount: 0,
+							pendingMessageCount: 0,
+						});
+						break;
+					case "cycle_model":
+						success({
+							model: { provider: "test", id: "beta" },
+							thinkingLevel: "low",
+							isScoped: false,
+						});
+						break;
+					case "bash":
+						success({ output: "ok\n", exitCode: 0, cancelled: false, truncated: false });
+						break;
+					case "reload":
+						success(undefined);
+						break;
+				}
+			});
+			socket.on("close", detach);
+		});
+		await listen(server, socketPath);
+
+		const client = new DaemonClient({ socketPath, requestTimeoutMs: 1000 });
+		await client.connect();
+		try {
+			await expect(client.getState()).resolves.toMatchObject({ sessionId: "session-1" });
+			await expect(client.cycleModel("backward")).resolves.toMatchObject({ model: { id: "beta" } });
+			await expect(client.bash("echo ok", { excludeFromContext: true })).resolves.toMatchObject({ output: "ok\n" });
+			await expect(client.reload()).resolves.toBeUndefined();
+			client.sendExtensionUiResponse({ type: "extension_ui_response", id: "ui_1", cancelled: true });
+
+			await expect(extensionResponse).resolves.toMatchObject({
+				type: "extension_ui_response",
+				id: "ui_1",
+				cancelled: true,
+			});
+			expect(receivedCommands.map((command) => command.type)).toEqual([
+				"get_state",
+				"cycle_model",
+				"bash",
+				"reload",
+				"extension_ui_response",
+			]);
+			expect(receivedCommands[1]).toMatchObject({ type: "cycle_model", direction: "backward" });
+			expect(receivedCommands[2]).toMatchObject({ type: "bash", command: "echo ok", excludeFromContext: true });
+			expect(receivedCommands[3]).toMatchObject({ type: "reload" });
+		} finally {
+			client.close();
+		}
+	});
+
 	test("waits for the daemon prompt completion event for the submitted prompt", async () => {
 		const socketPath = makeSocketPath();
 		let requestedLastText = false;

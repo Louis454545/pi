@@ -479,7 +479,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "cycle_model": {
-				const result = await session.cycleModel();
+				const result = await session.cycleModel(command.direction);
 				if (!result) {
 					return success(id, "cycle_model", null);
 				}
@@ -625,6 +625,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}
 				session.setSessionName(name);
 				return success(id, "set_session_name");
+			}
+
+			case "reload": {
+				await session.reload();
+				return success(id, "reload");
 			}
 
 			// =================================================================
