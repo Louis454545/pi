@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 import { APP_NAME } from "../config.ts";
@@ -143,8 +143,6 @@ async function stopDaemon(allowAlreadyStopped: boolean): Promise<boolean> {
 	const client = new DaemonClient();
 	try {
 		await client.connect();
-		await client.shutdown();
-		return true;
 	} catch (error: unknown) {
 		if (allowAlreadyStopped) {
 			return false;
@@ -153,9 +151,47 @@ async function stopDaemon(allowAlreadyStopped: boolean): Promise<boolean> {
 		console.error(chalk.red(`Error: ${message}`));
 		process.exitCode = 1;
 		return false;
+	}
+
+	try {
+		await client.shutdown();
+		await waitForDaemonStopped(5000);
+		return true;
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(chalk.red(`Error: ${message}`));
+		process.exitCode = 1;
+		return false;
 	} finally {
 		client.close();
 	}
+}
+
+function daemonFilesExist(): boolean {
+	const paths = getDaemonPaths();
+	return existsSync(paths.stateFile) || (process.platform !== "win32" && existsSync(paths.socketPath));
+}
+
+function ensureDaemonDir(): void {
+	const paths = getDaemonPaths();
+	mkdirSync(paths.daemonDir, { recursive: true, mode: 0o700 });
+	if (process.platform !== "win32") {
+		chmodSync(paths.daemonDir, 0o700);
+		mkdirSync(paths.socketDir, { recursive: true, mode: 0o700 });
+		chmodSync(paths.socketDir, 0o700);
+	}
+}
+
+async function waitForDaemonStopped(timeoutMs: number): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		const status = await tryGetDaemonStatus();
+		if (!status && !daemonFilesExist()) {
+			return;
+		}
+		await sleep(100);
+	}
+	throw new Error("Timed out waiting for daemon shutdown cleanup");
 }
 
 function reportDaemonCommandError(error: unknown): void {
@@ -176,7 +212,7 @@ async function startDaemon(agentArgs: string[]): Promise<void> {
 		removeDaemonState(paths);
 	}
 
-	mkdirSync(paths.agentDir, { recursive: true, mode: 0o700 });
+	ensureDaemonDir();
 	const invocation = createDaemonRunInvocation(agentArgs);
 	const logFd = openSync(paths.logFile, "a", 0o600);
 	try {
@@ -311,6 +347,9 @@ export async function handleDaemonCommand(args: string[]): Promise<boolean> {
 
 		case "restart":
 			await stopDaemon(true);
+			if (process.exitCode) {
+				return true;
+			}
 			try {
 				await startDaemon(command.agentArgs);
 			} catch (error: unknown) {

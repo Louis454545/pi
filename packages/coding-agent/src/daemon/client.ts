@@ -1,10 +1,11 @@
+import { statSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { APP_NAME } from "../config.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "../modes/rpc/jsonl.ts";
 import type { RpcCommand, RpcResponse } from "../modes/rpc/rpc-types.ts";
 import { getDaemonPaths } from "./paths.ts";
-import type { DaemonAdminCommand, DaemonAdminResponse, DaemonStatus } from "./protocol.ts";
+import type { DaemonAdminCommand, DaemonAdminResponse, DaemonPromptDoneEvent, DaemonStatus } from "./protocol.ts";
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
@@ -19,6 +20,7 @@ interface PendingRequest {
 
 export interface DaemonClientOptions {
 	socketPath?: string;
+	socketDir?: string;
 	requestTimeoutMs?: number;
 }
 
@@ -38,18 +40,42 @@ function getCommandType(command: RpcCommandBody | DaemonAdminCommandBody): strin
 	return command.type;
 }
 
+function createPromptCommand(message: string, images?: ImageContent[]): RpcCommandBody {
+	return images ? { type: "prompt", message, images } : { type: "prompt", message };
+}
+
+function createPromptAndWaitCommand(
+	message: string,
+	images?: ImageContent[],
+): RpcCommandBody & { daemonAwaitCompletion: true } {
+	return { ...createPromptCommand(message, images), daemonAwaitCompletion: true };
+}
+
+function isDaemonPromptDoneEvent(value: unknown): value is DaemonPromptDoneEvent {
+	return (
+		isRecord(value) &&
+		value.type === "daemon_prompt_done" &&
+		typeof value.id === "string" &&
+		(value.error === undefined || typeof value.error === "string")
+	);
+}
+
 export class DaemonClient {
 	private socket: Socket | undefined;
 	private detachLineReader: (() => void) | undefined;
 	private pendingRequests = new Map<string, PendingRequest>();
+	private pendingWaits = new Set<(error: Error) => void>();
 	private eventListeners: DaemonEventListener[] = [];
 	private requestId = 0;
 	private socketError: Error | undefined;
 	private readonly socketPath: string;
+	private readonly socketDir: string | undefined;
 	private readonly requestTimeoutMs: number;
 
 	constructor(options: DaemonClientOptions = {}) {
-		this.socketPath = options.socketPath ?? getDaemonPaths().socketPath;
+		const defaultPaths = getDaemonPaths();
+		this.socketPath = options.socketPath ?? defaultPaths.socketPath;
+		this.socketDir = options.socketDir ?? (options.socketPath ? undefined : defaultPaths.socketDir);
 		this.requestTimeoutMs = options.requestTimeoutMs ?? 30000;
 	}
 
@@ -58,6 +84,7 @@ export class DaemonClient {
 			throw new Error("Daemon client already connected");
 		}
 
+		this.assertPrivateSocketDir();
 		const socket = createConnection(this.socketPath);
 		this.socket = socket;
 		this.detachLineReader = attachJsonlLineReader(socket, (line) => this.handleLine(line));
@@ -85,20 +112,24 @@ export class DaemonClient {
 		socket.on("error", (error) => {
 			this.socketError = new Error(`Daemon socket error: ${error.message}`);
 			this.rejectPendingRequests(this.socketError);
+			this.rejectPendingWaits(this.socketError);
 		});
 		socket.on("close", () => {
 			const error = this.socketError ?? new Error("Daemon socket closed");
 			this.rejectPendingRequests(error);
+			this.rejectPendingWaits(error);
 		});
 	}
 
 	close(): void {
+		const error = new Error("Daemon client closed");
+		this.rejectPendingRequests(error);
+		this.rejectPendingWaits(error);
 		this.detachLineReader?.();
 		this.detachLineReader = undefined;
 		this.socket?.end();
 		this.socket?.destroy();
 		this.socket = undefined;
-		this.pendingRequests.clear();
 	}
 
 	onEvent(listener: DaemonEventListener): () => void {
@@ -130,7 +161,7 @@ export class DaemonClient {
 	}
 
 	async prompt(message: string, images?: ImageContent[]): Promise<void> {
-		const response = await this.sendRpc(images ? { type: "prompt", message, images } : { type: "prompt", message });
+		const response = await this.sendRpc(createPromptCommand(message, images));
 		if (!response.success) {
 			throw new Error(response.error);
 		}
@@ -142,9 +173,13 @@ export class DaemonClient {
 	}
 
 	async promptAndWaitText(message: string, images?: ImageContent[], timeoutMs = 60000): Promise<string | null> {
-		const wait = this.waitForAgentEnd(timeoutMs);
+		const id = this.createRequestId();
+		const wait = this.waitForDaemonPromptDone(id, timeoutMs);
 		try {
-			await this.prompt(message, images);
+			const response = await this.sendRpc(createPromptAndWaitCommand(message, images), id);
+			if (!response.success) {
+				throw new Error(response.error);
+			}
 			await wait.promise;
 			return await this.getLastAssistantText();
 		} catch (error: unknown) {
@@ -153,21 +188,25 @@ export class DaemonClient {
 		}
 	}
 
-	private sendRpc(command: RpcCommandBody): Promise<RpcResponse> {
-		return this.send(command) as Promise<RpcResponse>;
+	private sendRpc(command: RpcCommandBody, id?: string): Promise<RpcResponse> {
+		return this.send(command, id) as Promise<RpcResponse>;
 	}
 
 	private sendAdmin(command: DaemonAdminCommandBody): Promise<DaemonAdminResponse> {
 		return this.send(command) as Promise<DaemonAdminResponse>;
 	}
 
-	private send(command: RpcCommandBody | DaemonAdminCommandBody): Promise<DaemonClientResponse> {
+	private createRequestId(): string {
+		return `daemon_req_${++this.requestId}`;
+	}
+
+	private send(command: RpcCommandBody | DaemonAdminCommandBody, requestId?: string): Promise<DaemonClientResponse> {
 		const socket = this.socket;
 		if (!socket || socket.destroyed || !socket.writable) {
 			throw this.socketError ?? new Error("Daemon client is not connected");
 		}
 
-		const id = `daemon_req_${++this.requestId}`;
+		const id = requestId ?? this.createRequestId();
 		const fullCommand = { ...command, id };
 
 		return new Promise((resolve, reject) => {
@@ -221,22 +260,45 @@ export class DaemonClient {
 		}
 	}
 
-	private waitForAgentEnd(timeoutMs: number): { promise: Promise<void>; cancel: () => void } {
+	private waitForDaemonPromptDone(id: string, timeoutMs: number): { promise: Promise<void>; cancel: () => void } {
 		let unsubscribe = () => {};
 		let timeout: ReturnType<typeof setTimeout> | undefined;
+		let onClose = (_error: Error) => {};
+		let settled = false;
+		const cleanup = () => {
+			if (timeout) {
+				clearTimeout(timeout);
+			}
+			unsubscribe();
+			this.pendingWaits.delete(onClose);
+		};
 		const promise = new Promise<void>((resolve, reject) => {
-			timeout = setTimeout(() => {
-				unsubscribe();
-				reject(new Error("Timeout waiting for daemon agent to become idle"));
-			}, timeoutMs);
-			unsubscribe = this.onEvent((event) => {
-				if (getRecordType(event) !== "agent_end") {
+			const rejectOnce = (error: Error) => {
+				if (settled) {
 					return;
 				}
-				if (timeout) {
-					clearTimeout(timeout);
+				settled = true;
+				cleanup();
+				reject(error);
+			};
+			onClose = rejectOnce;
+			this.pendingWaits.add(onClose);
+			timeout = setTimeout(() => {
+				rejectOnce(new Error("Timeout waiting for daemon agent to become idle"));
+			}, timeoutMs);
+			unsubscribe = this.onEvent((event) => {
+				if (!isDaemonPromptDoneEvent(event) || event.id !== id) {
+					return;
 				}
-				unsubscribe();
+				if (settled) {
+					return;
+				}
+				if (event.error) {
+					rejectOnce(new Error(event.error));
+					return;
+				}
+				settled = true;
+				cleanup();
 				resolve();
 			});
 		});
@@ -244,10 +306,11 @@ export class DaemonClient {
 		return {
 			promise,
 			cancel: () => {
-				if (timeout) {
-					clearTimeout(timeout);
+				if (settled) {
+					return;
 				}
-				unsubscribe();
+				settled = true;
+				cleanup();
 			},
 		};
 	}
@@ -257,6 +320,35 @@ export class DaemonClient {
 			pending.reject(error);
 		}
 		this.pendingRequests.clear();
+	}
+
+	private rejectPendingWaits(error: Error): void {
+		for (const reject of this.pendingWaits) {
+			reject(error);
+		}
+		this.pendingWaits.clear();
+	}
+
+	private assertPrivateSocketDir(): void {
+		if (process.platform === "win32" || !this.socketDir) {
+			return;
+		}
+		let stats: ReturnType<typeof statSync>;
+		try {
+			stats = statSync(this.socketDir);
+		} catch {
+			return;
+		}
+		if (!stats.isDirectory()) {
+			throw new Error(`Daemon socket directory is not a directory: ${this.socketDir}`);
+		}
+		const currentUid = process.getuid?.();
+		if (currentUid !== undefined && stats.uid !== currentUid) {
+			throw new Error(`Daemon socket directory is not owned by the current user: ${this.socketDir}`);
+		}
+		if ((stats.mode & 0o077) !== 0) {
+			throw new Error(`Daemon socket directory is not private: ${this.socketDir}`);
+		}
 	}
 
 	private getRpcData<T>(response: RpcResponse): T {

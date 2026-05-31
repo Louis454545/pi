@@ -25,6 +25,43 @@ interface PendingForward {
 	originalId: string;
 }
 
+interface PendingPromptCompletion {
+	client: ClientConnection;
+	originalId: string;
+}
+
+const RPC_COMMAND_TYPES = new Set<string>([
+	"prompt",
+	"steer",
+	"follow_up",
+	"abort",
+	"new_session",
+	"get_state",
+	"set_model",
+	"cycle_model",
+	"get_available_models",
+	"set_thinking_level",
+	"cycle_thinking_level",
+	"set_steering_mode",
+	"set_follow_up_mode",
+	"compact",
+	"set_auto_compaction",
+	"set_auto_retry",
+	"abort_retry",
+	"bash",
+	"abort_bash",
+	"get_session_stats",
+	"export_html",
+	"switch_session",
+	"fork",
+	"clone",
+	"get_fork_messages",
+	"get_last_assistant_text",
+	"set_session_name",
+	"get_messages",
+	"get_commands",
+]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
@@ -44,6 +81,27 @@ function getCommandName(value: unknown): string {
 function isDaemonAdminCommand(value: unknown): value is DaemonAdminCommand {
 	const type = getRecordType(value);
 	return type === "daemon_status" || type === "daemon_shutdown";
+}
+
+export function shouldRewriteClientMessageForRpc(value: unknown): boolean {
+	const type = getRecordType(value);
+	return type !== undefined && RPC_COMMAND_TYPES.has(type) && getRecordId(value) !== undefined;
+}
+
+function isSuccessfulPromptResponse(value: unknown): boolean {
+	return isRecord(value) && value.type === "response" && value.command === "prompt" && value.success === true;
+}
+
+function isPromptCompleteEvent(value: unknown): boolean {
+	return getRecordType(value) === "prompt_complete";
+}
+
+function getPromptCompleteError(value: unknown): string | undefined {
+	return isRecord(value) && typeof value.error === "string" ? value.error : undefined;
+}
+
+export function shouldTrackPromptCompletion(value: unknown): boolean {
+	return isRecord(value) && value.type === "prompt" && value.daemonAwaitCompletion === true;
 }
 
 function createCliInvocation(args: string[]): { command: string; args: string[] } {
@@ -127,7 +185,12 @@ export async function runDaemonServer(options: DaemonServerOptions = {}): Promis
 	const paths = options.paths ?? getDaemonPaths();
 	const agentArgs = options.agentArgs ?? [];
 
-	mkdirSync(paths.agentDir, { recursive: true, mode: 0o700 });
+	mkdirSync(paths.daemonDir, { recursive: true, mode: 0o700 });
+	if (process.platform !== "win32") {
+		chmodSync(paths.daemonDir, 0o700);
+		mkdirSync(paths.socketDir, { recursive: true, mode: 0o700 });
+		chmodSync(paths.socketDir, 0o700);
+	}
 
 	if (process.platform !== "win32" && existsSync(paths.socketPath)) {
 		if (await canConnect(paths.socketPath, 250)) {
@@ -145,6 +208,7 @@ export async function runDaemonServer(options: DaemonServerOptions = {}): Promis
 	let server: Server | undefined;
 	const clients = new Set<ClientConnection>();
 	const pendingForwards = new Map<string, PendingForward>();
+	const promptForwards = new Map<string, PendingPromptCompletion>();
 
 	const getStatus = (): DaemonStatus => {
 		const status: DaemonStatus = {
@@ -174,6 +238,7 @@ export async function runDaemonServer(options: DaemonServerOptions = {}): Promis
 		for (const [forwardedId, pending] of pendingForwards.entries()) {
 			if (pending.client === client) {
 				pendingForwards.delete(forwardedId);
+				promptForwards.delete(forwardedId);
 			}
 		}
 	};
@@ -195,10 +260,30 @@ export async function runDaemonServer(options: DaemonServerOptions = {}): Promis
 			const pending = forwardedId ? pendingForwards.get(forwardedId) : undefined;
 			if (forwardedId && pending && isRecord(parsed)) {
 				pendingForwards.delete(forwardedId);
+				const pendingPrompt = promptForwards.get(forwardedId);
+				if (pendingPrompt && !isSuccessfulPromptResponse(parsed)) {
+					promptForwards.delete(forwardedId);
+				}
 				writeJson(pending.client.socket, { ...parsed, id: pending.originalId });
 				return;
 			}
 			if (forwardedId?.startsWith("daemon_")) {
+				return;
+			}
+		}
+
+		if (isPromptCompleteEvent(parsed)) {
+			const forwardedId = getRecordId(parsed);
+			const pendingPrompt = forwardedId ? promptForwards.get(forwardedId) : undefined;
+			if (forwardedId?.startsWith("daemon_")) {
+				if (pendingPrompt) {
+					promptForwards.delete(forwardedId);
+					writeJson(pendingPrompt.client.socket, {
+						type: "daemon_prompt_done",
+						id: pendingPrompt.originalId,
+						error: getPromptCompleteError(parsed),
+					});
+				}
 				return;
 			}
 		}
@@ -319,10 +404,14 @@ export async function runDaemonServer(options: DaemonServerOptions = {}): Promis
 		}
 
 		const originalId = getRecordId(parsed);
-		if (originalId) {
+		if (originalId && shouldRewriteClientMessageForRpc(parsed)) {
 			const forwardedId = `daemon_${client.id}_${++nextForwardId}`;
 			pendingForwards.set(forwardedId, { client, originalId });
-			child.stdin.write(serializeJsonLine({ ...parsed, id: forwardedId }));
+			if (shouldTrackPromptCompletion(parsed)) {
+				promptForwards.set(forwardedId, { client, originalId });
+			}
+			const { daemonAwaitCompletion: _, ...forwardedCommand } = parsed;
+			child.stdin.write(serializeJsonLine({ ...forwardedCommand, id: forwardedId }));
 			return;
 		}
 

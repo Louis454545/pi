@@ -10,6 +10,7 @@ import {
 	type Model,
 } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PromptOptions } from "../src/core/agent-session.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -91,11 +92,20 @@ function getPromptResponses(outputLines: string[], id: string): ParsedOutputLine
 	);
 }
 
+function getPromptCompleteEvents(outputLines: string[], id: string): ParsedOutputLine[] {
+	return parseOutputLines(outputLines).filter((record) => record.id === id && record.type === "prompt_complete");
+}
+
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: number; model?: Model<any> }): {
+function createRuntimeHost(options: {
+	withAuth: boolean;
+	responseDelayMs: number;
+	model?: Model<any>;
+	promptRejectAfterPreflight?: string;
+}): {
 	runtimeHost: AgentSessionRuntime;
 	cleanup: () => Promise<void>;
 } {
@@ -142,6 +152,12 @@ function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: number
 		modelRegistry,
 		resourceLoader: createTestResourceLoader(),
 	});
+	if (options.promptRejectAfterPreflight) {
+		session.prompt = vi.fn(async (_text: string, promptOptions?: PromptOptions) => {
+			promptOptions?.preflightResult?.(true);
+			throw new Error(options.promptRejectAfterPreflight);
+		});
+	}
 
 	const runtimeHost = {
 		session,
@@ -170,7 +186,12 @@ function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: number
 	};
 }
 
-async function startRpcMode(options: { withAuth: boolean; responseDelayMs: number; model?: Model<any> }): Promise<{
+async function startRpcMode(options: {
+	withAuth: boolean;
+	responseDelayMs: number;
+	model?: Model<any>;
+	promptRejectAfterPreflight?: string;
+}): Promise<{
 	lineHandler: (line: string) => void;
 	cleanup: () => Promise<void>;
 }> {
@@ -243,6 +264,40 @@ describe("RPC prompt response semantics", () => {
 					type: "response",
 					command: "prompt",
 					success: true,
+				});
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("emits prompt completion with an error when prompt fails after preflight succeeds", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({
+			withAuth: true,
+			responseDelayMs: 0,
+			promptRejectAfterPreflight: "model failed",
+		});
+
+		try {
+			lineHandler(JSON.stringify({ id: "b2-error", type: "prompt", message: "Hello" }));
+
+			await vi.waitFor(() => {
+				const responses = getPromptResponses(rpcIo.outputLines, "b2-error");
+				expect(responses).toHaveLength(1);
+				expect(responses[0]).toMatchObject({
+					id: "b2-error",
+					type: "response",
+					command: "prompt",
+					success: true,
+				});
+			});
+			await vi.waitFor(() => {
+				const completeEvents = getPromptCompleteEvents(rpcIo.outputLines, "b2-error");
+				expect(completeEvents).toHaveLength(1);
+				expect(completeEvents[0]).toMatchObject({
+					id: "b2-error",
+					type: "prompt_complete",
+					error: "model failed",
 				});
 			});
 		} finally {

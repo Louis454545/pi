@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { DaemonClient } from "../src/daemon/client.ts";
 import { parseDaemonCommand } from "../src/daemon/command.ts";
+import { getDaemonPaths } from "../src/daemon/paths.ts";
+import { shouldRewriteClientMessageForRpc, shouldTrackPromptCompletion } from "../src/daemon/server.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "../src/modes/rpc/jsonl.ts";
 
 const servers: Server[] = [];
@@ -44,6 +46,22 @@ afterEach(async () => {
 });
 
 describe("DaemonClient", () => {
+	test("rejects pending requests when closed", async () => {
+		const socketPath = makeSocketPath();
+		const server = createServer((socket) => {
+			const detach = attachJsonlLineReader(socket, () => {});
+			socket.on("close", detach);
+		});
+		await listen(server, socketPath);
+
+		const client = new DaemonClient({ socketPath, requestTimeoutMs: 1000 });
+		await client.connect();
+		const pending = client.getStatus();
+		client.close();
+
+		await expect(pending).rejects.toThrow("Daemon client closed");
+	});
+
 	test("uses daemon admin and RPC commands over the socket", async () => {
 		const socketPath = makeSocketPath();
 		const server = createServer((socket) => {
@@ -67,6 +85,7 @@ describe("DaemonClient", () => {
 				} else if (command.type === "prompt") {
 					write(socket, { id: command.id, type: "response", command: "prompt", success: true });
 					write(socket, { type: "agent_end" });
+					write(socket, { type: "daemon_prompt_done", id: command.id });
 				} else if (command.type === "get_last_assistant_text") {
 					write(socket, {
 						id: command.id,
@@ -89,6 +108,150 @@ describe("DaemonClient", () => {
 		} finally {
 			client.close();
 		}
+	});
+
+	test("waits for the daemon prompt completion event for the submitted prompt", async () => {
+		const socketPath = makeSocketPath();
+		let requestedLastText = false;
+		const server = createServer((socket) => {
+			const detach = attachJsonlLineReader(socket, (line) => {
+				const command = JSON.parse(line) as Record<string, unknown>;
+				if (command.type === "prompt") {
+					write(socket, { id: command.id, type: "response", command: "prompt", success: true });
+					write(socket, { type: "agent_end" });
+					setTimeout(() => write(socket, { type: "daemon_prompt_done", id: command.id }), 25);
+				} else if (command.type === "get_last_assistant_text") {
+					requestedLastText = true;
+					write(socket, {
+						id: command.id,
+						type: "response",
+						command: "get_last_assistant_text",
+						success: true,
+						data: { text: "own prompt" },
+					});
+				}
+			});
+			socket.on("close", detach);
+		});
+		await listen(server, socketPath);
+
+		const client = new DaemonClient({ socketPath, requestTimeoutMs: 1000 });
+		await client.connect();
+		try {
+			await expect(client.promptAndWaitText("hello", undefined, 1000)).resolves.toBe("own prompt");
+			expect(requestedLastText).toBe(true);
+		} finally {
+			client.close();
+		}
+	});
+
+	test("handles prompts that complete without an agent_end event", async () => {
+		const socketPath = makeSocketPath();
+		const server = createServer((socket) => {
+			const detach = attachJsonlLineReader(socket, (line) => {
+				const command = JSON.parse(line) as Record<string, unknown>;
+				if (command.type === "prompt") {
+					write(socket, { id: command.id, type: "response", command: "prompt", success: true });
+					write(socket, { type: "daemon_prompt_done", id: command.id });
+				} else if (command.type === "get_last_assistant_text") {
+					write(socket, {
+						id: command.id,
+						type: "response",
+						command: "get_last_assistant_text",
+						success: true,
+						data: { text: null },
+					});
+				}
+			});
+			socket.on("close", detach);
+		});
+		await listen(server, socketPath);
+
+		const client = new DaemonClient({ socketPath, requestTimeoutMs: 1000 });
+		await client.connect();
+		try {
+			await expect(client.promptAndWaitText("/handled", undefined, 1000)).resolves.toBeNull();
+		} finally {
+			client.close();
+		}
+	});
+
+	test("rejects prompt waits when the daemon socket closes before completion", async () => {
+		const socketPath = makeSocketPath();
+		const server = createServer((socket) => {
+			const detach = attachJsonlLineReader(socket, (line) => {
+				const command = JSON.parse(line) as Record<string, unknown>;
+				if (command.type === "prompt") {
+					write(socket, { id: command.id, type: "response", command: "prompt", success: true });
+					setTimeout(() => socket.destroy(), 10);
+				}
+			});
+			socket.on("close", detach);
+		});
+		await listen(server, socketPath);
+
+		const client = new DaemonClient({ socketPath, requestTimeoutMs: 1000 });
+		await client.connect();
+		try {
+			await expect(client.promptAndWaitText("hello", undefined, 1000)).rejects.toThrow("Daemon socket closed");
+		} finally {
+			client.close();
+		}
+	});
+
+	test("rejects prompt waits when daemon completion reports an error", async () => {
+		const socketPath = makeSocketPath();
+		const server = createServer((socket) => {
+			const detach = attachJsonlLineReader(socket, (line) => {
+				const command = JSON.parse(line) as Record<string, unknown>;
+				if (command.type === "prompt") {
+					write(socket, { id: command.id, type: "response", command: "prompt", success: true });
+					write(socket, { type: "daemon_prompt_done", id: command.id, error: "model failed" });
+				}
+			});
+			socket.on("close", detach);
+		});
+		await listen(server, socketPath);
+
+		const client = new DaemonClient({ socketPath, requestTimeoutMs: 1000 });
+		await client.connect();
+		try {
+			await expect(client.promptAndWaitText("hello", undefined, 1000)).rejects.toThrow("model failed");
+		} finally {
+			client.close();
+		}
+	});
+});
+
+describe("daemon paths", () => {
+	test.runIf(process.platform !== "win32")("uses a short runtime path for the Unix socket", () => {
+		const agentDir = join("/tmp", "pi-daemon-path-test", "nested".repeat(30));
+		const paths = getDaemonPaths(agentDir);
+		expect(paths.daemonDir).toBe(join(agentDir, "daemon"));
+		expect(paths.socketDir).not.toBe(paths.daemonDir);
+		expect(paths.socketPath).toBe(join(paths.socketDir, "daemon.sock"));
+		expect(paths.socketPath.length).toBeLessThan(100);
+		expect(paths.stateFile).toBe(join(agentDir, "daemon", "daemon.json"));
+		expect(paths.logFile).toBe(join(agentDir, "daemon", "daemon.log"));
+	});
+});
+
+describe("daemon RPC proxy routing", () => {
+	test("rewrites RPC command ids but not extension UI response ids", () => {
+		expect(shouldRewriteClientMessageForRpc({ id: "cmd_1", type: "prompt", message: "hi" })).toBe(true);
+		expect(shouldRewriteClientMessageForRpc({ id: "ui_1", type: "extension_ui_response", value: "ok" })).toBe(false);
+	});
+
+	test("tracks only daemon prompt calls that ask for completion", () => {
+		expect(
+			shouldTrackPromptCompletion({
+				id: "cmd_1",
+				type: "prompt",
+				message: "hi",
+				daemonAwaitCompletion: true,
+			}),
+		).toBe(true);
+		expect(shouldTrackPromptCompletion({ id: "cmd_1", type: "prompt", message: "hi" })).toBe(false);
 	});
 });
 

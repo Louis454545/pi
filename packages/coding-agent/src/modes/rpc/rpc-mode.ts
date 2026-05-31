@@ -402,10 +402,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 							}
 						},
 					})
-					.catch((e) => {
-						if (!preflightSucceeded) {
-							output(error(id, "prompt", e.message));
+					.then(() => {
+						if (preflightSucceeded) {
+							output({ id, type: "prompt_complete" });
 						}
+					})
+					.catch((e: unknown) => {
+						const message = e instanceof Error ? e.message : String(e);
+						if (!preflightSucceeded) {
+							output(error(id, "prompt", message));
+							return;
+						}
+						output({ id, type: "prompt_complete", error: message });
 					});
 				return undefined;
 			}
