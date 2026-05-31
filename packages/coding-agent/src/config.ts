@@ -439,6 +439,21 @@ export function getBundledInteractiveAssetPath(name: string): string {
 	return join(getInteractiveAssetsDir(), name);
 }
 
+/**
+ * Get path to the bundled browser-harness skill checkout.
+ * - For Bun binary: browser-harness/ next to executable
+ * - For Node.js (dist/): dist/browser-harness/
+ * - For tsx (src/): src/browser-harness/
+ */
+export function getBundledBrowserHarnessDir(): string {
+	if (isBunBinary) {
+		return join(getPackageDir(), "browser-harness");
+	}
+	const packageDir = getPackageDir();
+	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
+	return join(packageDir, srcOrDist, "browser-harness");
+}
+
 // =============================================================================
 // App Config (from package.json piConfig)
 // =============================================================================

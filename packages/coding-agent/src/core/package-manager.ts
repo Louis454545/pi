@@ -27,7 +27,7 @@ import type { Readable } from "node:stream";
 import { globSync } from "glob";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
-import { CONFIG_DIR_NAME } from "../config.ts";
+import { CONFIG_DIR_NAME, getBundledBrowserHarnessDir } from "../config.ts";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
@@ -169,8 +169,10 @@ interface ResourceAccumulator {
  *   2  user + settings entry (source: "local", scope: "user")
  *   3  user + auto-discovered (source: "auto", scope: "user")
  *   4  package resource (origin: "package")
+ *   5  bundled default resource
  */
 function resourcePrecedenceRank(m: PathMetadata): number {
+	if (m.source === "bundled") return 5;
 	if (m.origin === "package") return 4;
 	const scopeBase = m.scope === "project" ? 0 : 2;
 	return scopeBase + (m.source === "local" ? 0 : 1);
@@ -910,6 +912,7 @@ export class DefaultPackageManager implements PackageManager {
 		}
 
 		this.addAutoDiscoveredResources(accumulator, globalSettings, projectSettings, globalBaseDir, projectBaseDir);
+		this.addBundledResources(accumulator, globalSettings, projectSettings);
 
 		return this.toResolvedPaths(accumulator);
 	}
@@ -2352,6 +2355,32 @@ export class DefaultPackageManager implements PackageManager {
 			userOverrides.themes,
 			globalBaseDir,
 		);
+	}
+
+	private addBundledResources(
+		accumulator: ResourceAccumulator,
+		globalSettings: ReturnType<SettingsManager["getGlobalSettings"]>,
+		projectSettings: ReturnType<SettingsManager["getProjectSettings"]>,
+	): void {
+		const browserHarnessDir = getBundledBrowserHarnessDir();
+		const browserSkill = join(browserHarnessDir, "SKILL.md");
+		if (!existsSync(browserSkill)) {
+			return;
+		}
+
+		const metadata: PathMetadata = {
+			source: "bundled",
+			scope: "temporary",
+			origin: "top-level",
+			baseDir: browserHarnessDir,
+		};
+		const overrides = [
+			...((projectSettings.skills ?? []) as string[]),
+			...((globalSettings.skills ?? []) as string[]),
+		];
+		const disablesBrowserByName = overrides.some((pattern) => pattern === "-browser" || pattern === "!browser");
+		const enabled = !disablesBrowserByName && isEnabledByOverrides(browserSkill, overrides, browserHarnessDir);
+		this.addResource(accumulator.skills, browserSkill, metadata, enabled);
 	}
 
 	private collectFilesFromPaths(paths: string[], resourceType: ResourceType): string[] {

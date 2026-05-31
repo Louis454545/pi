@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getBundledBrowserHarnessDir } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
@@ -56,6 +57,43 @@ Skill content here.`,
 
 			const { skills } = loader.getSkills();
 			expect(skills.some((s) => s.name === "test-skill")).toBe(true);
+		});
+
+		it("should load the bundled browser skill by default", async () => {
+			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			await loader.reload();
+
+			const { skills } = loader.getSkills();
+			const browser = skills.find((s) => s.name === "browser");
+			expect(browser).toBeDefined();
+			expect(browser?.filePath).toBe(join(getBundledBrowserHarnessDir(), "SKILL.md"));
+			expect(browser?.sourceInfo.source).toBe("bundled");
+		});
+
+		it("should let settings disable the bundled browser skill", async () => {
+			const settingsManager = SettingsManager.inMemory();
+			settingsManager.setSkillPaths(["-browser"]);
+
+			const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+			await loader.reload();
+
+			const { skills } = loader.getSkills();
+			expect(skills.some((s) => s.name === "browser")).toBe(false);
+		});
+
+		it("should prefer user browser skill over the bundled browser skill", async () => {
+			const userSkillDir = join(agentDir, "skills", "browser");
+			mkdirSync(userSkillDir, { recursive: true });
+			const userSkillPath = join(userSkillDir, "SKILL.md");
+			writeFileSync(userSkillPath, "---\nname: browser\ndescription: User browser\n---\nUser browser skill");
+
+			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			await loader.reload();
+
+			const { skills } = loader.getSkills();
+			const browser = skills.find((s) => s.name === "browser");
+			expect(browser?.filePath).toBe(userSkillPath);
+			expect(browser?.sourceInfo.source).toBe("auto");
 		});
 
 		it("should ignore extra markdown files in auto-discovered skill dirs", async () => {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getBundledBrowserHarnessDir } from "../src/config.ts";
 import { DefaultPackageManager, type ProgressEvent, type ResolvedResource } from "../src/core/package-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
@@ -92,9 +93,20 @@ describe("DefaultPackageManager", () => {
 			expect(result.extensions).toEqual([]);
 			expect(result.prompts).toEqual([]);
 			expect(result.themes).toEqual([]);
-			expect(result.skills.every((r) => r.metadata.source === "auto" && r.metadata.origin === "top-level")).toBe(
-				true,
-			);
+			expect(result.skills.every((r) => r.metadata.origin === "top-level")).toBe(true);
+			const bundledBrowser = result.skills.find((r) => r.path === join(getBundledBrowserHarnessDir(), "SKILL.md"));
+			expect(bundledBrowser?.metadata.source).toBe("bundled");
+			expect(bundledBrowser?.metadata.origin).toBe("top-level");
+		});
+
+		it("should allow settings to disable the bundled browser skill", async () => {
+			settingsManager.setSkillPaths(["-browser"]);
+
+			const result = await packageManager.resolve();
+
+			expect(
+				result.skills.some((r) => r.path === join(getBundledBrowserHarnessDir(), "SKILL.md") && !r.enabled),
+			).toBe(true);
 		});
 
 		it("should resolve local extension paths from settings", async () => {
@@ -209,17 +221,10 @@ Content`,
 
 				const result = await packageManager.resolve();
 
-				expect({
-					extensions: result.extensions.length,
-					skills: result.skills.length,
-					prompts: result.prompts.length,
-					themes: result.themes.length,
-				}).toEqual({
-					extensions: 1,
-					skills: 1,
-					prompts: 1,
-					themes: 1,
-				});
+				expect(result.extensions).toHaveLength(1);
+				expect(result.skills.filter((r) => pathEndsWith(r.path, "shared-skill/SKILL.md"))).toHaveLength(1);
+				expect(result.prompts).toHaveLength(1);
+				expect(result.themes).toHaveLength(1);
 
 				// Project auto-discovered has higher precedence than user auto-discovered,
 				// so the surviving entry should be scoped to project.

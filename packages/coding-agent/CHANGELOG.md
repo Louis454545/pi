@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added bundled browser-harness as a default `browser` skill.
 - Added a built-in `reload` tool so the agent can reload runtime resources after modifying agent-affecting files.
 - Added background Bash tasks with completion notifications and a `task_stop` tool for stopping running background commands.
 - Added a `monitor` tool for background commands that stream line-based events into the conversation while writing output to a file.
