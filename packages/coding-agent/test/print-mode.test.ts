@@ -19,6 +19,7 @@ type FakeSession = {
 	subscribe: ReturnType<typeof vi.fn>;
 	prompt: ReturnType<typeof vi.fn>;
 	reload: ReturnType<typeof vi.fn>;
+	waitForBackgroundTasks: ReturnType<typeof vi.fn>;
 };
 
 type FakeRuntimeHost = {
@@ -72,6 +73,7 @@ function createRuntimeHost(assistantMessage: AssistantMessage): FakeRuntimeHost 
 		subscribe: vi.fn(() => () => {}),
 		prompt: vi.fn(async () => {}),
 		reload: vi.fn(async () => {}),
+		waitForBackgroundTasks: vi.fn(async () => {}),
 	};
 
 	return {
@@ -138,5 +140,20 @@ describe("runPrintMode", () => {
 		expect(errorSpy).toHaveBeenCalledWith("provider failure");
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+	});
+
+	it("does not wait for background tasks before printing the final response", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
+		const { session } = runtimeHost;
+		session.waitForBackgroundTasks = vi.fn(() => new Promise<void>(() => {}));
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+			initialMessage: "Start a server",
+		});
+
+		expect(exitCode).toBe(0);
+		expect(session.prompt).toHaveBeenCalledWith("Start a server", { images: undefined });
+		expect(session.waitForBackgroundTasks).not.toHaveBeenCalled();
 	});
 });
