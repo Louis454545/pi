@@ -24,6 +24,10 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+	run_in_background: Type.Optional(
+		Type.Boolean({ description: "Start the command in the background and return immediately" }),
+	),
+	description: Type.Optional(Type.String({ description: "Short description for background task notifications" })),
 });
 
 export type BashToolInput = Static<typeof bashSchema>;
@@ -31,6 +35,10 @@ export type BashToolInput = Static<typeof bashSchema>;
 export interface BashToolDetails {
 	truncation?: TruncationResult;
 	fullOutputPath?: string;
+	backgroundTask?: {
+		taskId: string;
+		outputFile: string;
+	};
 }
 
 /**
@@ -133,6 +141,21 @@ export interface BashSpawnContext {
 
 export type BashSpawnHook = (context: BashSpawnContext) => BashSpawnContext;
 
+export interface BashBackgroundTaskStartInput extends BashSpawnContext {
+	toolUseId: string;
+	description: string;
+	timeout?: number;
+	displayCommand: string;
+}
+
+export interface BashBackgroundTaskStartResult {
+	taskId: string;
+	outputFile: string;
+	message: string;
+}
+
+export type BashBackgroundTaskStarter = (input: BashBackgroundTaskStartInput) => Promise<BashBackgroundTaskStartResult>;
+
 function resolveSpawnContext(command: string, cwd: string, spawnHook?: BashSpawnHook): BashSpawnContext {
 	const baseContext: BashSpawnContext = { command, cwd, env: { ...getShellEnv() } };
 	return spawnHook ? spawnHook(baseContext) : baseContext;
@@ -147,6 +170,8 @@ export interface BashToolOptions {
 	shellPath?: string;
 	/** Hook to adjust command, cwd, or env before execution */
 	spawnHook?: BashSpawnHook;
+	/** Starts a session-managed background task. */
+	startBackgroundTask?: BashBackgroundTaskStarter;
 }
 
 const BASH_PREVIEW_LINES = 5;
@@ -176,12 +201,13 @@ function formatDuration(ms: number): string {
 	return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function formatBashCall(args: { command?: string; timeout?: number } | undefined): string {
+function formatBashCall(args: { command?: string; timeout?: number; run_in_background?: boolean } | undefined): string {
 	const command = str(args?.command);
 	const timeout = args?.timeout as number | undefined;
 	const timeoutSuffix = timeout ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
+	const backgroundSuffix = args?.run_in_background ? theme.fg("muted", " (background)") : "";
 	const commandDisplay = command === null ? invalidArgText(theme) : command ? command : theme.fg("toolOutput", "...");
-	return theme.fg("toolTitle", theme.bold(`$ ${commandDisplay}`)) + timeoutSuffix;
+	return theme.fg("toolTitle", theme.bold(`$ ${commandDisplay}`)) + timeoutSuffix + backgroundSuffix;
 }
 
 function rebuildBashResultRenderComponent(
@@ -273,21 +299,54 @@ export function createBashToolDefinition(
 	const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
 	const commandPrefix = options?.commandPrefix;
 	const spawnHook = options?.spawnHook;
+	const startBackgroundTask = options?.startBackgroundTask;
 	return {
 		name: "bash",
 		label: "bash",
-		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds. Set run_in_background to true for long-running commands that should not block; the tool returns a task id and output file, and a task notification is emitted when it finishes.`,
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
 		parameters: bashSchema,
 		async execute(
 			_toolCallId,
-			{ command, timeout }: { command: string; timeout?: number },
+			{
+				command,
+				timeout,
+				run_in_background,
+				description,
+			}: { command: string; timeout?: number; run_in_background?: boolean; description?: string },
 			signal?: AbortSignal,
 			onUpdate?,
 			_ctx?,
 		) {
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
+			if (run_in_background) {
+				if (!startBackgroundTask) {
+					throw new Error("Background bash execution is not available in this session.");
+				}
+				const task = await startBackgroundTask({
+					...spawnContext,
+					toolUseId: _toolCallId,
+					description: description?.trim() || command,
+					timeout,
+					displayCommand: command,
+				});
+				return {
+					content: [
+						{
+							type: "text",
+							text: `${task.message}\n\nTask id: ${task.taskId}\nOutput file: ${task.outputFile}`,
+						},
+					],
+					details: {
+						backgroundTask: {
+							taskId: task.taskId,
+							outputFile: task.outputFile,
+						},
+						fullOutputPath: task.outputFile,
+					},
+				};
+			}
 			const output = new OutputAccumulator({ tempFilePrefix: "pi-bash" });
 			let updateTimer: NodeJS.Timeout | undefined;
 			let updateDirty = false;

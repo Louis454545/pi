@@ -43,6 +43,13 @@ export {
 	type LsToolOptions,
 } from "./ls.ts";
 export {
+	createMonitorTool,
+	createMonitorToolDefinition,
+	type MonitorToolDetails,
+	type MonitorToolInput,
+	type MonitorToolOptions,
+} from "./monitor.ts";
+export {
 	createReadTool,
 	createReadToolDefinition,
 	type ReadOperations,
@@ -57,6 +64,13 @@ export {
 	type ReloadToolInput,
 	type ReloadToolOptions,
 } from "./reload.ts";
+export {
+	createTaskStopTool,
+	createTaskStopToolDefinition,
+	type TaskStopToolDetails,
+	type TaskStopToolInput,
+	type TaskStopToolOptions,
+} from "./task-stop.ts";
 export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -82,14 +96,27 @@ import { createEditTool, createEditToolDefinition, type EditToolOptions } from "
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
 import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
+import { createMonitorTool, createMonitorToolDefinition, type MonitorToolOptions } from "./monitor.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { createReloadTool, createReloadToolDefinition, type ReloadToolOptions } from "./reload.ts";
+import { createTaskStopTool, createTaskStopToolDefinition, type TaskStopToolOptions } from "./task-stop.ts";
 import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
-export type ToolName = "read" | "bash" | "edit" | "write" | "reload" | "grep" | "find" | "ls";
-export const allToolNames: Set<ToolName> = new Set(["read", "bash", "edit", "write", "reload", "grep", "find", "ls"]);
+export type ToolName = "read" | "bash" | "edit" | "write" | "reload" | "task_stop" | "monitor" | "grep" | "find" | "ls";
+export const allToolNames: Set<ToolName> = new Set([
+	"read",
+	"bash",
+	"edit",
+	"write",
+	"reload",
+	"task_stop",
+	"monitor",
+	"grep",
+	"find",
+	"ls",
+]);
 
 export interface ToolsOptions {
 	read?: ReadToolOptions;
@@ -97,6 +124,8 @@ export interface ToolsOptions {
 	write?: WriteToolOptions;
 	edit?: EditToolOptions;
 	reload?: ReloadToolOptions;
+	taskStop?: TaskStopToolOptions;
+	monitor?: MonitorToolOptions;
 	grep?: GrepToolOptions;
 	find?: FindToolOptions;
 	ls?: LsToolOptions;
@@ -114,6 +143,10 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createWriteToolDefinition(cwd, options?.write);
 		case "reload":
 			return createReloadToolDefinition(cwd, options?.reload);
+		case "task_stop":
+			return createTaskStopToolDefinition(cwd, options?.taskStop);
+		case "monitor":
+			return createMonitorToolDefinition(cwd, options?.monitor);
 		case "grep":
 			return createGrepToolDefinition(cwd, options?.grep);
 		case "find":
@@ -137,6 +170,10 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createWriteTool(cwd, options?.write);
 		case "reload":
 			return createReloadTool(cwd, options?.reload);
+		case "task_stop":
+			return createTaskStopTool(cwd, options?.taskStop);
+		case "monitor":
+			return createMonitorTool(cwd, options?.monitor);
 		case "grep":
 			return createGrepTool(cwd, options?.grep);
 		case "find":
@@ -155,6 +192,8 @@ export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions)
 		createEditToolDefinition(cwd, options?.edit),
 		createWriteToolDefinition(cwd, options?.write),
 		createReloadToolDefinition(cwd, options?.reload),
+		createTaskStopToolDefinition(cwd, options?.taskStop),
+		createMonitorToolDefinition(cwd, options?.monitor),
 	];
 }
 
@@ -174,6 +213,8 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		edit: createEditToolDefinition(cwd, options?.edit),
 		write: createWriteToolDefinition(cwd, options?.write),
 		reload: createReloadToolDefinition(cwd, options?.reload),
+		task_stop: createTaskStopToolDefinition(cwd, options?.taskStop),
+		monitor: createMonitorToolDefinition(cwd, options?.monitor),
 		grep: createGrepToolDefinition(cwd, options?.grep),
 		find: createFindToolDefinition(cwd, options?.find),
 		ls: createLsToolDefinition(cwd, options?.ls),
@@ -187,6 +228,8 @@ export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
 		createEditTool(cwd, options?.edit),
 		createWriteTool(cwd, options?.write),
 		createReloadTool(cwd, options?.reload),
+		createTaskStopTool(cwd, options?.taskStop),
+		createMonitorTool(cwd, options?.monitor),
 	];
 }
 
@@ -206,6 +249,8 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		edit: createEditTool(cwd, options?.edit),
 		write: createWriteTool(cwd, options?.write),
 		reload: createReloadTool(cwd, options?.reload),
+		task_stop: createTaskStopTool(cwd, options?.taskStop),
+		monitor: createMonitorTool(cwd, options?.monitor),
 		grep: createGrepTool(cwd, options?.grep),
 		find: createFindTool(cwd, options?.find),
 		ls: createLsTool(cwd, options?.ls),

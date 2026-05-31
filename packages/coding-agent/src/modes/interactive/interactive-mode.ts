@@ -2731,6 +2731,30 @@ export class InteractiveMode {
 				this.updateEditorBorderColor();
 				break;
 
+			case "task_notification":
+				this.addMessageToChat({
+					role: "custom",
+					customType: "task_notification",
+					content: event.xml,
+					display: true,
+					details: event.notification,
+					timestamp: Date.now(),
+				});
+				this.ui.requestRender();
+				break;
+
+			case "monitor_event":
+				this.addMessageToChat({
+					role: "custom",
+					customType: "monitor_event",
+					content: event.xml,
+					display: true,
+					details: event.notification,
+					timestamp: Date.now(),
+				});
+				this.ui.requestRender();
+				break;
+
 			case "message_start":
 				if (event.message.role === "custom") {
 					this.addMessageToChat(event.message);

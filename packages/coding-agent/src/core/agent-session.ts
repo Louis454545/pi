@@ -39,6 +39,16 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
+import {
+	BackgroundTaskManager,
+	type BackgroundTaskNotification,
+	type BackgroundTaskStartInput,
+	type BackgroundTaskStartResult,
+	formatMonitorEventXml,
+	formatTaskNotificationXml,
+	type MonitorEventNotification,
+	type StopBackgroundTaskResult,
+} from "./background-tasks.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
 	type CompactionResult,
@@ -136,6 +146,8 @@ export type AgentSessionEvent =
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| { type: "task_notification"; notification: BackgroundTaskNotification; xml: string }
+	| { type: "monitor_event"; notification: MonitorEventNotification; xml: string }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -286,6 +298,8 @@ export class AgentSession {
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
 	private _pendingBashMessages: BashExecutionMessage[] = [];
+	private _backgroundTaskManager: BackgroundTaskManager;
+	private _taskNotificationContinuation: Promise<void> = Promise.resolve();
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -337,6 +351,10 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._backgroundTaskManager = new BackgroundTaskManager(
+			(notification) => this._handleBackgroundTaskNotification(notification),
+			(notification) => this._handleMonitorEvent(notification),
+		);
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -753,6 +771,7 @@ export class AgentSession {
 			this.abortCompaction();
 			this.abortBranchSummary();
 			this.abortBash();
+			this._backgroundTaskManager.dispose();
 			this.agent.abort();
 		} catch {
 			// Dispose must succeed even if an abort hook throws.
@@ -2418,8 +2437,38 @@ export class AgentSession {
 				)
 			: createAllToolDefinitions(this._cwd, {
 					read: { autoResizeImages },
-					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					bash: {
+						commandPrefix: shellCommandPrefix,
+						shellPath,
+						startBackgroundTask: async (input) =>
+							await this.startBackgroundBashTask({
+								toolUseId: input.toolUseId,
+								command: input.command,
+								displayCommand: input.displayCommand,
+								description: input.description,
+								cwd: input.cwd,
+								env: input.env,
+								timeout: input.timeout,
+								shellPath,
+							}),
+					},
 					reload: { scheduleReload: () => this._scheduleReloadAfterToolTurn() },
+					taskStop: { stopTask: async (taskId) => await this.stopBackgroundTask(taskId) },
+					monitor: {
+						commandPrefix: shellCommandPrefix,
+						shellPath,
+						startMonitorTask: async (input) =>
+							await this.startMonitorTask({
+								toolUseId: input.toolUseId,
+								command: input.command,
+								displayCommand: input.displayCommand,
+								description: input.description,
+								cwd: input.cwd,
+								env: input.env,
+								timeout: input.timeout,
+								shellPath,
+							}),
+					},
 				});
 
 		this._baseToolDefinitions = new Map(
@@ -2448,7 +2497,7 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: ["read", "bash", "edit", "write", "reload"];
+			: ["read", "bash", "edit", "write", "reload", "task_stop", "monitor"];
 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		this._refreshToolRegistry({
 			activeToolNames: baseActiveToolNames,
@@ -2594,6 +2643,92 @@ export class AgentSession {
 	// =========================================================================
 	// Bash Execution
 	// =========================================================================
+
+	async startBackgroundBashTask(input: BackgroundTaskStartInput): Promise<BackgroundTaskStartResult> {
+		return await this._backgroundTaskManager.startBash(input);
+	}
+
+	async startMonitorTask(input: BackgroundTaskStartInput): Promise<BackgroundTaskStartResult> {
+		return await this._backgroundTaskManager.startMonitor(input);
+	}
+
+	async stopBackgroundTask(taskId: string): Promise<StopBackgroundTaskResult> {
+		return await this._backgroundTaskManager.stopTask(taskId);
+	}
+
+	getBackgroundTask(taskId: string) {
+		return this._backgroundTaskManager.getTask(taskId);
+	}
+
+	hasRunningBackgroundTasks(): boolean {
+		return this._backgroundTaskManager.hasRunningTasks();
+	}
+
+	async waitForBackgroundTasks(): Promise<void> {
+		while (this._backgroundTaskManager.hasRunningTasks()) {
+			await this._backgroundTaskManager.waitForAll();
+			await this._taskNotificationContinuation;
+			await this.agent.waitForIdle();
+		}
+		await this._taskNotificationContinuation;
+		await this.agent.waitForIdle();
+	}
+
+	private _handleBackgroundTaskNotification(notification: BackgroundTaskNotification): void {
+		const xml = formatTaskNotificationXml(notification);
+		this._emit({ type: "task_notification", notification, xml });
+		this._queueNotificationMessage("task_notification", xml, notification);
+	}
+
+	private _handleMonitorEvent(notification: MonitorEventNotification): void {
+		const xml = formatMonitorEventXml(notification);
+		this._emit({ type: "monitor_event", notification, xml });
+		this._queueNotificationMessage("monitor_event", xml, notification);
+	}
+
+	private _queueNotificationMessage<TDetails>(customType: string, xml: string, details: TDetails): void {
+		const message = {
+			role: "custom" as const,
+			customType,
+			content: xml,
+			display: false,
+			details,
+			timestamp: Date.now(),
+		} satisfies CustomMessage<TDetails>;
+
+		if (this.isStreaming) {
+			this.agent.steer(message);
+			return;
+		}
+
+		this._taskNotificationContinuation = this._taskNotificationContinuation
+			.then(async () => {
+				if (this.isStreaming) {
+					this.agent.steer(message);
+					return;
+				}
+				if (!this.model || !this._modelRegistry.hasConfiguredAuth(this.model)) {
+					this.agent.state.messages.push(message);
+					this.sessionManager.appendCustomMessageEntry(
+						message.customType,
+						message.content,
+						message.display,
+						message.details,
+					);
+					return;
+				}
+				await this._runAgentPrompt(message);
+			})
+			.catch(() => {
+				this.agent.state.messages.push(message);
+				this.sessionManager.appendCustomMessageEntry(
+					message.customType,
+					message.content,
+					message.display,
+					message.details,
+				);
+			});
+	}
 
 	/**
 	 * Execute a bash command.
