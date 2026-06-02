@@ -2,9 +2,15 @@ import { existsSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, test } from "vitest";
 import { DaemonClient } from "../src/daemon/client.ts";
 import { parseDaemonCommand } from "../src/daemon/command.ts";
+import {
+	getDaemonEscapeAction,
+	getDaemonStreamingAssistantIndex,
+	parseDaemonModelQuery,
+} from "../src/daemon/interactive.ts";
 import { getDaemonPaths } from "../src/daemon/paths.ts";
 import { shouldRewriteClientMessageForRpc, shouldTrackPromptCompletion } from "../src/daemon/server.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "../src/modes/rpc/jsonl.ts";
@@ -32,6 +38,32 @@ async function listen(server: Server, socketPath: string): Promise<void> {
 
 function write(socket: Socket, value: unknown): void {
 	socket.write(serializeJsonLine(value));
+}
+
+function assistantMessage(text: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: 0,
+			},
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
 }
 
 afterEach(async () => {
@@ -162,6 +194,9 @@ describe("DaemonClient", () => {
 					case "bash":
 						success({ output: "ok\n", exitCode: 0, cancelled: false, truncated: false });
 						break;
+					case "abort_compaction":
+						success(undefined);
+						break;
 					case "reload":
 						success(undefined);
 						break;
@@ -177,6 +212,7 @@ describe("DaemonClient", () => {
 			await expect(client.getState()).resolves.toMatchObject({ sessionId: "session-1" });
 			await expect(client.cycleModel("backward")).resolves.toMatchObject({ model: { id: "beta" } });
 			await expect(client.bash("echo ok", { excludeFromContext: true })).resolves.toMatchObject({ output: "ok\n" });
+			await expect(client.abortCompaction()).resolves.toBeUndefined();
 			await expect(client.reload()).resolves.toBeUndefined();
 			client.sendExtensionUiResponse({ type: "extension_ui_response", id: "ui_1", cancelled: true });
 
@@ -189,12 +225,14 @@ describe("DaemonClient", () => {
 				"get_state",
 				"cycle_model",
 				"bash",
+				"abort_compaction",
 				"reload",
 				"extension_ui_response",
 			]);
 			expect(receivedCommands[1]).toMatchObject({ type: "cycle_model", direction: "backward" });
 			expect(receivedCommands[2]).toMatchObject({ type: "bash", command: "echo ok", excludeFromContext: true });
-			expect(receivedCommands[3]).toMatchObject({ type: "reload" });
+			expect(receivedCommands[3]).toMatchObject({ type: "abort_compaction" });
+			expect(receivedCommands[4]).toMatchObject({ type: "reload" });
 		} finally {
 			client.close();
 		}
@@ -329,6 +367,8 @@ describe("daemon paths", () => {
 describe("daemon RPC proxy routing", () => {
 	test("rewrites RPC command ids but not extension UI response ids", () => {
 		expect(shouldRewriteClientMessageForRpc({ id: "cmd_1", type: "prompt", message: "hi" })).toBe(true);
+		expect(shouldRewriteClientMessageForRpc({ id: "cmd_2", type: "reload" })).toBe(true);
+		expect(shouldRewriteClientMessageForRpc({ id: "cmd_3", type: "abort_compaction" })).toBe(true);
 		expect(shouldRewriteClientMessageForRpc({ id: "ui_1", type: "extension_ui_response", value: "ok" })).toBe(false);
 	});
 
@@ -362,5 +402,48 @@ describe("parseDaemonCommand", () => {
 
 	test("parses connect as attach alias", () => {
 		expect(parseDaemonCommand(["daemon", "connect"])).toEqual({ type: "attach" });
+	});
+});
+
+describe("parseDaemonModelQuery", () => {
+	test("preserves slashes after the provider separator", () => {
+		expect(parseDaemonModelQuery("openrouter/moonshotai/kimi-k2.6")).toEqual({
+			provider: "openrouter",
+			modelId: "moonshotai/kimi-k2.6",
+		});
+		expect(parseDaemonModelQuery("@cf/meta/llama-3.1-8b-instruct")).toEqual({
+			provider: "@cf",
+			modelId: "meta/llama-3.1-8b-instruct",
+		});
+	});
+
+	test("ignores incomplete direct model selectors", () => {
+		expect(parseDaemonModelQuery("openrouter")).toBeUndefined();
+		expect(parseDaemonModelQuery("openrouter/")).toBeUndefined();
+		expect(parseDaemonModelQuery("/model")).toBeUndefined();
+	});
+});
+
+describe("daemon attach helpers", () => {
+	test("tracks the latest assistant message as streaming when attaching mid-response", () => {
+		const first = assistantMessage("done");
+		const second = assistantMessage("partial");
+
+		expect(getDaemonStreamingAssistantIndex([first, second], true)).toBe(1);
+		expect(getDaemonStreamingAssistantIndex([first, second], false)).toBe(-1);
+		expect(
+			getDaemonStreamingAssistantIndex(
+				[{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+				true,
+			),
+		).toBe(-1);
+	});
+
+	test("prioritizes Esc cancellation targets before clearing the editor", () => {
+		expect(getDaemonEscapeAction({ isCompacting: true, isStreaming: true }, true, true)).toBe("abort_compaction");
+		expect(getDaemonEscapeAction({ isCompacting: false, isStreaming: true }, true, true)).toBe("abort_retry");
+		expect(getDaemonEscapeAction({ isCompacting: false, isStreaming: true }, false, true)).toBe("abort");
+		expect(getDaemonEscapeAction({ isCompacting: false, isStreaming: false }, false, true)).toBe("abort_bash");
+		expect(getDaemonEscapeAction({ isCompacting: false, isStreaming: false }, false, false)).toBe("clear");
 	});
 });

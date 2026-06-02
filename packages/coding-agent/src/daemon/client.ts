@@ -267,6 +267,13 @@ export class DaemonClient {
 		}
 	}
 
+	async abortCompaction(): Promise<void> {
+		const response = await this.sendRpc({ type: "abort_compaction" });
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
 	async setAutoRetry(enabled: boolean): Promise<void> {
 		const response = await this.sendRpc({ type: "set_auto_retry", enabled });
 		if (!response.success) {

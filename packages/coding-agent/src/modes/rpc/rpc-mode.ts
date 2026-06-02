@@ -536,6 +536,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "set_auto_compaction");
 			}
 
+			case "abort_compaction": {
+				session.abortCompaction();
+				return success(id, "abort_compaction");
+			}
+
 			// =================================================================
 			// Retry
 			// =================================================================

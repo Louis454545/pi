@@ -165,6 +165,51 @@ function getPathCommandArgument(text: string, command: "/export"): string | unde
 	return firstWhitespaceIndex < 0 ? argsString : argsString.slice(0, firstWhitespaceIndex);
 }
 
+export function parseDaemonModelQuery(query: string): { provider: string; modelId: string } | undefined {
+	const separatorIndex = query.indexOf("/");
+	if (separatorIndex <= 0 || separatorIndex === query.length - 1) {
+		return undefined;
+	}
+	return {
+		provider: query.slice(0, separatorIndex),
+		modelId: query.slice(separatorIndex + 1),
+	};
+}
+
+export function getDaemonStreamingAssistantIndex(messages: AgentMessage[], isStreaming: boolean): number {
+	if (!isStreaming) {
+		return -1;
+	}
+	for (let index = messages.length - 1; index >= 0; index--) {
+		if (messages[index]?.role === "assistant") {
+			return index;
+		}
+	}
+	return -1;
+}
+
+export type DaemonEscapeAction = "abort_compaction" | "abort_retry" | "abort" | "abort_bash" | "clear";
+
+export function getDaemonEscapeAction(
+	state: Pick<RpcSessionState, "isCompacting" | "isStreaming"> | undefined,
+	hasRetryLoader: boolean,
+	hasBashComponent: boolean,
+): DaemonEscapeAction {
+	if (state?.isCompacting) {
+		return "abort_compaction";
+	}
+	if (hasRetryLoader) {
+		return "abort_retry";
+	}
+	if (state?.isStreaming) {
+		return "abort";
+	}
+	if (hasBashComponent) {
+		return "abort_bash";
+	}
+	return "clear";
+}
+
 class DaemonFooterComponent implements Component {
 	private cwd: string;
 	private footerData: FooterDataProvider;
@@ -576,17 +621,25 @@ class DaemonInteractiveMode {
 
 	private setupEditorHandlers(): void {
 		this.editor.onEscape = () => {
-			if (this.state?.isStreaming) {
-				void this.client.abort().catch((error: unknown) => this.showError(error));
-				return;
+			switch (getDaemonEscapeAction(this.state, this.retryLoader !== undefined, this.bashComponent !== undefined)) {
+				case "abort_compaction":
+					void this.client.abortCompaction().catch((error: unknown) => this.showError(error));
+					return;
+				case "abort_retry":
+					void this.client.abortRetry().catch((error: unknown) => this.showError(error));
+					return;
+				case "abort":
+					void this.client.abort().catch((error: unknown) => this.showError(error));
+					return;
+				case "abort_bash":
+					void this.client.abortBash().catch((error: unknown) => this.showError(error));
+					return;
+				case "clear":
+					this.editor.setText("");
+					this.isBashMode = false;
+					this.updateEditorBorderColor();
+					return;
 			}
-			if (this.bashComponent) {
-				void this.client.abortBash().catch((error: unknown) => this.showError(error));
-				return;
-			}
-			this.editor.setText("");
-			this.isBashMode = false;
-			this.updateEditorBorderColor();
 		};
 		this.editor.onCtrlD = () => {
 			void this.shutdown();
@@ -690,13 +743,30 @@ class DaemonInteractiveMode {
 		this.chatContainer.clear();
 		this.pendingTools.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
-		for (const message of messages) {
+		const streamingAssistantIndex = getDaemonStreamingAssistantIndex(messages, this.state?.isStreaming === true);
+		for (let index = 0; index < messages.length; index++) {
+			const message = messages[index];
+			if (!message) continue;
 			if (message.role === "assistant") {
-				this.addMessageToChat(message);
+				const isStreamingAssistant = index === streamingAssistantIndex;
+				if (isStreamingAssistant) {
+					this.streamingComponent = new AssistantMessageComponent(
+						undefined,
+						this.hideThinkingBlock,
+						this.getMarkdownThemeWithSettings(),
+					);
+					this.streamingMessage = message;
+					this.chatContainer.addChild(this.streamingComponent);
+					this.streamingComponent.updateContent(this.streamingMessage);
+				} else {
+					this.addMessageToChat(message);
+				}
 				for (const content of message.content) {
 					if (content.type === "toolCall") {
 						const component = this.createToolComponent(content.name, content.id, content.arguments);
-						component.setArgsComplete();
+						if (!isStreamingAssistant) {
+							component.setArgsComplete();
+						}
 						this.chatContainer.addChild(component);
 						if (message.stopReason === "aborted" || message.stopReason === "error") {
 							component.updateResult({
@@ -1566,12 +1636,10 @@ class DaemonInteractiveMode {
 		if (this.availableModels.length === 0) {
 			await this.refreshState();
 		}
-		if (query?.includes("/")) {
-			const [provider, modelId] = query.split("/", 2);
-			if (provider && modelId) {
-				await this.setModel(provider, modelId);
-				return;
-			}
+		const directModel = query ? parseDaemonModelQuery(query) : undefined;
+		if (directModel) {
+			await this.setModel(directModel.provider, directModel.modelId);
+			return;
 		}
 		this.showModelSelector(query);
 	}

@@ -309,6 +309,13 @@ export class RpcClient {
 	}
 
 	/**
+	 * Abort in-progress compaction.
+	 */
+	async abortCompaction(): Promise<void> {
+		await this.send({ type: "abort_compaction" });
+	}
+
+	/**
 	 * Set auto-retry enabled/disabled.
 	 */
 	async setAutoRetry(enabled: boolean): Promise<void> {
