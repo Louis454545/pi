@@ -1,7 +1,35 @@
-import { describe, expect, it } from "vitest";
-import { type FileEntry, migrateSessionEntries } from "../../src/core/session-manager.ts";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { ENV_AGENT_DIR } from "../../src/config.ts";
+import { type FileEntry, migrateSessionEntries, SessionManager } from "../../src/core/session-manager.ts";
 
 describe("migrateSessionEntries", () => {
+	const tempDirs: string[] = [];
+	const previousAgentDir = process.env[ENV_AGENT_DIR];
+
+	afterEach(() => {
+		if (previousAgentDir === undefined) {
+			delete process.env[ENV_AGENT_DIR];
+		} else {
+			process.env[ENV_AGENT_DIR] = previousAgentDir;
+		}
+		while (tempDirs.length > 0) {
+			const tempDir = tempDirs.pop();
+			if (tempDir) {
+				rmSync(tempDir, { recursive: true, force: true });
+			}
+		}
+	});
+
+	function createTempDir(): string {
+		const tempDir = join(tmpdir(), `pi-session-migration-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tempDir, { recursive: true });
+		tempDirs.push(tempDir);
+		return tempDir;
+	}
+
 	it("should add id/parentId to v1 entries", () => {
 		const entries: FileEntry[] = [
 			{ type: "session", id: "sess-1", timestamp: "2025-01-01T00:00:00Z", cwd: "/tmp" },
@@ -74,5 +102,87 @@ describe("migrateSessionEntries", () => {
 		expect((entries[1] as any).id).toBe("abc12345");
 		expect((entries[2] as any).id).toBe("def67890");
 		expect((entries[2] as any).parentId).toBe("abc12345");
+	});
+
+	it("migrates the old default agent/sessions tree before continuing recent sessions", () => {
+		const piHomeDir = createTempDir();
+		const agentDir = join(piHomeDir, "agent");
+		const cwd = join(piHomeDir, "project");
+		mkdirSync(cwd, { recursive: true });
+		process.env[ENV_AGENT_DIR] = agentDir;
+
+		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+		const legacySessionDir = join(agentDir, "sessions", safePath);
+		const newSessionDir = join(piHomeDir, "sessions", safePath);
+		const fileName = "2026-06-02T00-00-00-000Z_legacy.jsonl";
+		const legacySessionFile = join(legacySessionDir, fileName);
+		mkdirSync(legacySessionDir, { recursive: true });
+		writeFileSync(
+			legacySessionFile,
+			`${JSON.stringify({ type: "session", version: 3, id: "legacy", timestamp: "2026-06-02T00:00:00.000Z", cwd })}\n`,
+		);
+
+		const manager = SessionManager.continueRecent(cwd);
+
+		expect(manager.getSessionDir()).toBe(newSessionDir);
+		expect(manager.getSessionFile()).toBe(join(newSessionDir, basename(legacySessionFile)));
+		expect(existsSync(join(newSessionDir, fileName))).toBe(true);
+		expect(existsSync(legacySessionFile)).toBe(false);
+	});
+
+	it("migrates the old default agent/sessions root before listing all sessions", async () => {
+		const piHomeDir = createTempDir();
+		const agentDir = join(piHomeDir, "agent");
+		const cwd = join(piHomeDir, "project");
+		mkdirSync(cwd, { recursive: true });
+		process.env[ENV_AGENT_DIR] = agentDir;
+
+		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+		const legacySessionDir = join(agentDir, "sessions", safePath);
+		const newSessionDir = join(piHomeDir, "sessions", safePath);
+		const fileName = "2026-06-02T00-00-00-000Z_legacy.jsonl";
+		const legacySessionFile = join(legacySessionDir, fileName);
+		mkdirSync(legacySessionDir, { recursive: true });
+		writeFileSync(
+			legacySessionFile,
+			`${JSON.stringify({ type: "session", version: 3, id: "legacy", timestamp: "2026-06-02T00:00:00.000Z", cwd })}\n`,
+		);
+
+		const sessions = await SessionManager.listAll();
+
+		expect(sessions.map((session) => session.path)).toEqual([join(newSessionDir, basename(legacySessionFile))]);
+		expect(existsSync(join(newSessionDir, fileName))).toBe(true);
+		expect(existsSync(legacySessionFile)).toBe(false);
+	});
+
+	it("merges old default session files when the new default cwd directory already exists", async () => {
+		const piHomeDir = createTempDir();
+		const agentDir = join(piHomeDir, "agent");
+		const cwd = join(piHomeDir, "project");
+		mkdirSync(cwd, { recursive: true });
+		process.env[ENV_AGENT_DIR] = agentDir;
+
+		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+		const legacySessionDir = join(agentDir, "sessions", safePath);
+		const newSessionDir = join(piHomeDir, "sessions", safePath);
+		const legacyFileName = "2026-06-02T00-00-00-000Z_legacy.jsonl";
+		const existingFileName = "2026-06-02T00-01-00-000Z_existing.jsonl";
+		const legacySessionFile = join(legacySessionDir, legacyFileName);
+		mkdirSync(legacySessionDir, { recursive: true });
+		mkdirSync(newSessionDir, { recursive: true });
+		writeFileSync(
+			legacySessionFile,
+			`${JSON.stringify({ type: "session", version: 3, id: "legacy", timestamp: "2026-06-02T00:00:00.000Z", cwd })}\n`,
+		);
+		writeFileSync(
+			join(newSessionDir, existingFileName),
+			`${JSON.stringify({ type: "session", version: 3, id: "existing", timestamp: "2026-06-02T00:01:00.000Z", cwd })}\n`,
+		);
+
+		const sessions = await SessionManager.listAll();
+
+		expect(sessions.map((session) => basename(session.path)).sort()).toEqual([legacyFileName, existingFileName]);
+		expect(existsSync(join(newSessionDir, legacyFileName))).toBe(true);
+		expect(existsSync(legacySessionFile)).toBe(false);
 	});
 });

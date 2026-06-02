@@ -10,11 +10,13 @@ import {
 	openSync,
 	readdirSync,
 	readSync,
+	renameSync,
+	rmdirSync,
 	statSync,
 	writeFileSync,
 } from "fs";
 import { readdir, stat } from "fs/promises";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getPiHomeDir, getSessionsDir } from "../config.ts";
@@ -435,14 +437,73 @@ export function buildSessionContext(
  * Compute the default session directory for a cwd.
  * Encodes cwd into a safe directory name under ~/.pi/sessions/.
  */
-function getDefaultSessionDirPath(cwd: string, agentDir: string = getDefaultAgentDir()): string {
+function getSafeSessionPath(cwd: string): string {
 	const resolvedCwd = resolvePath(cwd);
+	return `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+}
+
+function getDefaultSessionDirPath(cwd: string, agentDir: string = getDefaultAgentDir()): string {
 	const resolvedPiHomeDir = resolvePath(getPiHomeDir(agentDir));
-	const safePath = `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-	return join(resolvedPiHomeDir, "sessions", safePath);
+	return join(resolvedPiHomeDir, "sessions", getSafeSessionPath(cwd));
+}
+
+function getLegacyDefaultSessionDirPath(cwd: string, agentDir: string = getDefaultAgentDir()): string {
+	return join(resolvePath(agentDir), "sessions", getSafeSessionPath(cwd));
+}
+
+function moveLegacySessionTree(sourceDir: string, targetDir: string): void {
+	if (!existsSync(targetDir)) {
+		mkdirSync(dirname(targetDir), { recursive: true });
+		renameSync(sourceDir, targetDir);
+		return;
+	}
+
+	mkdirSync(targetDir, { recursive: true });
+	for (const name of readdirSync(sourceDir)) {
+		const source = join(sourceDir, name);
+		const target = join(targetDir, name);
+		if (!existsSync(target)) {
+			renameSync(source, target);
+			continue;
+		}
+
+		if (statSync(source).isDirectory() && statSync(target).isDirectory()) {
+			moveLegacySessionTree(source, target);
+		}
+	}
+	rmdirSync(sourceDir);
+}
+
+export function migrateLegacyDefaultSessionDir(cwd: string, agentDir: string = getDefaultAgentDir()): void {
+	const sessionDir = getDefaultSessionDirPath(cwd, agentDir);
+	const legacySessionDir = getLegacyDefaultSessionDirPath(cwd, agentDir);
+	if (legacySessionDir === sessionDir || !existsSync(legacySessionDir)) {
+		return;
+	}
+
+	try {
+		moveLegacySessionTree(legacySessionDir, sessionDir);
+	} catch {
+		// If migration fails, leave the legacy tree untouched and use the new path.
+	}
+}
+
+export function migrateLegacyDefaultSessionRoot(agentDir: string = getDefaultAgentDir()): void {
+	const sessionsDir = join(resolvePath(getPiHomeDir(agentDir)), "sessions");
+	const legacySessionsDir = join(resolvePath(agentDir), "sessions");
+	if (legacySessionsDir === sessionsDir || !existsSync(legacySessionsDir)) {
+		return;
+	}
+
+	try {
+		moveLegacySessionTree(legacySessionsDir, sessionsDir);
+	} catch {
+		// If migration fails, leave the legacy tree untouched and use the new path.
+	}
 }
 
 export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultAgentDir()): string {
+	migrateLegacyDefaultSessionDir(cwd, agentDir);
 	const sessionDir = getDefaultSessionDirPath(cwd, agentDir);
 	if (!existsSync(sessionDir)) {
 		mkdirSync(sessionDir, { recursive: true });
@@ -1520,6 +1581,7 @@ export class SessionManager {
 			return sessions;
 		}
 
+		migrateLegacyDefaultSessionRoot();
 		const sessionsDir = getSessionsDir();
 
 		try {

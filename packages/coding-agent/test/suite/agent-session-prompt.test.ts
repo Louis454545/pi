@@ -422,4 +422,42 @@ describe("AgentSession prompt characterization", () => {
 		expect(systemPrompts[0]).not.toContain("Second durable fact.");
 		expect(systemPrompts[1]).toContain("Second durable fact.");
 	});
+
+	it("returns refreshed memory context for tool-call continuations", async () => {
+		let memoryPath = "";
+		const harness = await createHarness({
+			tools: [
+				{
+					name: "update_memory",
+					label: "Update Memory",
+					description: "Update global memory",
+					parameters: Type.Object({}),
+					execute: async () => {
+						writeFileSync(memoryPath, "# MEMORY.md\n\nSecond active-loop fact.\n");
+						return {
+							content: [{ type: "text", text: "updated memory" }],
+							details: {},
+						};
+					},
+				},
+			],
+		});
+		harnesses.push(harness);
+		memoryPath = join(harness.tempDir, "MEMORY.md");
+		writeFileSync(memoryPath, "# MEMORY.md\n\nFirst active-loop fact.\n");
+		let continuationSystemPrompt = "";
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("update_memory", {}), { stopReason: "toolUse" }),
+			(context) => {
+				continuationSystemPrompt = context.systemPrompt ?? "";
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		await harness.session.prompt("refresh memory during a tool loop");
+
+		expect(continuationSystemPrompt).toContain("Second active-loop fact.");
+		expect(continuationSystemPrompt).not.toContain("First active-loop fact.");
+	});
 });

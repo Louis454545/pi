@@ -544,17 +544,14 @@ export class AgentSession {
 		this.agent.prepareNextTurn = async (signal?: AbortSignal): Promise<AgentLoopTurnUpdate | undefined> => {
 			this._refreshBaseSystemPrompt(this._lastMemoryQuery);
 			const previousUpdate = await previousPrepareNextTurn?.(signal);
-			if (!this._reloadAfterToolTurn) {
-				return previousUpdate;
-			}
 
+			const shouldReload = this._reloadAfterToolTurn;
 			this._reloadAfterToolTurn = false;
-			if (signal?.aborted) {
-				return previousUpdate;
-			}
 
-			await this.reload();
-			this._refreshBaseSystemPrompt(this._lastMemoryQuery);
+			if (shouldReload && !signal?.aborted) {
+				await this.reload();
+				this._refreshBaseSystemPrompt(this._lastMemoryQuery);
+			}
 			const previousContext = previousUpdate?.context;
 			return {
 				...previousUpdate,

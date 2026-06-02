@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { getPiHomeDir } from "../config.ts";
 
@@ -7,6 +7,8 @@ const MAX_IDENTITY_FILE_CHARS = 12000;
 const MAX_RETRIEVED_MEMORY_CHARS = 12000;
 const MAX_RETRIEVED_FILE_CHARS = 4000;
 const MAX_RETRIEVED_FILES = 3;
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
 
 type IdentityFileName = (typeof IDENTITY_FILE_NAMES)[number];
 
@@ -38,10 +40,34 @@ function formatLocalDate(date: Date): string {
 	return `${year}-${month}-${day}`;
 }
 
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+	return error instanceof Error && "code" in error;
+}
+
+function chmodPrivate(path: string, mode: number): void {
+	try {
+		chmodSync(path, mode);
+	} catch {
+		// Ignore platforms or filesystems that do not support POSIX modes.
+	}
+}
+
+function ensurePrivateDir(path: string): void {
+	mkdirSync(path, { recursive: true, mode: PRIVATE_DIR_MODE });
+	chmodPrivate(path, PRIVATE_DIR_MODE);
+}
+
 function ensureFile(path: string, content: string): void {
 	if (!existsSync(path)) {
-		writeFileSync(path, content);
+		try {
+			writeFileSync(path, content, { flag: "wx", mode: PRIVATE_FILE_MODE });
+		} catch (error) {
+			if (!isErrnoException(error) || error.code !== "EEXIST") {
+				throw error;
+			}
+		}
 	}
+	chmodPrivate(path, PRIVATE_FILE_MODE);
 }
 
 function truncateForPrompt(content: string, maxChars: number): { content: string; truncated: boolean } {
@@ -73,10 +99,11 @@ function defaultIdentityFileContent(name: IdentityFileName): string {
 }
 
 function ensureMemoryHome(piHomeDir: string, now: Date): string {
-	mkdirSync(piHomeDir, { recursive: true });
-	mkdirSync(join(piHomeDir, "memories", "daily"), { recursive: true });
-	mkdirSync(join(piHomeDir, "sessions"), { recursive: true });
-	mkdirSync(join(piHomeDir, "memory-index"), { recursive: true });
+	ensurePrivateDir(piHomeDir);
+	ensurePrivateDir(join(piHomeDir, "memories"));
+	ensurePrivateDir(join(piHomeDir, "memories", "daily"));
+	ensurePrivateDir(join(piHomeDir, "sessions"));
+	ensurePrivateDir(join(piHomeDir, "memory-index"));
 
 	for (const name of IDENTITY_FILE_NAMES) {
 		ensureFile(join(piHomeDir, name), defaultIdentityFileContent(name));

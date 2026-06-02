@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -23,6 +23,10 @@ describe("agent memory prompt context", () => {
 		return tempDir;
 	}
 
+	function modeOf(path: string): number {
+		return statSync(path).mode & 0o777;
+	}
+
 	it("creates global memory files and daily memory under the Pi home", () => {
 		const piHomeDir = createTempDir();
 		const context = loadAgentMemoryPromptContext({
@@ -38,6 +42,16 @@ describe("agent memory prompt context", () => {
 		expect(existsSync(join(piHomeDir, "memories", "daily", "2026-06-01.md"))).toBe(true);
 		expect(existsSync(join(piHomeDir, "sessions"))).toBe(true);
 		expect(existsSync(join(piHomeDir, "memory-index"))).toBe(true);
+		expect(modeOf(piHomeDir)).toBe(0o700);
+		expect(modeOf(join(piHomeDir, "memories"))).toBe(0o700);
+		expect(modeOf(join(piHomeDir, "memories", "daily"))).toBe(0o700);
+		expect(modeOf(join(piHomeDir, "sessions"))).toBe(0o700);
+		expect(modeOf(join(piHomeDir, "memory-index"))).toBe(0o700);
+		expect(modeOf(join(piHomeDir, "SOUL.md"))).toBe(0o600);
+		expect(modeOf(join(piHomeDir, "IDENTITY.md"))).toBe(0o600);
+		expect(modeOf(join(piHomeDir, "USER.md"))).toBe(0o600);
+		expect(modeOf(join(piHomeDir, "MEMORY.md"))).toBe(0o600);
+		expect(modeOf(join(piHomeDir, "memories", "daily", "2026-06-01.md"))).toBe(0o600);
 		expect(context.identitySection).toContain("## SOUL.md");
 		expect(context.identitySection).toContain("## MEMORY.md");
 	});
