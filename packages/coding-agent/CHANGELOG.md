@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added global persistent identity and memory files under `~/.pi/`, including daily episodic memory initialization and prompt injection.
 - Added bundled browser-harness as a default `browser` skill.
 - Added a built-in `reload` tool so the agent can reload runtime resources after modifying agent-affecting files.
 - Added background Bash tasks with completion notifications and a `task_stop` tool for stopping running background commands.
@@ -13,6 +14,7 @@
 
 ### Changed
 
+- Moved the default session storage root from `~/.pi/agent/sessions/` to `~/.pi/sessions/`.
 - Strengthened reload tool prompt guidance so agents call it autonomously after changing slash commands, extensions, skills, themes, keybindings, prompts, or loaded project instructions.
 - Rendered built-in task, monitor, and subagent notifications in structured TUI cards instead of raw XML.
 

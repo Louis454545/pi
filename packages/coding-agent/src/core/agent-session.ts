@@ -39,6 +39,7 @@ import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
+import { loadAgentMemoryPromptContext } from "./agent-memory.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import {
 	BackgroundTaskManager,
@@ -197,6 +198,8 @@ export interface AgentSessionConfig {
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
 	cwd: string;
+	/** Global config directory. Used to derive Pi's global home for identity and memory. */
+	agentDir?: string;
 	/** Models to cycle through with Ctrl+P (from --models flag) */
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	/** Resource loader for skills, prompts, themes, context files, system prompt */
@@ -371,6 +374,7 @@ export class AgentSession {
 	private _customTools: ToolDefinition[];
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _cwd: string;
+	private _agentDir: string | undefined;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
@@ -393,6 +397,7 @@ export class AgentSession {
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 	private _reloadAfterToolTurn = false;
+	private _lastMemoryQuery: string | undefined;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -406,6 +411,7 @@ export class AgentSession {
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
+		this._agentDir = config.agentDir;
 		this._modelRegistry = config.modelRegistry;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -536,6 +542,7 @@ export class AgentSession {
 	private _installAgentPrepareNextTurn(): void {
 		const previousPrepareNextTurn = this.agent.prepareNextTurn;
 		this.agent.prepareNextTurn = async (signal?: AbortSignal): Promise<AgentLoopTurnUpdate | undefined> => {
+			this._refreshBaseSystemPrompt(this._lastMemoryQuery);
 			const previousUpdate = await previousPrepareNextTurn?.(signal);
 			if (!this._reloadAfterToolTurn) {
 				return previousUpdate;
@@ -547,6 +554,7 @@ export class AgentSession {
 			}
 
 			await this.reload();
+			this._refreshBaseSystemPrompt(this._lastMemoryQuery);
 			const previousContext = previousUpdate?.context;
 			return {
 				...previousUpdate,
@@ -928,8 +936,7 @@ export class AgentSession {
 		this.agent.state.tools = tools;
 
 		// Rebuild base system prompt with new tool set
-		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
-		this.agent.state.systemPrompt = this._baseSystemPrompt;
+		this._refreshBaseSystemPrompt(this._lastMemoryQuery, validToolNames);
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -1010,7 +1017,7 @@ export class AgentSession {
 		return Array.from(unique);
 	}
 
-	private _rebuildSystemPrompt(toolNames: string[]): string {
+	private _rebuildSystemPrompt(toolNames: string[], memoryQuery?: string): string {
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
 		const toolSnippets: Record<string, string> = {};
 		const promptGuidelines: string[] = [];
@@ -1032,11 +1039,16 @@ export class AgentSession {
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
+		const memoryContext = loadAgentMemoryPromptContext({
+			agentDir: this._agentDir,
+			query: memoryQuery,
+		});
 
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
 			skills: loadedSkills,
 			contextFiles: loadedContextFiles,
+			memoryContext,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
 			selectedTools: validToolNames,
@@ -1044,6 +1056,12 @@ export class AgentSession {
 			promptGuidelines,
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
+	}
+
+	private _refreshBaseSystemPrompt(memoryQuery?: string, toolNames: string[] = this.getActiveToolNames()): void {
+		this._lastMemoryQuery = memoryQuery;
+		this._baseSystemPrompt = this._rebuildSystemPrompt(toolNames, memoryQuery);
+		this.agent.state.systemPrompt = this._baseSystemPrompt;
 	}
 
 	// =========================================================================
@@ -1143,6 +1161,7 @@ export class AgentSession {
 				expandedText = this._expandSkillCommand(expandedText);
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 			}
+			this._refreshBaseSystemPrompt(expandedText);
 
 			// If streaming, queue via steer() or followUp() based on option
 			if (this.isStreaming) {
@@ -2223,8 +2242,7 @@ export class AgentSession {
 		};
 
 		this._resourceLoader.extendResources(extensionPaths);
-		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
-		this.agent.state.systemPrompt = this._baseSystemPrompt;
+		this._refreshBaseSystemPrompt(this._lastMemoryQuery);
 	}
 
 	private buildExtensionResourcePaths(entries: Array<{ path: string; extensionPath: string }>): Array<{
@@ -2775,6 +2793,7 @@ export class AgentSession {
 			sessionManager,
 			settingsManager: this.settingsManager,
 			cwd: this._cwd,
+			agentDir: this._agentDir,
 			scopedModels: this._scopedModels,
 			resourceLoader: this._resourceLoader,
 			customTools: this._customTools,

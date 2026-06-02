@@ -395,4 +395,31 @@ describe("AgentSession prompt characterization", () => {
 			`No API key found for ${harness.getModel().provider}.`,
 		);
 	});
+
+	it("reloads global memory before each provider request", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const memoryPath = join(harness.tempDir, "MEMORY.md");
+		writeFileSync(memoryPath, "# MEMORY.md\n\nFirst durable fact.\n");
+		const systemPrompts: string[] = [];
+
+		harness.setResponses([
+			(context) => {
+				systemPrompts.push(context.systemPrompt ?? "");
+				return fauxAssistantMessage("one");
+			},
+			(context) => {
+				systemPrompts.push(context.systemPrompt ?? "");
+				return fauxAssistantMessage("two");
+			},
+		]);
+
+		await harness.session.prompt("first");
+		writeFileSync(memoryPath, "# MEMORY.md\n\nSecond durable fact.\n");
+		await harness.session.prompt("second");
+
+		expect(systemPrompts[0]).toContain("First durable fact.");
+		expect(systemPrompts[0]).not.toContain("Second durable fact.");
+		expect(systemPrompts[1]).toContain("Second durable fact.");
+	});
 });

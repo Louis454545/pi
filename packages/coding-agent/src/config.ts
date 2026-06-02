@@ -493,8 +493,17 @@ export function getShareViewerUrl(gistId: string): string {
 }
 
 // =============================================================================
-// User Config Paths (~/.pi/agent/*)
+// User Config Paths (~/.pi/agent/*) and Global Pi Home (~/.pi/*)
 // =============================================================================
+
+/** Get Pi's global home directory (e.g., ~/.pi/). */
+export function getPiHomeDir(agentDir: string = getAgentDir()): string {
+	const resolvedAgentDir = expandTildePath(agentDir);
+	if (basename(resolvedAgentDir) === "agent") {
+		return dirname(resolvedAgentDir);
+	}
+	return resolvedAgentDir;
+}
 
 /** Get the agent config directory (e.g., ~/.pi/agent/) */
 export function getAgentDir(): string {
@@ -542,7 +551,7 @@ export function getPromptsDir(): string {
 
 /** Get path to sessions directory */
 export function getSessionsDir(): string {
-	return join(getAgentDir(), "sessions");
+	return join(getPiHomeDir(), "sessions");
 }
 
 /** Get path to debug log file */

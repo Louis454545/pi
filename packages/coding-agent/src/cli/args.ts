@@ -327,7 +327,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} --exclude-tools ask_question
 
   # Export a session file to HTML
-  ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/agent/sessions/--path--/session.jsonl
+  ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/sessions/--path--/session.jsonl
   ${APP_NAME} --export session.jsonl output.html
 
 ${chalk.bold("Environment Variables:")}

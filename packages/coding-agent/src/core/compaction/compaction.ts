@@ -482,7 +482,11 @@ Use this EXACT format:
 - [Any data, examples, or references needed to continue]
 - [Or "(none)" if not applicable]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+## Durable Memory Candidates
+- [Compact declarative facts that may belong in USER.md or MEMORY.md]
+- [Or "(none)" if no durable memory should be promoted]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages. Durable memory candidates must exclude temporary task progress, raw logs, large code blocks, transient debugging details, one-off plans, and facts likely to become stale quickly.`;
 
 const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
@@ -521,7 +525,11 @@ Use this EXACT format:
 ## Critical Context
 - [Preserve important context, add new if needed]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+## Durable Memory Candidates
+- [Preserve useful existing candidates, add new durable facts, remove stale or temporary items]
+- [Or "(none)" if no durable memory should be promoted]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages. Durable memory candidates must be compact declarative facts, not imperative commands, and must exclude temporary task progress, raw logs, large code blocks, transient debugging details, one-off plans, and facts likely to become stale quickly.`;
 
 function createSummarizationOptions(
 	model: Model<any>,

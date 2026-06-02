@@ -70,7 +70,7 @@ Configure delivery in [Settings](settings.md) with `steeringMode` and `followUpM
 
 ## Sessions
 
-Sessions are saved automatically to `~/.pi/agent/sessions/`, organized by working directory.
+Sessions are saved automatically to `~/.pi/sessions/`, organized by working directory.
 
 ```bash
 pi -c                  # Continue most recent session
@@ -96,6 +96,8 @@ See [Sessions](sessions.md) and [Compaction](compaction.md) for details.
 Pi loads `AGENTS.md` or `CLAUDE.md` at startup from:
 
 - `~/.pi/agent/AGENTS.md` for global instructions
+
+Persistent identity and memory are loaded from global, instance-level files under `~/.pi/`: `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, daily notes in `memories/daily/`, raw sessions in `sessions/`, and search/index data in `memory-index/`.
 - parent directories, walking up from the current working directory
 - the current directory
 

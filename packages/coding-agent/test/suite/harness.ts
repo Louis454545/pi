@@ -95,6 +95,7 @@ function createTempDir(): string {
 
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
 	const tempDir = createTempDir();
+	const agentDir = join(tempDir, "agent");
 	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
 		models: options.models,
 	});
@@ -176,6 +177,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		sessionManager,
 		settingsManager,
 		cwd: tempDir,
+		agentDir,
 		modelRegistry,
 		resourceLoader,
 		baseToolsOverride: toolMap,

@@ -5,7 +5,7 @@
 import chalk from "chalk";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { CONFIG_DIR_NAME, getAgentDir, getBinDir } from "./config.ts";
+import { CONFIG_DIR_NAME, getAgentDir, getBinDir, getPiHomeDir } from "./config.ts";
 import { migrateKeybindingsConfig } from "./core/keybindings.ts";
 import { isLegacyEnvVarNameConfigValue } from "./core/resolve-config-value.ts";
 import { stripJsonComments } from "./utils/json.ts";
@@ -207,13 +207,14 @@ function migrateExplicitEnvVarConfigValues(): void {
  * Migrate sessions from ~/.pi/agent/*.jsonl to proper session directories.
  *
  * Bug in v0.30.0: Sessions were saved to ~/.pi/agent/ instead of
- * ~/.pi/agent/sessions/<encoded-cwd>/. This migration moves them
+ * ~/.pi/sessions/<encoded-cwd>/. This migration moves them
  * to the correct location based on the cwd in their session header.
  *
  * See: https://github.com/earendil-works/pi-mono/issues/320
  */
 export function migrateSessionsFromAgentRoot(): void {
 	const agentDir = getAgentDir();
+	const piHomeDir = getPiHomeDir(agentDir);
 
 	// Find all .jsonl files directly in agentDir (not in subdirectories)
 	let files: string[];
@@ -241,7 +242,7 @@ export function migrateSessionsFromAgentRoot(): void {
 
 			// Compute the correct session directory (same encoding as session-manager.ts)
 			const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-			const correctDir = join(agentDir, "sessions", safePath);
+			const correctDir = join(piHomeDir, "sessions", safePath);
 
 			// Create directory if needed
 			if (!existsSync(correctDir)) {

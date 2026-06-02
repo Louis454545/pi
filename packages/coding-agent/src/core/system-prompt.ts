@@ -3,6 +3,7 @@
  */
 
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
+import type { AgentMemoryPromptContext } from "./agent-memory.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
 export interface BuildSystemPromptOptions {
@@ -22,6 +23,45 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
+	/** Pre-loaded global identity and memory context. */
+	memoryContext?: AgentMemoryPromptContext;
+}
+
+function formatMemoryManagementInstructions(memoryContext: AgentMemoryPromptContext | undefined): string {
+	if (!memoryContext) {
+		return "";
+	}
+
+	return `
+
+# Persistent Identity and Memory
+
+Pi has global, instance-level memory under ${memoryContext.piHomeDir}. These files are not workspace-specific.
+
+- SOUL.md and IDENTITY.md describe who the agent is.
+- USER.md describes durable context about the primary user.
+- MEMORY.md stores compact durable long-term memory.
+- ${memoryContext.dailyMemoryPath} is today's episodic daily memory.
+- ${memoryContext.piHomeDir}/sessions stores raw session history.
+- ${memoryContext.piHomeDir}/memory-index stores local search/index data for memories and sessions.
+
+Manage memory proactively when it will reduce future repetition from the user. Notice explicit "remember this" requests, recurring preferences, corrections, stable personal context, durable decisions, and long-term facts about people, channels, routines, projects, or goals. Search existing memory or prior sessions before asking the user to repeat durable context.
+
+Update or remove stale memories when corrected, and consolidate redundant memories when possible. Store memory entries as compact declarative facts, not imperative commands. Do not save temporary task progress, raw logs, large code blocks, transient debugging details, one-off plans, or facts likely to become stale quickly.
+
+Use daily memory for detailed notes, fresh context, observations, open loops, and memory candidates. Promote only durable facts from daily memory into USER.md or MEMORY.md. Before compaction or context loss, preserve genuinely useful long-term context and avoid saving temporary task state.`;
+}
+
+function appendMemorySections(prompt: string, memoryContext: AgentMemoryPromptContext | undefined): string {
+	if (!memoryContext) {
+		return prompt;
+	}
+
+	let nextPrompt = `${prompt}${formatMemoryManagementInstructions(memoryContext)}\n\n${memoryContext.identitySection}`;
+	if (memoryContext.retrievedSection) {
+		nextPrompt += `\n\n${memoryContext.retrievedSection}`;
+	}
+	return nextPrompt;
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -56,6 +96,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		if (appendSection) {
 			prompt += appendSection;
 		}
+
+		prompt = appendMemorySections(prompt, options.memoryContext);
 
 		// Append project context files
 		if (contextFiles.length > 0) {
@@ -152,6 +194,8 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 	if (appendSection) {
 		prompt += appendSection;
 	}
+
+	prompt = appendMemorySections(prompt, options.memoryContext);
 
 	// Append project context files
 	if (contextFiles.length > 0) {
