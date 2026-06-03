@@ -95,6 +95,13 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
+import {
+	formatScheduleNotificationXml,
+	type ScheduleNotification,
+	type ScheduleNotificationDeliveryOptions,
+	SchedulerManager,
+	type ScheduleStatus,
+} from "./schedules/index.ts";
 import type { BranchSummaryEntry, CompactionEntry } from "./session-manager.ts";
 import {
 	CURRENT_SESSION_VERSION,
@@ -108,6 +115,7 @@ import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
+import type { ReloadScope } from "./tools/reload.ts";
 import {
 	normalizeSubagentAction,
 	type SubagentInfo,
@@ -174,6 +182,7 @@ export type AgentSessionEvent =
 	| { type: "task_notification"; notification: BackgroundTaskNotification; xml: string }
 	| { type: "monitor_event"; notification: MonitorEventNotification; xml: string }
 	| { type: "subagent_notification"; notification: SubagentNotification; xml: string }
+	| { type: "schedule_notification"; notification: ScheduleNotification; xml: string }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -214,6 +223,8 @@ export interface AgentSessionConfig {
 	allowedToolNames?: string[];
 	/** Optional denylist of tool names. When provided, these tool names are not exposed. */
 	excludedToolNames?: string[];
+	/** Enable trusted project-local schedules for this session. */
+	enableSchedules?: boolean;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -363,6 +374,8 @@ export class AgentSession {
 	private _pendingBashMessages: BashExecutionMessage[] = [];
 	private _backgroundTaskManager: BackgroundTaskManager;
 	private _subagentManager: SubagentManager;
+	private _schedulerManager: SchedulerManager;
+	private _schedulesReady: Promise<void> = Promise.resolve();
 	private _subagentParent: SubagentParentBridge | undefined;
 	private _taskNotificationContinuation: Promise<void> = Promise.resolve();
 
@@ -396,7 +409,7 @@ export class AgentSession {
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
-	private _reloadAfterToolTurn = false;
+	private _reloadAfterToolTurn: ReloadScope | undefined;
 	private _lastMemoryQuery: string | undefined;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
@@ -425,6 +438,11 @@ export class AgentSession {
 			(notification) => this._handleMonitorEvent(notification),
 		);
 		this._subagentManager = new SubagentManager(this);
+		this._schedulerManager = new SchedulerManager({
+			cwd: this._cwd,
+			enabled: config.enableSchedules ?? false,
+			onNotification: (notification, options) => this._handleScheduleNotification(notification, options),
+		});
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -436,6 +454,7 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
+		this._schedulesReady = this._schedulerManager.reload();
 	}
 
 	/** Model registry for API key resolution and model discovery */
@@ -545,12 +564,14 @@ export class AgentSession {
 			this._refreshBaseSystemPrompt(this._lastMemoryQuery);
 			const previousUpdate = await previousPrepareNextTurn?.(signal);
 
-			const shouldReload = this._reloadAfterToolTurn;
-			this._reloadAfterToolTurn = false;
+			const reloadScope = this._reloadAfterToolTurn;
+			this._reloadAfterToolTurn = undefined;
 
-			if (shouldReload && !signal?.aborted) {
-				await this.reload();
-				this._refreshBaseSystemPrompt(this._lastMemoryQuery);
+			if (reloadScope && !signal?.aborted) {
+				await this.reload({ scope: reloadScope });
+				if (reloadScope !== "schedules") {
+					this._refreshBaseSystemPrompt(this._lastMemoryQuery);
+				}
 			}
 			const previousContext = previousUpdate?.context;
 			return {
@@ -566,8 +587,13 @@ export class AgentSession {
 		};
 	}
 
-	private _scheduleReloadAfterToolTurn(): void {
-		this._reloadAfterToolTurn = true;
+	private _scheduleReloadAfterToolTurn(scope: ReloadScope = "all"): void {
+		const current = this._reloadAfterToolTurn;
+		if (!current || current === scope) {
+			this._reloadAfterToolTurn = scope;
+			return;
+		}
+		this._reloadAfterToolTurn = "all";
 	}
 
 	// =========================================================================
@@ -842,6 +868,7 @@ export class AgentSession {
 			this.abortBash();
 			this._backgroundTaskManager.dispose();
 			this._subagentManager.dispose();
+			this._schedulerManager.dispose();
 			this.agent.abort();
 		} catch {
 			// Dispose must succeed even if an abort hook throws.
@@ -908,6 +935,14 @@ export class AgentSession {
 			promptGuidelines: definition.promptGuidelines,
 			sourceInfo,
 		}));
+	}
+
+	getScheduleStatuses(): ScheduleStatus[] {
+		return this._schedulerManager.getStatuses();
+	}
+
+	async waitForSchedulesReady(): Promise<void> {
+		await this._schedulesReady;
 	}
 
 	getToolDefinition(name: string): ToolDefinition | undefined {
@@ -2532,7 +2567,7 @@ export class AgentSession {
 								shellPath,
 							}),
 					},
-					reload: { scheduleReload: () => this._scheduleReloadAfterToolTurn() },
+					reload: { scheduleReload: (scope) => this._scheduleReloadAfterToolTurn(scope) },
 					taskStop: { stopTask: async (taskId) => await this.stopTask(taskId) },
 					monitor: {
 						commandPrefix: shellCommandPrefix,
@@ -2586,7 +2621,14 @@ export class AgentSession {
 		});
 	}
 
-	async reload(options?: { emitEvent?: boolean }): Promise<void> {
+	async reload(options?: { emitEvent?: boolean; scope?: ReloadScope }): Promise<void> {
+		const scope = options?.scope ?? "all";
+		if (scope === "schedules") {
+			this._schedulesReady = this._schedulerManager.reload();
+			await this._schedulesReady;
+			return;
+		}
+
 		const previousFlagValues = this._extensionRunner.getFlagValues();
 		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
 		await this.settingsManager.reload();
@@ -2606,6 +2648,10 @@ export class AgentSession {
 		if (hasBindings) {
 			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
 			await this.extendResourcesFromExtensions("reload");
+		}
+		if (scope === "all") {
+			this._schedulesReady = this._schedulerManager.reload();
+			await this._schedulesReady;
 		}
 		if (options?.emitEvent !== false) {
 			this._emit({ type: "session_reloaded" });
@@ -2797,6 +2843,7 @@ export class AgentSession {
 			modelRegistry: this._modelRegistry,
 			extensionRunnerRef,
 			sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile: parentSessionFile },
+			enableSchedules: false,
 			subagentParent: {
 				name,
 				taskId,
@@ -2878,6 +2925,64 @@ export class AgentSession {
 		const xml = formatSubagentNotificationXml(notification);
 		this._emit({ type: "subagent_notification", notification, xml });
 		this._queueNotificationMessage("subagent_notification", xml, notification);
+	}
+
+	private _handleScheduleNotification(
+		notification: ScheduleNotification,
+		options: ScheduleNotificationDeliveryOptions,
+	): Promise<void> {
+		const xml = formatScheduleNotificationXml(notification);
+		this._emit({ type: "schedule_notification", notification, xml });
+		return this._deliverScheduleNotification(xml, notification, options);
+	}
+
+	private async _deliverScheduleNotification(
+		xml: string,
+		notification: ScheduleNotification,
+		options: ScheduleNotificationDeliveryOptions,
+	): Promise<void> {
+		const message = {
+			customType: "schedule_notification",
+			content: xml,
+			display: false,
+			details: notification,
+		};
+
+		if (this.isStreaming) {
+			await this.sendCustomMessage(message, { deliverAs: options.deliverAs ?? "followUp" });
+			return;
+		}
+
+		if (!options.triggerTurn) {
+			if (options.deliverAs === "nextTurn") {
+				await this.sendCustomMessage(message, { deliverAs: "nextTurn" });
+				return;
+			}
+			await this.sendCustomMessage(message, { triggerTurn: false });
+			return;
+		}
+
+		if (!this.model || !this._modelRegistry.hasConfiguredAuth(this.model)) {
+			await this.sendCustomMessage(message, { triggerTurn: false });
+			return;
+		}
+
+		this._taskNotificationContinuation = this._taskNotificationContinuation
+			.then(async () => {
+				if (this.isStreaming) {
+					await this.sendCustomMessage(message, { deliverAs: options.deliverAs ?? "followUp" });
+					return;
+				}
+				if (!this.model || !this._modelRegistry.hasConfiguredAuth(this.model)) {
+					await this.sendCustomMessage(message, { triggerTurn: false });
+					return;
+				}
+				await this.sendCustomMessage(message, { triggerTurn: true });
+			})
+			.catch(async () => {
+				await this.sendCustomMessage(message, { triggerTurn: false });
+			});
+		await this._taskNotificationContinuation;
 	}
 
 	private _queueNotificationMessage<TDetails>(customType: string, xml: string, details: TDetails): void {

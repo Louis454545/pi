@@ -580,6 +580,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_session_stats", stats);
 			}
 
+			case "get_schedules": {
+				return success(id, "get_schedules", { schedules: session.getScheduleStatuses() });
+			}
+
 			case "export_html": {
 				const path = await session.exportToHtml(command.outputPath);
 				return success(id, "export_html", { path });

@@ -58,6 +58,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	excludeTools?: CreateAgentSessionOptions["excludeTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
+	enableSchedules?: boolean;
 }
 
 /**
@@ -73,6 +74,7 @@ export interface AgentSessionServices {
 	settingsManager: SettingsManager;
 	modelRegistry: ModelRegistry;
 	resourceLoader: ResourceLoader;
+	includeProjectResources: boolean;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 
@@ -172,6 +174,7 @@ export async function createAgentSessionServices(
 		settingsManager,
 		modelRegistry,
 		resourceLoader,
+		includeProjectResources,
 		diagnostics,
 	};
 }
@@ -202,5 +205,6 @@ export async function createAgentSessionFromServices(
 		noTools: options.noTools,
 		customTools: options.customTools,
 		sessionStartEvent: options.sessionStartEvent,
+		enableSchedules: options.enableSchedules ?? options.services.includeProjectResources,
 	});
 }

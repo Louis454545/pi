@@ -1,7 +1,10 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
+import { CONFIG_DIR_NAME } from "../../src/config.ts";
 import type { ResourceLoader } from "../../src/index.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "../utilities.ts";
 import { createHarness, getAssistantTexts, type Harness } from "./harness.ts";
@@ -27,6 +30,7 @@ describe("AgentSession reload tool", () => {
 		expect(harness.session.systemPrompt).toContain(
 			"If a user asks for a new slash command, extension, skill, theme, keybinding, or prompt behavior",
 		);
+		expect(harness.session.systemPrompt).toContain('call reload with scope "schedules"');
 	});
 
 	it("respects tool exclusion for reload", async () => {
@@ -102,5 +106,68 @@ describe("AgentSession reload tool", () => {
 		}
 		const firstContent = reloadResult.content[0];
 		expect(firstContent?.type === "text" ? firstContent.text : "").toContain("Reload scheduled");
+	});
+
+	it("reloads schedules without reloading runtime resources when scope is schedules", async () => {
+		let reloadCount = 0;
+		const baseResourceLoader = createTestResourceLoader();
+		const resourceLoader: ResourceLoader = {
+			...baseResourceLoader,
+			reload: async () => {
+				reloadCount++;
+			},
+		};
+		const harness = await createHarness({ enableSchedules: true, resourceLoader });
+		harnesses.push(harness);
+		const schedulesDir = join(harness.tempDir, CONFIG_DIR_NAME, "schedules");
+		mkdirSync(schedulesDir, { recursive: true });
+		writeFileSync(
+			join(schedulesDir, "tool-scope.ts"),
+			`import { defineSchedule } from "@earendil-works/pi-coding-agent/schedules";
+
+export default defineSchedule({
+  name: "tool-scope-test",
+  trigger: { intervalMs: 1000 },
+  run() {},
+});
+`,
+		);
+
+		const responses: AssistantMessage[] = [
+			fauxAssistantMessage(fauxToolCall("reload", { scope: "schedules" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("schedule reload complete"),
+		];
+		let responseIndex = 0;
+		const streamFn: StreamFn = async () => {
+			const stream = createAssistantMessageEventStream();
+			const message = responses[responseIndex++];
+			queueMicrotask(() => {
+				const reason =
+					message.stopReason === "length" || message.stopReason === "stop" || message.stopReason === "toolUse"
+						? message.stopReason
+						: "stop";
+				stream.push({ type: "start", partial: { ...message, content: [] } });
+				stream.push({ type: "done", reason, message });
+				stream.end(message);
+			});
+			return stream;
+		};
+		harness.session.agent.streamFn = streamFn;
+
+		await harness.session.prompt("reload schedules");
+		await harness.session.waitForSchedulesReady();
+
+		expect(reloadCount).toBe(0);
+		expect(harness.eventsOfType("session_reloaded")).toHaveLength(0);
+		expect(harness.session.getScheduleStatuses()).toMatchObject([{ name: "tool-scope-test", state: "loaded" }]);
+		const reloadResult = harness.session.messages.find(
+			(message) => message.role === "toolResult" && message.toolName === "reload",
+		);
+		expect(reloadResult?.role).toBe("toolResult");
+		if (!reloadResult || reloadResult.role !== "toolResult") {
+			throw new Error("reload tool result missing");
+		}
+		const firstContent = reloadResult.content[0];
+		expect(firstContent?.type === "text" ? firstContent.text : "").toContain("Schedule reload scheduled");
 	});
 });

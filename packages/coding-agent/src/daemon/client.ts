@@ -6,6 +6,7 @@ import { APP_NAME } from "../config.ts";
 import type { SessionStats } from "../core/agent-session.ts";
 import type { BashResult } from "../core/bash-executor.ts";
 import type { CompactionResult } from "../core/compaction/index.ts";
+import type { ScheduleStatus } from "../core/schedules/index.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "../modes/rpc/jsonl.ts";
 import type {
 	RpcCommand,
@@ -303,6 +304,11 @@ export class DaemonClient {
 	async getSessionStats(): Promise<SessionStats> {
 		const response = await this.sendRpc({ type: "get_session_stats" });
 		return this.getRpcData(response);
+	}
+
+	async getSchedules(): Promise<ScheduleStatus[]> {
+		const response = await this.sendRpc({ type: "get_schedules" });
+		return this.getRpcData<{ schedules: ScheduleStatus[] }>(response).schedules;
 	}
 
 	async exportHtml(outputPath?: string): Promise<{ path: string }> {

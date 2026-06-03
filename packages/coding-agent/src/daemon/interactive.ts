@@ -901,6 +901,10 @@ class DaemonInteractiveMode {
 			await this.handleSessionCommand();
 			return;
 		}
+		if (text === "/schedule") {
+			await this.handleScheduleCommand();
+			return;
+		}
 		if (text === "/name" || text.startsWith("/name ")) {
 			await this.handleNameCommand(text);
 			return;
@@ -1124,6 +1128,7 @@ class DaemonInteractiveMode {
 			case "task_notification":
 			case "monitor_event":
 			case "subagent_notification":
+			case "schedule_notification":
 				this.addMessageToChat({
 					role: "custom",
 					customType: sessionEvent.type,
@@ -1558,6 +1563,49 @@ class DaemonInteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
 		this.ui.requestRender();
+	}
+
+	private async handleScheduleCommand(): Promise<void> {
+		try {
+			const schedules = await this.client.getSchedules();
+			let info = `${theme.bold("Schedules")}\n\n`;
+			if (schedules.length === 0) {
+				info += "No schedules loaded.";
+			} else {
+				info += schedules
+					.map((schedule) => {
+						const lines = [
+							`${theme.bold(schedule.name)} ${theme.fg(schedule.state === "error" ? "error" : "dim", `[${schedule.state}]`)}`,
+							`${theme.fg("dim", "Source:")} ${schedule.sourceFile}`,
+							`${theme.fg("dim", "Trigger:")} ${schedule.trigger || "(none)"}`,
+						];
+						if (schedule.description) {
+							lines.splice(1, 0, `${theme.fg("dim", "Description:")} ${schedule.description}`);
+						}
+						if (schedule.nextRunAt) {
+							lines.push(`${theme.fg("dim", "Next:")} ${schedule.nextRunAt}`);
+						}
+						if (schedule.lastRunAt) {
+							lines.push(
+								`${theme.fg("dim", "Last:")} ${schedule.lastRunAt} (${schedule.lastStatus ?? "unknown"})`,
+							);
+						}
+						if (schedule.running || schedule.pending) {
+							lines.push(`${theme.fg("dim", "State:")} running=${schedule.running} pending=${schedule.pending}`);
+						}
+						if (schedule.error ?? schedule.lastError) {
+							lines.push(`${theme.fg("error", "Error:")} ${schedule.error ?? schedule.lastError}`);
+						}
+						return lines.join("\n");
+					})
+					.join("\n\n");
+			}
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(info, 1, 0));
+			this.ui.requestRender();
+		} catch (error: unknown) {
+			this.showError(error);
+		}
 	}
 
 	private async handleNameCommand(text: string): Promise<void> {

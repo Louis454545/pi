@@ -23,6 +23,7 @@ import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.ts";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 // avoiding a circular dependency. Extensions can import from @earendil-works/pi-coding-agent.
 import * as _bundledPiCodingAgent from "../../index.ts";
+import * as _bundledPiCodingAgentSchedules from "../../schedules.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
@@ -53,11 +54,13 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@earendil-works/pi-ai": _bundledPiAi,
 	"@earendil-works/pi-ai/oauth": _bundledPiAiOauth,
 	"@earendil-works/pi-coding-agent": _bundledPiCodingAgent,
+	"@earendil-works/pi-coding-agent/schedules": _bundledPiCodingAgentSchedules,
 	"@mariozechner/pi-agent-core": _bundledPiAgentCore,
 	"@mariozechner/pi-tui": _bundledPiTui,
 	"@mariozechner/pi-ai": _bundledPiAi,
 	"@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
 	"@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
+	"@mariozechner/pi-coding-agent/schedules": _bundledPiCodingAgentSchedules,
 };
 
 const require = createRequire(import.meta.url);
@@ -72,7 +75,16 @@ function getAliases(): Record<string, string> {
 	if (_aliases) return _aliases;
 
 	const __dirname = path.dirname(fileURLToPath(import.meta.url));
-	const packageIndex = path.resolve(__dirname, "../..", "index.js");
+	const packageRoot = path.resolve(__dirname, "../..");
+	const resolveLocalPackageEntry = (name: string): string => {
+		const sourcePath = path.join(packageRoot, `${name}.ts`);
+		if (fs.existsSync(sourcePath)) {
+			return sourcePath;
+		}
+		return path.join(packageRoot, `${name}.js`);
+	};
+	const packageIndex = resolveLocalPackageEntry("index");
+	const packageSchedules = resolveLocalPackageEntry("schedules");
 
 	const typeboxEntry = require.resolve("typebox");
 	const typeboxCompileEntry = require.resolve("typebox/compile");
@@ -95,11 +107,13 @@ function getAliases(): Record<string, string> {
 
 	_aliases = {
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
+		"@earendil-works/pi-coding-agent/schedules": packageSchedules,
 		"@earendil-works/pi-agent-core": piAgentCoreEntry,
 		"@earendil-works/pi-tui": piTuiEntry,
 		"@earendil-works/pi-ai": piAiEntry,
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
 		"@mariozechner/pi-coding-agent": piCodingAgentEntry,
+		"@mariozechner/pi-coding-agent/schedules": packageSchedules,
 		"@mariozechner/pi-agent-core": piAgentCoreEntry,
 		"@mariozechner/pi-tui": piTuiEntry,
 		"@mariozechner/pi-ai": piAiEntry,

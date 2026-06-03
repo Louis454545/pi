@@ -5,6 +5,7 @@ import type { SubagentNotification } from "../../../core/agent-session.ts";
 import type { BackgroundTaskNotification, MonitorEventNotification } from "../../../core/background-tasks.ts";
 import type { MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
+import type { ScheduleNotification } from "../../../core/schedules/index.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 
 /**
@@ -147,6 +148,27 @@ export class CustomMessageComponent extends Container {
 					);
 				}
 				return true;
+			case "schedule_notification":
+				if (!isScheduleNotification(this.message.details)) {
+					return false;
+				}
+				this.renderNotificationBlock(
+					`schedule:${this.message.details.scheduleName}`,
+					this.message.details.summary,
+					[
+						["run", this.message.details.runId],
+						["time", this.message.details.timestamp],
+					],
+				);
+				if (this.message.details.message) {
+					this.box.addChild(new Spacer(1));
+					this.box.addChild(
+						new Markdown(this.message.details.message, 0, 0, this.markdownTheme, {
+							color: (text: string) => theme.fg("customMessageText", text),
+						}),
+					);
+				}
+				return true;
 			default:
 				return false;
 		}
@@ -215,6 +237,17 @@ function isSubagentNotification(value: unknown): value is SubagentNotification {
 		isOptionalString(value.sessionFile) &&
 		isOptionalString(value.parentSessionFile) &&
 		isString(value.status) &&
+		isString(value.summary) &&
+		isOptionalString(value.message)
+	);
+}
+
+function isScheduleNotification(value: unknown): value is ScheduleNotification {
+	return (
+		isObject(value) &&
+		isString(value.scheduleName) &&
+		isString(value.runId) &&
+		isString(value.timestamp) &&
 		isString(value.summary) &&
 		isOptionalString(value.message)
 	);

@@ -17,7 +17,7 @@
 
 ---
 
-Pi is a minimal terminal computer-agent harness. Adapt pi to your workflows, not the other way around, without having to fork and modify pi internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Pi Packages](#pi-packages) and share them with others via npm or git.
+Pi is a minimal terminal computer-agent harness. Adapt pi to your workflows, not the other way around, without having to fork and modify pi internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), [Schedules](#schedules), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Pi Packages](#pi-packages) and share them with others via npm or git.
 
 Pi ships with powerful defaults but skips features like sub agents and plan mode. Instead, you can ask pi to build what you want or install a third party pi package that matches your workflow.
 
@@ -57,6 +57,7 @@ I regularly publish my own `pi-mono` work sessions here:
   - [Prompt Templates](#prompt-templates)
   - [Skills](#skills)
   - [Extensions](#extensions)
+  - [Schedules](#schedules)
   - [Themes](#themes)
   - [Pi Packages](#pi-packages)
 - [Programmatic Usage](#programmatic-usage)
@@ -183,6 +184,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/import <file>` | Import a JSONL file into the global conversation |
 | `/name <name>` | Set conversation display name |
 | `/session` | Show conversation info (file, ID, messages, tokens, cost) |
+| `/schedule` | Show project-local schedule status |
 | `/tree` | Jump to any point in the conversation tree and continue from there |
 | `/compact [prompt]` | Manually compact context, optional custom instructions |
 | `/copy` | Copy last assistant message to clipboard |
@@ -366,6 +368,10 @@ The default export can also be `async`. pi waits for async extension factories b
 - ...anything you can dream up
 
 Place in `~/.pi/agent/extensions/`, `.pi/extensions/`, or a [pi package](#pi-packages) to share with others. See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
+
+### Schedules
+
+Trusted project-local TypeScript schedules run while pi is open. Place them in `.pi/schedules/` under an explicit working context (`--cwd` or `/cwd`). See [docs/schedules.md](docs/schedules.md).
 
 ### Themes
 
@@ -560,6 +566,7 @@ Available built-in tools: `read`, `bash`, `edit`, `write`, `reload`, `task_stop`
 | `--theme <path>` | Load theme (repeatable) |
 | `--no-themes` | Disable theme discovery |
 | `--no-context-files`, `-nc` | Disable AGENTS.md and CLAUDE.md context file discovery |
+| `--no-schedules` | Disable trusted project-local schedules |
 
 Combine `--no-*` with explicit flags to load exactly what you need, ignoring settings.json (e.g., `--no-extensions -e ./my-ext.ts`).
 
