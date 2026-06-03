@@ -37,6 +37,7 @@ export interface CreateAgentSessionServicesOptions {
 	settingsManager?: SettingsManager;
 	modelRegistry?: ModelRegistry;
 	extensionFlagValues?: Map<string, boolean | string>;
+	includeProjectResources?: boolean;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 }
 
@@ -134,13 +135,17 @@ export async function createAgentSessionServices(
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
 	const authStorage = options.authStorage ?? AuthStorage.create(join(agentDir, "auth.json"));
-	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	const includeProjectResources = options.includeProjectResources ?? true;
+	const settingsManager =
+		options.settingsManager ??
+		SettingsManager.create(cwd, agentDir, { includeProjectSettings: includeProjectResources });
 	const modelRegistry = options.modelRegistry ?? ModelRegistry.create(authStorage, join(agentDir, "models.json"));
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
 		cwd,
 		agentDir,
 		settingsManager,
+		includeProjectResources,
 	});
 	await resourceLoader.reload();
 

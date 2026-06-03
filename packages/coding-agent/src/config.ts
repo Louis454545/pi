@@ -479,6 +479,7 @@ export const VERSION: string = pkg.version || "0.0.0";
 // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
 export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
 export const ENV_SESSION_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_SESSION_DIR`;
+export const ENV_GLOBAL_CONVERSATION_LOCK_HELD = `${APP_NAME.toUpperCase()}_GLOBAL_CONVERSATION_LOCK_HELD`;
 
 export function expandTildePath(path: string): string {
 	return normalizePath(path);
@@ -550,8 +551,8 @@ export function getPromptsDir(): string {
 }
 
 /** Get path to sessions directory */
-export function getSessionsDir(): string {
-	return join(getPiHomeDir(), "sessions");
+export function getSessionsDir(agentDir: string = getAgentDir(), sessionDir?: string): string {
+	return sessionDir ? normalizePath(sessionDir) : join(getPiHomeDir(agentDir), "sessions");
 }
 
 /** Get path to debug log file */

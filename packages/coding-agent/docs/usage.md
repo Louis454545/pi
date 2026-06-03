@@ -11,7 +11,7 @@ The interface has four main areas:
 - **Startup header** - shortcuts, loaded context files, prompt templates, skills, and extensions
 - **Messages** - user messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI
 - **Editor** - where you type; border color indicates the current thinking level
-- **Footer** - working directory, session name, token/cache usage, cost, context usage, and current model
+- **Footer** - working context, conversation name, token/cache usage, cost, context usage, and current model
 
 The editor can be replaced temporarily by built-in UI such as `/settings` or by custom extension UI.
 
@@ -39,16 +39,15 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/model` | Switch models |
 | `/scoped-models` | Enable/disable models for Ctrl+P cycling |
 | `/settings` | Thinking level, theme, message delivery, transport |
-| `/resume` | Pick from previous sessions |
-| `/new` | Start a new session |
-| `/name <name>` | Set session display name |
-| `/session` | Show session file, ID, messages, tokens, and cost |
-| `/tree` | Jump to any point in the session and continue from there |
-| `/fork` | Create a new session from a previous user message |
-| `/clone` | Duplicate the current active branch into a new session |
+| `/cwd <path>` | Set explicit working context and load project resources |
+| `/reset` | Archive and reset the global conversation |
+| `/import <file>` | Import a JSONL file into the global conversation |
+| `/name <name>` | Set conversation display name |
+| `/session` | Show conversation file, ID, messages, tokens, and cost |
+| `/tree` | Jump to any point in the conversation tree and continue from there |
 | `/compact [prompt]` | Manually compact context, optionally with custom instructions |
 | `/copy` | Copy last assistant message to clipboard |
-| `/export [file]` | Export session to HTML |
+| `/export [file]` | Export conversation to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 | `/reload` | Reload keybindings, extensions, skills, prompts, and context files |
 | `/hotkeys` | Show all keyboard shortcuts |
@@ -68,53 +67,52 @@ On Windows Terminal, Alt+Enter is fullscreen by default. Remap it as described i
 
 Configure delivery in [Settings](settings.md) with `steeringMode` and `followUpMode`.
 
-## Sessions
+## Global Conversation
 
-Sessions are saved automatically to `~/.pi/sessions/`, organized by working directory.
+Pi saves one canonical global conversation at `~/.pi/sessions/global/conversation.jsonl`. `pi` and `pi -p` continue that conversation by default. On first launch after upgrading, pi imports the most recent valid legacy session into the global conversation.
+
+Use `--cwd <path>` at startup or `/cwd <path>` interactively when you want tools, AGENTS.md, project settings, and project resources loaded from a specific directory. Without an explicit working context, pi does not use the shell launch directory as project context.
 
 ```bash
-pi -c                  # Continue most recent session
-pi -r                  # Browse and select a session
-pi --no-session        # Ephemeral mode; do not save
-pi --name "my task"    # Set session display name at startup
-pi --session <path|id> # Use a specific session file or session ID
-pi --fork <path|id>    # Fork a session into a new session file
+pi                         # Continue the global conversation
+pi --cwd .                 # Continue with this directory as working context
+pi --no-session            # Ephemeral mode; do not save
 ```
 
-Useful session commands:
+Useful conversation commands:
 
-- `/session` shows the current session file and ID.
-- `/tree` navigates the in-file session tree and can summarize abandoned branches.
-- `/fork` creates a new session from an earlier user message.
-- `/clone` duplicates the current active branch into a new session file.
+- `/session` shows the current conversation file and ID.
+- `/tree` navigates the in-file conversation tree and can summarize abandoned branches.
+- `/reset` archives the current canonical conversation and starts fresh.
+- `/import <jsonl>` archives the current canonical conversation and imports a JSONL file.
 - `/compact` summarizes older messages to free context.
 
-See [Sessions](sessions.md) and [Compaction](compaction.md) for details.
+See [Global Conversation](sessions.md) and [Compaction](compaction.md) for details.
 
 ## Context Files
 
-Pi loads `AGENTS.md` or `CLAUDE.md` at startup from:
+Pi loads `AGENTS.md` or `CLAUDE.md` from:
 
 - `~/.pi/agent/AGENTS.md` for global instructions
 
 Persistent identity and memory are loaded from global, instance-level files under `~/.pi/`: `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, daily notes in `memories/daily/`, raw sessions in `sessions/`, and search/index data in `memory-index/`.
-- parent directories, walking up from the current working directory
-- the current directory
+- parent directories, walking up from the explicit working context
+- the explicit working context directory
 
-Use context files for project conventions, commands, safety rules, and preferences. Disable loading with `--no-context-files` or `-nc`.
+Use `--cwd <path>` or `/cwd <path>` to opt into project context files. Disable loading with `--no-context-files` or `-nc`.
 
 ### System Prompt Files
 
 Replace the default system prompt with:
 
-- `.pi/SYSTEM.md` for a project
+- `.pi/SYSTEM.md` for the explicit working context
 - `~/.pi/agent/SYSTEM.md` globally
 
 Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location.
 
 ## Exporting and Sharing Sessions
 
-Use `/export [file]` to write a session to HTML.
+Use `/export [file]` to write a conversation to HTML.
 
 Use `/share` to upload a private GitHub gist with a shareable HTML link.
 
@@ -152,7 +150,7 @@ See [Pi Packages](packages.md) for package sources and security notes.
 | `-p`, `--print` | Print response and exit |
 | `--mode json` | Output all events as JSON lines; see [JSON mode](json.md) |
 | `--mode rpc` | RPC mode over stdin/stdout; see [RPC mode](rpc.md) |
-| `--export <in> [out]` | Export a session to HTML |
+| `--export <in> [out]` | Export conversation JSONL to HTML |
 
 In print mode, pi also reads piped stdin and merges it into the initial prompt:
 
@@ -171,17 +169,13 @@ cat README.md | pi -p "Summarize this text"
 | `--models <patterns>` | Comma-separated patterns for Ctrl+P cycling |
 | `--list-models [search]` | List available models |
 
-### Session Options
+### Conversation Options
 
 | Option | Description |
 |--------|-------------|
-| `-c`, `--continue` | Continue the most recent session |
-| `-r`, `--resume` | Browse and select a session |
-| `--session <path\|id>` | Use a specific session file or partial UUID |
-| `--fork <path\|id>` | Fork a session file or partial UUID into a new session |
-| `--session-dir <dir>` | Custom session storage directory |
+| `--cwd <path>` | Set explicit working context for tools and project resources |
+| `--session-dir <dir>` | Custom conversation storage directory |
 | `--no-session` | Ephemeral mode; do not save |
-| `--name <name>`, `-n <name>` | Set session display name at startup |
 
 ### Tool Options
 
@@ -246,8 +240,8 @@ pi -p "Summarize this codebase"
 # Non-interactive with piped stdin
 cat README.md | pi -p "Summarize this text"
 
-# Named one-shot session
-pi --name "release audit" -p "Audit this repository"
+# Use this directory as working context
+pi --cwd . "Review this project"
 
 # Different model
 pi --provider openai --model gpt-4o "Help me refactor"
@@ -273,7 +267,7 @@ pi --exclude-tools ask_question
 | Variable | Description |
 |----------|-------------|
 | `PI_CODING_AGENT_DIR` | Override config directory; default is `~/.pi/agent` |
-| `PI_CODING_AGENT_SESSION_DIR` | Override session storage directory; overridden by `--session-dir` |
+| `PI_CODING_AGENT_SESSION_DIR` | Override conversation storage directory |
 | `PI_PACKAGE_DIR` | Override package directory, useful for Nix/Guix store paths |
 | `PI_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry |
 | `PI_SKIP_VERSION_CHECK` | Skip the Pi version update check at startup. This prevents the `pi.dev` latest-version request |

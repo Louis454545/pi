@@ -36,7 +36,7 @@ describe("createAgentSession session manager defaults", () => {
 		});
 
 		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-		const expectedSessionDir = join(agentDir, "sessions", safePath);
+		const expectedSessionDir = join(tempDir, "sessions", safePath);
 		const sessionDir = session.sessionManager.getSessionDir();
 		const sessionFile = session.sessionManager.getSessionFile();
 
@@ -78,7 +78,7 @@ describe("createAgentSession session manager defaults", () => {
 		});
 
 		expect(session.sessionManager).toBe(sessionManager);
-		expect(session.systemPrompt).toContain(`Current working directory: ${sessionCwd}`);
+		expect(session.systemPrompt).toContain(`Current working context: ${sessionCwd}`);
 
 		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash");
 		expect(bashTool).toBeTruthy();

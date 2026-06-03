@@ -99,14 +99,14 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 		prompt = appendMemorySections(prompt, options.memoryContext);
 
-		// Append project context files
+		// Append working context files
 		if (contextFiles.length > 0) {
-			prompt += "\n\n<project_context>\n\n";
-			prompt += "Project-specific instructions and guidelines:\n\n";
+			prompt += "\n\n<working_context>\n\n";
+			prompt += "Working-context instructions and guidelines:\n\n";
 			for (const { path: filePath, content } of contextFiles) {
-				prompt += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
+				prompt += `<working_context_instructions path="${filePath}">\n${content}\n</working_context_instructions>\n\n`;
 			}
-			prompt += "</project_context>\n";
+			prompt += "</working_context>\n";
 		}
 
 		// Append skills section (only if read tool is available)
@@ -117,7 +117,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 		// Add date and working directory last
 		prompt += `\nCurrent date: ${date}`;
-		prompt += `\nCurrent working directory: ${promptCwd}`;
+		prompt += `\nCurrent working context: ${promptCwd}`;
 
 		return prompt;
 	}
@@ -172,7 +172,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-	let prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+	let prompt = `You are an expert computer agent operating inside pi, an agent harness. You help users by reading files, executing commands, editing code, and writing new files.
 
 Available tools:
 ${toolsList}
@@ -197,14 +197,14 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 
 	prompt = appendMemorySections(prompt, options.memoryContext);
 
-	// Append project context files
+	// Append working context files
 	if (contextFiles.length > 0) {
-		prompt += "\n\n<project_context>\n\n";
-		prompt += "Project-specific instructions and guidelines:\n\n";
+		prompt += "\n\n<working_context>\n\n";
+		prompt += "Working-context instructions and guidelines:\n\n";
 		for (const { path: filePath, content } of contextFiles) {
-			prompt += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
+			prompt += `<working_context_instructions path="${filePath}">\n${content}\n</working_context_instructions>\n\n`;
 		}
-		prompt += "</project_context>\n";
+		prompt += "</working_context>\n";
 	}
 
 	// Append skills section (only if read tool is available)
@@ -214,7 +214,7 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 
 	// Add date and working directory last
 	prompt += `\nCurrent date: ${date}`;
-	prompt += `\nCurrent working directory: ${promptCwd}`;
+	prompt += `\nCurrent working context: ${promptCwd}`;
 
 	return prompt;
 }

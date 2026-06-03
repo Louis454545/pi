@@ -127,6 +127,7 @@ export interface DefaultResourceLoaderOptions {
 	noPromptTemplates?: boolean;
 	noThemes?: boolean;
 	noContextFiles?: boolean;
+	includeProjectResources?: boolean;
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
 	extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
@@ -165,6 +166,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private noPromptTemplates: boolean;
 	private noThemes: boolean;
 	private noContextFiles: boolean;
+	private includeProjectResources: boolean;
 	private systemPromptSource?: string;
 	private appendSystemPromptSource?: string[];
 	private extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
@@ -206,12 +208,16 @@ export class DefaultResourceLoader implements ResourceLoader {
 	constructor(options: DefaultResourceLoaderOptions) {
 		this.cwd = resolvePath(options.cwd);
 		this.agentDir = resolvePath(options.agentDir);
-		this.settingsManager = options.settingsManager ?? SettingsManager.create(this.cwd, this.agentDir);
+		this.includeProjectResources = options.includeProjectResources ?? true;
+		this.settingsManager =
+			options.settingsManager ??
+			SettingsManager.create(this.cwd, this.agentDir, { includeProjectSettings: this.includeProjectResources });
 		this.eventBus = options.eventBus ?? createEventBus();
 		this.packageManager = new DefaultPackageManager({
 			cwd: this.cwd,
 			agentDir: this.agentDir,
 			settingsManager: this.settingsManager,
+			includeProjectResources: this.includeProjectResources,
 		});
 		this.additionalExtensionPaths = options.additionalExtensionPaths ?? [];
 		this.additionalSkillPaths = options.additionalSkillPaths ?? [];
@@ -466,7 +472,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 
 		const agentsFiles = {
-			agentsFiles: this.noContextFiles ? [] : loadProjectContextFiles({ cwd: this.cwd, agentDir: this.agentDir }),
+			agentsFiles:
+				this.noContextFiles || !this.includeProjectResources
+					? []
+					: loadProjectContextFiles({ cwd: this.cwd, agentDir: this.agentDir }),
 		};
 		const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;
 		this.agentsFiles = resolvedAgentsFiles.agentsFiles;
@@ -648,12 +657,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 			join(this.agentDir, "themes"),
 			join(this.agentDir, "extensions"),
 		];
-		const projectRoots = [
-			join(this.cwd, CONFIG_DIR_NAME, "skills"),
-			join(this.cwd, CONFIG_DIR_NAME, "prompts"),
-			join(this.cwd, CONFIG_DIR_NAME, "themes"),
-			join(this.cwd, CONFIG_DIR_NAME, "extensions"),
-		];
+		const projectRoots = this.includeProjectResources
+			? [
+					join(this.cwd, CONFIG_DIR_NAME, "skills"),
+					join(this.cwd, CONFIG_DIR_NAME, "prompts"),
+					join(this.cwd, CONFIG_DIR_NAME, "themes"),
+					join(this.cwd, CONFIG_DIR_NAME, "extensions"),
+				]
+			: [];
 
 		for (const root of agentRoots) {
 			if (this.isUnderPath(normalizedPath, root)) {
@@ -705,7 +716,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const themes: Theme[] = [];
 		const diagnostics: ResourceDiagnostic[] = [];
 		if (includeDefaults) {
-			const defaultDirs = [join(this.agentDir, "themes"), join(this.cwd, CONFIG_DIR_NAME, "themes")];
+			const defaultDirs = [
+				join(this.agentDir, "themes"),
+				...(this.includeProjectResources ? [join(this.cwd, CONFIG_DIR_NAME, "themes")] : []),
+			];
 
 			for (const dir of defaultDirs) {
 				this.loadThemesFromDir(dir, themes, diagnostics);
@@ -851,9 +865,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private discoverSystemPromptFile(): string | undefined {
-		const projectPath = join(this.cwd, CONFIG_DIR_NAME, "SYSTEM.md");
-		if (existsSync(projectPath)) {
-			return projectPath;
+		if (this.includeProjectResources) {
+			const projectPath = join(this.cwd, CONFIG_DIR_NAME, "SYSTEM.md");
+			if (existsSync(projectPath)) {
+				return projectPath;
+			}
 		}
 
 		const globalPath = join(this.agentDir, "SYSTEM.md");
@@ -865,9 +881,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private discoverAppendSystemPromptFile(): string | undefined {
-		const projectPath = join(this.cwd, CONFIG_DIR_NAME, "APPEND_SYSTEM.md");
-		if (existsSync(projectPath)) {
-			return projectPath;
+		if (this.includeProjectResources) {
+			const projectPath = join(this.cwd, CONFIG_DIR_NAME, "APPEND_SYSTEM.md");
+			if (existsSync(projectPath)) {
+				return projectPath;
+			}
 		}
 
 		const globalPath = join(this.agentDir, "APPEND_SYSTEM.md");

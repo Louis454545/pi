@@ -2,8 +2,20 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { once } from "node:events";
 import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { APP_NAME, isBunBinary } from "../config.ts";
+import { parseArgs } from "../cli/args.ts";
+import {
+	APP_NAME,
+	ENV_GLOBAL_CONVERSATION_LOCK_HELD,
+	ENV_SESSION_DIR,
+	expandTildePath,
+	getAgentDir,
+	isBunBinary,
+} from "../config.ts";
+import { acquireGlobalConversationLock } from "../core/session-manager.ts";
+import { SettingsManager } from "../core/settings-manager.ts";
+import { runMigrations } from "../migrations.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "../modes/rpc/jsonl.ts";
+import { resolvePath } from "../utils/paths.ts";
 import type { DaemonPaths } from "./paths.ts";
 import { getDaemonPaths } from "./paths.ts";
 import type { DaemonAdminCommand, DaemonAdminResponse, DaemonStatus } from "./protocol.ts";
@@ -126,14 +138,39 @@ function createRpcInvocation(agentArgs: string[]): { command: string; args: stri
 	return createCliInvocation(["--mode", "rpc", ...agentArgs]);
 }
 
-function spawnRpcAgent(agentArgs: string[]): ChildProcessWithoutNullStreams {
+function spawnRpcAgent(agentArgs: string[], env: NodeJS.ProcessEnv): ChildProcessWithoutNullStreams {
 	const invocation = createRpcInvocation(agentArgs);
 	return spawn(invocation.command, invocation.args, {
 		cwd: process.cwd(),
-		env: process.env,
+		env,
 		stdio: ["pipe", "pipe", "pipe"],
 		windowsHide: true,
 	}) as ChildProcessWithoutNullStreams;
+}
+
+async function acquireDaemonGlobalConversationLock(agentArgs: string[]): Promise<(() => Promise<void>) | undefined> {
+	const parsed = parseArgs(agentArgs);
+	if (parsed.noSession || parsed.help || parsed.listModels !== undefined) {
+		return undefined;
+	}
+
+	const launchCwd = process.cwd();
+	const agentDir = getAgentDir();
+	const workingContextCwd = parsed.cwd !== undefined ? resolvePath(parsed.cwd, launchCwd) : undefined;
+	const cwd = workingContextCwd ?? agentDir;
+	const includeProjectResources = workingContextCwd !== undefined;
+	runMigrations(workingContextCwd);
+
+	const settingsManager = SettingsManager.create(cwd, agentDir, {
+		includeProjectSettings: includeProjectResources,
+	});
+	const envSessionDir = process.env[ENV_SESSION_DIR];
+	const sessionDir =
+		(parsed.sessionDir ? resolvePath(parsed.sessionDir, launchCwd) : undefined) ??
+		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
+		settingsManager.getSessionDir();
+
+	return acquireGlobalConversationLock(agentDir, sessionDir);
 }
 
 function writeJson(socket: Socket, value: unknown): void {
@@ -203,7 +240,16 @@ export async function runDaemonServer(options: DaemonServerOptions = {}): Promis
 
 	const startedAtMs = Date.now();
 	const startedAt = new Date(startedAtMs).toISOString();
-	const child = spawnRpcAgent(agentArgs);
+	let releaseGlobalLock = await acquireDaemonGlobalConversationLock(agentArgs);
+	const childEnv = releaseGlobalLock ? { ...process.env, [ENV_GLOBAL_CONVERSATION_LOCK_HELD]: "1" } : process.env;
+	let child: ChildProcessWithoutNullStreams;
+	try {
+		child = spawnRpcAgent(agentArgs, childEnv);
+	} catch (error: unknown) {
+		await releaseGlobalLock?.();
+		releaseGlobalLock = undefined;
+		throw error;
+	}
 	let nextClientId = 0;
 	let nextForwardId = 0;
 	let shuttingDown = false;
@@ -330,6 +376,12 @@ export async function runDaemonServer(options: DaemonServerOptions = {}): Promis
 		}
 	};
 
+	const releaseLock = async (): Promise<void> => {
+		const release = releaseGlobalLock;
+		releaseGlobalLock = undefined;
+		await release?.();
+	};
+
 	const shutdown = async (exitCode = 0): Promise<never> => {
 		if (shuttingDown) {
 			process.exit(exitCode);
@@ -337,6 +389,7 @@ export async function runDaemonServer(options: DaemonServerOptions = {}): Promis
 		shuttingDown = true;
 		await stopServer();
 		await stopChild();
+		await releaseLock();
 		cleanupFiles();
 		process.exit(exitCode);
 	};
@@ -463,6 +516,7 @@ export async function runDaemonServer(options: DaemonServerOptions = {}): Promis
 	} catch (error: unknown) {
 		detachChildStdout();
 		await stopChild();
+		await releaseLock();
 		cleanupFiles();
 		throw error;
 	}

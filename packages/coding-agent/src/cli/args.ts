@@ -27,6 +27,7 @@ export interface Args {
 	sessionId?: string;
 	fork?: string;
 	sessionDir?: string;
+	cwd?: string;
 	models?: string[];
 	tools?: string[];
 	excludeTools?: string[];
@@ -110,6 +111,8 @@ export function parseArgs(args: string[]): Args {
 			result.fork = args[++i];
 		} else if (arg === "--session-dir" && i + 1 < args.length) {
 			result.sessionDir = args[++i];
+		} else if (arg === "--cwd" && i + 1 < args.length) {
+			result.cwd = args[++i];
 		} else if (arg === "--models" && i + 1 < args.length) {
 			result.models = args[++i].split(",").map((s) => s.trim());
 		} else if (arg === "--no-tools" || arg === "-nt") {
@@ -215,7 +218,7 @@ export function printHelp(extensionFlags?: ExtensionFlag[]): void {
 					})
 					.join("\n")}\n`
 			: "";
-	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with read, bash, edit, write tools
+	console.log(`${chalk.bold(APP_NAME)} - universal computer agent with read, bash, edit, write tools
 
 ${chalk.bold("Usage:")}
   ${APP_NAME} [options] [@files...] [messages...]
@@ -234,18 +237,12 @@ ${chalk.bold("Options:")}
   --provider <name>              Provider name (default: google)
   --model <pattern>              Model pattern or ID (supports "provider/id" and optional ":<thinking>")
   --api-key <key>                API key (defaults to env vars)
-  --system-prompt <text>         System prompt (default: coding assistant prompt)
+  --system-prompt <text>         System prompt (default: universal agent prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
   --mode <mode>                  Output mode: text (default), json, or rpc
   --print, -p                    Non-interactive mode: process prompt and exit
-  --continue, -c                 Continue previous session
-  --resume, -r                   Select a session to resume
-  --session <path|id>            Use specific session file or partial UUID
-  --session-id <id>              Use exact project session ID, creating it if missing
-  --fork <path|id>               Fork specific session file or partial UUID into a new session
-  --session-dir <dir>            Directory for session storage and lookup
-  --no-session                   Don't save session (ephemeral)
-  --name, -n <name>              Set session display name
+  --cwd <path>                   Set explicit working context for tools and project resources
+  --no-session                   Don't save conversation history (ephemeral)
   --models <patterns>            Comma-separated model patterns for Ctrl+P cycling
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
   --no-tools, -nt                Disable all tools by default (built-in and extension)
@@ -264,7 +261,7 @@ ${chalk.bold("Options:")}
   --theme <path>                 Load a theme file or directory (can be used multiple times)
   --no-themes                    Disable theme discovery and loading
   --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
-  --export <file>                Export session file to HTML and exit
+  --export <file>                Export conversation JSONL to HTML and exit
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
@@ -293,11 +290,8 @@ ${chalk.bold("Examples:")}
   # Multiple messages (interactive)
   ${APP_NAME} "Read package.json" "What dependencies do we have?"
 
-  # Continue previous session
-  ${APP_NAME} --continue "What did we discuss?"
-
-  # Start a named session
-  ${APP_NAME} --name "Refactor auth module"
+  # Use an explicit working context
+  ${APP_NAME} --cwd . "Review this project"
 
   # Use different model
   ${APP_NAME} --provider openai --model gpt-4o-mini "Help me refactor this code"
@@ -326,8 +320,8 @@ ${chalk.bold("Examples:")}
   # Disable one tool while keeping the rest available
   ${APP_NAME} --exclude-tools ask_question
 
-  # Export a session file to HTML
-  ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/sessions/--path--/session.jsonl
+  # Export a conversation file to HTML
+  ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/sessions/global/conversation.jsonl
   ${APP_NAME} --export session.jsonl output.html
 
 ${chalk.bold("Environment Variables:")}
@@ -367,7 +361,7 @@ ${chalk.bold("Environment Variables:")}
   AWS_BEARER_TOKEN_BEDROCK         - Bedrock API key (bearer token)
   AWS_REGION                       - AWS region for Amazon Bedrock (e.g., us-east-1)
   ${ENV_AGENT_DIR.padEnd(32)} - Config directory (default: ~/${CONFIG_DIR_NAME}/agent)
-  ${ENV_SESSION_DIR.padEnd(32)} - Session storage directory (overridden by --session-dir)
+  ${ENV_SESSION_DIR.padEnd(32)} - Conversation storage directory
   PI_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)
   PI_OFFLINE                       - Disable startup network operations when set to 1/true/yes
   PI_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no

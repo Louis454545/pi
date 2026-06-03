@@ -111,6 +111,7 @@ interface PackageManagerOptions {
 	cwd: string;
 	agentDir: string;
 	settingsManager: SettingsManager;
+	includeProjectResources?: boolean;
 }
 
 type SourceScope = "user" | "project" | "temporary";
@@ -760,6 +761,7 @@ export class DefaultPackageManager implements PackageManager {
 	private cwd: string;
 	private agentDir: string;
 	private settingsManager: SettingsManager;
+	private includeProjectResources: boolean;
 	private globalNpmRoot: string | undefined;
 	private globalNpmRootCommandKey: string | undefined;
 	private progressCallback: ProgressCallback | undefined;
@@ -768,6 +770,7 @@ export class DefaultPackageManager implements PackageManager {
 		this.cwd = resolvePath(options.cwd);
 		this.agentDir = resolvePath(options.agentDir);
 		this.settingsManager = options.settingsManager;
+		this.includeProjectResources = options.includeProjectResources ?? true;
 	}
 
 	setProgressCallback(callback: ProgressCallback | undefined): void {
@@ -865,7 +868,7 @@ export class DefaultPackageManager implements PackageManager {
 	async resolve(onMissing?: (source: string) => Promise<MissingSourceAction>): Promise<ResolvedPaths> {
 		const accumulator = this.createAccumulator();
 		const globalSettings = this.settingsManager.getGlobalSettings();
-		const projectSettings = this.settingsManager.getProjectSettings();
+		const projectSettings = this.includeProjectResources ? this.settingsManager.getProjectSettings() : {};
 
 		// Collect all packages with scope (project first so cwd resources win collisions)
 		const allPackages: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
@@ -930,7 +933,7 @@ export class DefaultPackageManager implements PackageManager {
 
 	listConfiguredPackages(): ConfiguredPackage[] {
 		const globalSettings = this.settingsManager.getGlobalSettings();
-		const projectSettings = this.settingsManager.getProjectSettings();
+		const projectSettings = this.includeProjectResources ? this.settingsManager.getProjectSettings() : {};
 		const configuredPackages: ConfiguredPackage[] = [];
 
 		for (const pkg of globalSettings.packages ?? []) {
@@ -1010,7 +1013,7 @@ export class DefaultPackageManager implements PackageManager {
 
 	async update(source?: string): Promise<void> {
 		const globalSettings = this.settingsManager.getGlobalSettings();
-		const projectSettings = this.settingsManager.getProjectSettings();
+		const projectSettings = this.includeProjectResources ? this.settingsManager.getProjectSettings() : {};
 		const identity = source ? this.getPackageIdentity(source) : undefined;
 		let matched = false;
 		const updateSources: ConfiguredUpdateSource[] = [];
@@ -1141,7 +1144,7 @@ export class DefaultPackageManager implements PackageManager {
 		}
 
 		const globalSettings = this.settingsManager.getGlobalSettings();
-		const projectSettings = this.settingsManager.getProjectSettings();
+		const projectSettings = this.includeProjectResources ? this.settingsManager.getProjectSettings() : {};
 		const allPackages: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
 		for (const pkg of projectSettings.packages ?? []) {
 			allPackages.push({ pkg, scope: "project" });
@@ -2242,9 +2245,9 @@ export class DefaultPackageManager implements PackageManager {
 			themes: join(projectBaseDir, "themes"),
 		};
 		const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
-		const projectAgentsSkillDirs = collectAncestorAgentsSkillDirs(this.cwd).filter(
-			(dir) => resolve(dir) !== resolve(userAgentsSkillsDir),
-		);
+		const projectAgentsSkillDirs = this.includeProjectResources
+			? collectAncestorAgentsSkillDirs(this.cwd).filter((dir) => resolve(dir) !== resolve(userAgentsSkillsDir))
+			: [];
 
 		const addResources = (
 			resourceType: ResourceType,
@@ -2260,54 +2263,56 @@ export class DefaultPackageManager implements PackageManager {
 			}
 		};
 
-		// Project extensions from .pi/
-		addResources(
-			"extensions",
-			collectAutoExtensionEntries(projectDirs.extensions),
-			projectMetadata,
-			projectOverrides.extensions,
-			projectBaseDir,
-		);
+		if (this.includeProjectResources) {
+			// Project extensions from .pi/
+			addResources(
+				"extensions",
+				collectAutoExtensionEntries(projectDirs.extensions),
+				projectMetadata,
+				projectOverrides.extensions,
+				projectBaseDir,
+			);
 
-		// Project skills from .pi/
-		addResources(
-			"skills",
-			collectAutoSkillEntries(projectDirs.skills, "pi"),
-			projectMetadata,
-			projectOverrides.skills,
-			projectBaseDir,
-		);
-
-		// Project skills from .agents/ (each with its own baseDir)
-		for (const agentsSkillsDir of projectAgentsSkillDirs) {
-			const agentsBaseDir = dirname(agentsSkillsDir); // the .agents directory
-			const agentsMetadata: PathMetadata = {
-				...projectMetadata,
-				baseDir: agentsBaseDir,
-			};
+			// Project skills from .pi/
 			addResources(
 				"skills",
-				collectAutoSkillEntries(agentsSkillsDir, "agents"),
-				agentsMetadata,
+				collectAutoSkillEntries(projectDirs.skills, "pi"),
+				projectMetadata,
 				projectOverrides.skills,
-				agentsBaseDir,
+				projectBaseDir,
+			);
+
+			// Project skills from .agents/ (each with its own baseDir)
+			for (const agentsSkillsDir of projectAgentsSkillDirs) {
+				const agentsBaseDir = dirname(agentsSkillsDir); // the .agents directory
+				const agentsMetadata: PathMetadata = {
+					...projectMetadata,
+					baseDir: agentsBaseDir,
+				};
+				addResources(
+					"skills",
+					collectAutoSkillEntries(agentsSkillsDir, "agents"),
+					agentsMetadata,
+					projectOverrides.skills,
+					agentsBaseDir,
+				);
+			}
+
+			addResources(
+				"prompts",
+				collectAutoPromptEntries(projectDirs.prompts),
+				projectMetadata,
+				projectOverrides.prompts,
+				projectBaseDir,
+			);
+			addResources(
+				"themes",
+				collectAutoThemeEntries(projectDirs.themes),
+				projectMetadata,
+				projectOverrides.themes,
+				projectBaseDir,
 			);
 		}
-
-		addResources(
-			"prompts",
-			collectAutoPromptEntries(projectDirs.prompts),
-			projectMetadata,
-			projectOverrides.prompts,
-			projectBaseDir,
-		);
-		addResources(
-			"themes",
-			collectAutoThemeEntries(projectDirs.themes),
-			projectMetadata,
-			projectOverrides.themes,
-			projectBaseDir,
-		);
 
 		// User extensions from ~/.pi/agent/
 		addResources(

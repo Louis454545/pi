@@ -1,20 +1,18 @@
 # Session File Format
 
-Sessions are stored as JSONL (JSON Lines) files. Each line is a JSON object with a `type` field. Session entries form a tree structure via `id`/`parentId` fields, enabling in-place branching without creating new files.
+Conversations are stored as JSONL (JSON Lines) files. Each line is a JSON object with a `type` field. Entries form a tree structure via `id`/`parentId` fields, enabling in-place branching without creating new files.
 
 ## File Location
 
 ```
-~/.pi/sessions/--<path>--/<timestamp>_<uuid>.jsonl
+~/.pi/sessions/global/conversation.jsonl
 ```
 
-Where `<path>` is the working directory with `/` replaced by `-`.
+Legacy session files used path-based directories such as `~/.pi/sessions/--<path>--/<timestamp>_<uuid>.jsonl`. On first global-conversation launch, pi imports the most recent valid legacy file into the canonical path.
 
-## Deleting Sessions
+## Archiving Conversations
 
-Sessions can be removed by deleting their `.jsonl` files under `~/.pi/sessions/`.
-
-Pi also supports deleting sessions interactively from `/resume` (select a session and press `Ctrl+D`, then confirm). When available, pi uses the `trash` CLI to avoid permanent deletion.
+`/reset` and `/import` archive the previous canonical conversation under `~/.pi/sessions/global/archive/` before writing a new canonical file.
 
 ## Session Version
 
@@ -191,7 +189,7 @@ First line of the file. Metadata only, not part of the tree (no `id`/`parentId`)
 {"type":"session","version":3,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project"}
 ```
 
-For sessions with a parent (created via `/fork`, `/clone`, or `newSession({ parentSession })`):
+For sessions with a parent (created by reset/import or advanced compatibility APIs):
 
 ```json
 {"type":"session","version":3,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","parentSession":"/path/to/original/session.jsonl"}
@@ -282,13 +280,13 @@ Set `label` to `undefined` to clear a label.
 
 ### SessionInfoEntry
 
-Session metadata (e.g., user-defined display name). Set via `/name`, `--name` / `-n`, or `pi.setSessionName()` in extensions.
+Session metadata (e.g., user-defined display name). Set via `/name` or `pi.setSessionName()` in extensions. The `--name` / `-n` flag still parses for compatibility but is deprecated.
 
 ```json
 {"type":"session_info","id":"k1l2m3n4","parentId":"j0k1l2m3","timestamp":"2024-12-03T14:35:00.000Z","name":"Refactor auth module"}
 ```
 
-The session name is displayed in the session selector (`/resume`) instead of the first message when set.
+The session name is displayed as the conversation name.
 
 ## Tree Structure
 
@@ -363,20 +361,23 @@ for (const line of lines) {
 Key methods for working with sessions programmatically.
 
 ### Static Creation Methods
+- `SessionManager.openGlobal(agentDir, options)` - Open, import, or create the canonical global conversation
+- `SessionManager.resetGlobal(agentDir, options)` - Archive and reset the canonical global conversation
+- `SessionManager.importGlobal(agentDir, sourcePath, options)` - Archive current canonical file and import JSONL
 - `SessionManager.create(cwd, sessionDir?)` - New session
 - `SessionManager.open(path, sessionDir?)` - Open existing session file
-- `SessionManager.continueRecent(cwd, sessionDir?)` - Continue most recent or create new
+- `SessionManager.continueRecent(cwd, sessionDir?)` - Legacy compatibility: continue most recent or create new
 - `SessionManager.inMemory(cwd?)` - No file persistence
-- `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?)` - Fork session from another project
+- `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?)` - Advanced compatibility: fork session from another project
 
 ### Static Listing Methods
 - `SessionManager.list(cwd, sessionDir?, onProgress?)` - List sessions for a directory
 - `SessionManager.listAll(onProgress?)` - List all sessions across all projects
 
 ### Instance Methods - Session Management
-- `newSession(options?)` - Start a new session (options: `{ parentSession?: string }`)
-- `setSessionFile(path)` - Switch to a different session file
-- `createBranchedSession(leafId)` - Extract branch to new session file
+- `newSession(options?)` - Reset entries in the current manager (options: `{ parentSession?: string }`)
+- `setSessionFile(path)` - Advanced compatibility: switch to a different session file
+- `createBranchedSession(leafId)` - Advanced compatibility: extract branch to a new session file
 
 ### Instance Methods - Appending (all return entry ID)
 - `appendMessage(message)` - Add message
@@ -384,7 +385,7 @@ Key methods for working with sessions programmatically.
 - `appendModelChange(provider, modelId)` - Record model change
 - `appendCompaction(summary, firstKeptEntryId, tokensBefore, details?, fromHook?)` - Add compaction
 - `appendCustomEntry(customType, data?)` - Extension state (not in context)
-- `appendSessionInfo(name)` - Set session display name
+- `appendSessionInfo(name)` - Set conversation display name
 - `appendCustomMessageEntry(customType, content, display, details?)` - Extension message (in context)
 - `appendLabelChange(targetId, label)` - Set/clear label
 

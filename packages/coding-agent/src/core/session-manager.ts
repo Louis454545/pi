@@ -5,6 +5,7 @@ import {
 	appendFileSync,
 	closeSync,
 	createReadStream,
+	type Dirent,
 	existsSync,
 	mkdirSync,
 	openSync,
@@ -17,6 +18,7 @@ import {
 } from "fs";
 import { readdir, stat } from "fs/promises";
 import { dirname, join, resolve } from "path";
+import lockfile from "proper-lockfile";
 import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getPiHomeDir, getSessionsDir } from "../config.ts";
@@ -42,6 +44,12 @@ export interface SessionHeader {
 
 export interface NewSessionOptions {
 	id?: string;
+	parentSession?: string;
+}
+
+export interface GlobalConversationOptions {
+	cwd: string;
+	sessionDir?: string;
 	parentSession?: string;
 }
 
@@ -511,6 +519,173 @@ export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultA
 	return sessionDir;
 }
 
+export function getGlobalConversationDir(agentDir: string = getDefaultAgentDir(), sessionDir?: string): string {
+	return join(getSessionsDir(agentDir, sessionDir), "global");
+}
+
+export function getGlobalConversationFile(agentDir: string = getDefaultAgentDir(), sessionDir?: string): string {
+	return join(getGlobalConversationDir(agentDir, sessionDir), "conversation.jsonl");
+}
+
+export function getGlobalConversationArchiveDir(agentDir: string = getDefaultAgentDir(), sessionDir?: string): string {
+	return join(getGlobalConversationDir(agentDir, sessionDir), "archive");
+}
+
+function writeSessionFile(filePath: string, entries: FileEntry[]): void {
+	const fd = openSync(filePath, "w");
+	try {
+		for (const entry of entries) {
+			writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+		}
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function createArchivePath(filePath: string, archiveDir: string): string {
+	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+	const header = readSessionHeader(filePath);
+	const idSuffix = header ? `_${header.id}` : "";
+	let candidate = join(archiveDir, `${timestamp}${idSuffix}.jsonl`);
+	let suffix = 1;
+	while (existsSync(candidate)) {
+		candidate = join(archiveDir, `${timestamp}${idSuffix}_${suffix}.jsonl`);
+		suffix++;
+	}
+	return candidate;
+}
+
+function archiveGlobalConversation(agentDir: string, sessionDir?: string): string | undefined {
+	const canonicalFile = getGlobalConversationFile(agentDir, sessionDir);
+	if (!existsSync(canonicalFile)) {
+		return undefined;
+	}
+	const archiveDir = getGlobalConversationArchiveDir(agentDir, sessionDir);
+	mkdirSync(archiveDir, { recursive: true });
+	const archivePath = createArchivePath(canonicalFile, archiveDir);
+	renameSync(canonicalFile, archivePath);
+	return archivePath;
+}
+
+function rewriteEntriesForGlobalConversation(sourcePath: string, cwd: string): FileEntry[] {
+	const sourceEntries = loadStrictEntriesFromFile(sourcePath);
+	if (sourceEntries.length === 0) {
+		throw new Error(`Cannot import invalid session file: ${sourcePath}`);
+	}
+	const sourceHeader = sourceEntries.find((entry): entry is SessionHeader => entry.type === "session");
+	const timestamp = new Date().toISOString();
+	const header: SessionHeader = {
+		type: "session",
+		version: CURRENT_SESSION_VERSION,
+		id: createSessionId(),
+		timestamp,
+		cwd: resolvePath(cwd || sourceHeader?.cwd || getDefaultAgentDir()),
+		parentSession: sourcePath,
+	};
+	return [header, ...sourceEntries.filter((entry) => entry.type !== "session")];
+}
+
+function createFreshGlobalConversationEntries(options: GlobalConversationOptions): FileEntry[] {
+	const timestamp = new Date().toISOString();
+	const header: SessionHeader = {
+		type: "session",
+		version: CURRENT_SESSION_VERSION,
+		id: createSessionId(),
+		timestamp,
+		cwd: resolvePath(options.cwd),
+		parentSession: options.parentSession,
+	};
+	return [header];
+}
+
+function createImportGlobalConversationEntries(sourcePath: string, options: GlobalConversationOptions): FileEntry[] {
+	const resolvedSourcePath = resolvePath(sourcePath);
+	return rewriteEntriesForGlobalConversation(resolvedSourcePath, options.cwd);
+}
+
+function writeGlobalConversationFile(
+	agentDir: string,
+	entries: FileEntry[],
+	options: GlobalConversationOptions,
+): { dir: string; file: string } {
+	const dir = getGlobalConversationDir(agentDir, options.sessionDir);
+	const file = getGlobalConversationFile(agentDir, options.sessionDir);
+	mkdirSync(dir, { recursive: true });
+	writeSessionFile(file, entries);
+	return { dir, file };
+}
+
+function collectLegacySessionCandidates(
+	dir: string,
+	excludedDirs: Set<string>,
+	result: Array<{ path: string; mtimeMs: number }>,
+): void {
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return;
+	}
+
+	for (const entry of entries) {
+		if (entry.isSymbolicLink()) {
+			continue;
+		}
+		const entryPath = join(dir, entry.name);
+		if (entry.isDirectory()) {
+			const resolvedEntryPath = resolve(entryPath);
+			if (excludedDirs.has(resolvedEntryPath)) {
+				continue;
+			}
+			collectLegacySessionCandidates(entryPath, excludedDirs, result);
+			continue;
+		}
+		if (!entry.isFile() || !entry.name.endsWith(".jsonl")) {
+			continue;
+		}
+		if (loadStrictEntriesFromFile(entryPath).length === 0) {
+			continue;
+		}
+		try {
+			result.push({ path: entryPath, mtimeMs: statSync(entryPath).mtimeMs });
+		} catch {
+			// Ignore files that disappear during traversal.
+		}
+	}
+}
+
+export async function acquireGlobalConversationLock(
+	agentDir: string = getDefaultAgentDir(),
+	sessionDir?: string,
+): Promise<() => Promise<void>> {
+	const dir = getGlobalConversationDir(agentDir, sessionDir);
+	mkdirSync(dir, { recursive: true });
+	try {
+		return await lockfile.lock(dir, {
+			realpath: false,
+			stale: 30000,
+			retries: {
+				retries: 5,
+				factor: 1,
+				minTimeout: 50,
+				maxTimeout: 100,
+				randomize: false,
+			},
+		});
+	} catch (error) {
+		const code =
+			typeof error === "object" && error !== null && "code" in error
+				? String((error as { code?: unknown }).code)
+				: undefined;
+		if (code === "ELOCKED") {
+			throw new Error(
+				"Global conversation is already open in another pi process. Close it before starting another persistent session.",
+			);
+		}
+		throw error;
+	}
+}
+
 const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
 
 function parseSessionEntryLine(line: string): FileEntry | null {
@@ -523,8 +698,16 @@ function parseSessionEntryLine(line: string): FileEntry | null {
 	}
 }
 
-/** Exported for testing */
-export function loadEntriesFromFile(filePath: string): FileEntry[] {
+function parseStrictSessionEntryLine(line: string): { entry: FileEntry | null; malformed: boolean } {
+	if (!line.trim()) return { entry: null, malformed: false };
+	try {
+		return { entry: JSON.parse(line) as FileEntry, malformed: false };
+	} catch {
+		return { entry: null, malformed: true };
+	}
+}
+
+function loadEntriesFromFileInternal(filePath: string, rejectMalformed: boolean): FileEntry[] {
 	const resolvedFilePath = normalizePath(filePath);
 	if (!existsSync(resolvedFilePath)) return [];
 
@@ -543,8 +726,9 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 			let lineStart = 0;
 			let newlineIndex = pending.indexOf("\n", lineStart);
 			while (newlineIndex !== -1) {
-				const entry = parseSessionEntryLine(pending.slice(lineStart, newlineIndex));
-				if (entry) entries.push(entry);
+				const parsed = parseStrictSessionEntryLine(pending.slice(lineStart, newlineIndex));
+				if (rejectMalformed && parsed.malformed) return [];
+				if (parsed.entry) entries.push(parsed.entry);
 				lineStart = newlineIndex + 1;
 				newlineIndex = pending.indexOf("\n", lineStart);
 			}
@@ -552,8 +736,9 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 		}
 
 		pending += decoder.end();
-		const finalEntry = parseSessionEntryLine(pending);
-		if (finalEntry) entries.push(finalEntry);
+		const finalEntry = parseStrictSessionEntryLine(pending);
+		if (rejectMalformed && finalEntry.malformed) return [];
+		if (finalEntry.entry) entries.push(finalEntry.entry);
 	} finally {
 		closeSync(fd);
 	}
@@ -566,6 +751,15 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	}
 
 	return entries;
+}
+
+/** Exported for testing */
+export function loadEntriesFromFile(filePath: string): FileEntry[] {
+	return loadEntriesFromFileInternal(filePath, false);
+}
+
+function loadStrictEntriesFromFile(filePath: string): FileEntry[] {
+	return loadEntriesFromFileInternal(filePath, true);
 }
 
 function readSessionHeader(filePath: string): SessionHeader | null {
@@ -948,6 +1142,16 @@ export class SessionManager {
 
 	getCwd(): string {
 		return this.cwd;
+	}
+
+	setCwd(cwd: string): void {
+		this.cwd = resolvePath(cwd);
+		const header = this.getHeader();
+		if (header) {
+			header.cwd = this.cwd;
+			this._rewriteFile();
+			this.flushed = true;
+		}
 	}
 
 	getSessionDir(): string {
@@ -1483,6 +1687,52 @@ export class SessionManager {
 	/** Create an in-memory session (no file persistence) */
 	static inMemory(cwd: string = process.cwd()): SessionManager {
 		return new SessionManager(cwd, "", undefined, false);
+	}
+
+	static findMostRecentLegacySession(agentDir: string = getDefaultAgentDir(), sessionDir?: string): string | null {
+		const sessionsDir = getSessionsDir(agentDir, sessionDir);
+		const globalDir = resolve(getGlobalConversationDir(agentDir, sessionDir));
+		const archiveDir = resolve(getGlobalConversationArchiveDir(agentDir, sessionDir));
+		const candidates: Array<{ path: string; mtimeMs: number }> = [];
+		collectLegacySessionCandidates(sessionsDir, new Set([globalDir, archiveDir]), candidates);
+		candidates.sort((a, b) => {
+			const timeDiff = b.mtimeMs - a.mtimeMs;
+			return timeDiff !== 0 ? timeDiff : a.path.localeCompare(b.path);
+		});
+		return candidates[0]?.path ?? null;
+	}
+
+	static openGlobal(agentDir: string = getDefaultAgentDir(), options: GlobalConversationOptions): SessionManager {
+		const canonicalFile = getGlobalConversationFile(agentDir, options.sessionDir);
+		const canonicalDir = getGlobalConversationDir(agentDir, options.sessionDir);
+		if (existsSync(canonicalFile)) {
+			return new SessionManager(options.cwd, canonicalDir, canonicalFile, true);
+		}
+
+		const legacySession = SessionManager.findMostRecentLegacySession(agentDir, options.sessionDir);
+		if (legacySession) {
+			const entries = createImportGlobalConversationEntries(legacySession, options);
+			const { dir, file } = writeGlobalConversationFile(agentDir, entries, options);
+			return new SessionManager(options.cwd, dir, file, true);
+		}
+
+		const entries = createFreshGlobalConversationEntries(options);
+		const { dir, file } = writeGlobalConversationFile(agentDir, entries, options);
+		return new SessionManager(options.cwd, dir, file, true);
+	}
+
+	static resetGlobal(agentDir: string = getDefaultAgentDir(), options: GlobalConversationOptions): SessionManager {
+		archiveGlobalConversation(agentDir, options.sessionDir);
+		const entries = createFreshGlobalConversationEntries(options);
+		const { dir, file } = writeGlobalConversationFile(agentDir, entries, options);
+		return new SessionManager(options.cwd, dir, file, true);
+	}
+
+	static importGlobal(agentDir: string, sourcePath: string, options: GlobalConversationOptions): SessionManager {
+		const entries = createImportGlobalConversationEntries(sourcePath, options);
+		archiveGlobalConversation(agentDir, options.sessionDir);
+		const { dir, file } = writeGlobalConversationFile(agentDir, entries, options);
+		return new SessionManager(options.cwd, dir, file, true);
 	}
 
 	/**

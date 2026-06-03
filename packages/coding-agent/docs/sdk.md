@@ -115,7 +115,7 @@ interface AgentSession {
 }
 ```
 
-Session replacement APIs such as new-session, resume, fork, and import live on `AgentSessionRuntime`, not on `AgentSession`.
+Global-conversation reset/import and advanced compatibility APIs such as resume and fork live on `AgentSessionRuntime`, not on `AgentSession`.
 
 ### createAgentSessionRuntime() and AgentSessionRuntime
 
@@ -134,8 +134,14 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
-const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
-  const services = await createAgentSessionServices({ cwd });
+const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+  cwd,
+  agentDir,
+  sessionManager,
+  includeProjectResources,
+  sessionStartEvent,
+}) => {
+  const services = await createAgentSessionServices({ cwd, agentDir, includeProjectResources });
   return {
     ...(await createAgentSessionFromServices({
       services,
@@ -150,7 +156,8 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 const runtime = await createAgentSessionRuntime(createRuntime, {
   cwd: process.cwd(),
   agentDir: getAgentDir(),
-  sessionManager: SessionManager.create(process.cwd()),
+  sessionManager: SessionManager.openGlobal(getAgentDir(), { cwd: process.cwd() }),
+  includeProjectResources: true,
 });
 ```
 
@@ -693,31 +700,32 @@ const { session } = await createAgentSession({
   sessionManager: SessionManager.inMemory(),
 });
 
-// New persistent session
-const { session: persisted } = await createAgentSession({
-  sessionManager: SessionManager.create(process.cwd()),
-});
-
-// Continue most recent
-const { session: continued, modelFallbackMessage } = await createAgentSession({
-  sessionManager: SessionManager.continueRecent(process.cwd()),
+// Global conversation, matching normal CLI persistence
+const { session: persisted, modelFallbackMessage } = await createAgentSession({
+  sessionManager: SessionManager.openGlobal(getAgentDir(), { cwd: process.cwd() }),
 });
 if (modelFallbackMessage) {
   console.log("Note:", modelFallbackMessage);
 }
 
-// Open specific file
+// Advanced compatibility: open a specific session file
 const { session: opened } = await createAgentSession({
   sessionManager: SessionManager.open("/path/to/session.jsonl"),
 });
 
-// List sessions
+// Advanced compatibility: list legacy session files
 const currentProjectSessions = await SessionManager.list(process.cwd());
-const allSessions = await SessionManager.listAll(process.cwd());
+const allSessions = await SessionManager.listAll();
 
-// Session replacement API for /new, /resume, /fork, /clone, and import flows.
-const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
-  const services = await createAgentSessionServices({ cwd });
+// Advanced compatibility: replacement APIs for reset/import and legacy session switching/forking.
+const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+  cwd,
+  agentDir,
+  sessionManager,
+  includeProjectResources,
+  sessionStartEvent,
+}) => {
+  const services = await createAgentSessionServices({ cwd, agentDir, includeProjectResources });
   return {
     ...(await createAgentSessionFromServices({
       services,
@@ -732,19 +740,20 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 const runtime = await createAgentSessionRuntime(createRuntime, {
   cwd: process.cwd(),
   agentDir: getAgentDir(),
-  sessionManager: SessionManager.create(process.cwd()),
+  sessionManager: SessionManager.openGlobal(getAgentDir(), { cwd: process.cwd() }),
+  includeProjectResources: true,
 });
 
-// Replace the active session with a fresh one
+// Archive and reset the global conversation
 await runtime.newSession();
 
-// Replace the active session with another saved session
+// Advanced compatibility: replace the active session with another saved session
 await runtime.switchSession("/path/to/session.jsonl");
 
-// Replace the active session with a fork from a specific user entry
+// Advanced compatibility: replace the active session with a fork from a specific user entry
 await runtime.fork("entry-id");
 
-// Clone the active path through a specific entry
+// Advanced compatibility: clone the active path through a specific entry
 await runtime.fork("entry-id", { position: "at" });
 ```
 
@@ -755,7 +764,7 @@ const sm = SessionManager.open("/path/to/session.jsonl");
 
 // Session listing
 const currentProjectSessions = await SessionManager.list(process.cwd());
-const allSessions = await SessionManager.listAll(process.cwd());
+const allSessions = await SessionManager.listAll();
 
 // Tree traversal
 const entries = sm.getEntries();        // All entries (excludes header)

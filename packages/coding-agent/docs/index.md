@@ -43,7 +43,7 @@ For the full first-run flow, see [Quickstart](quickstart.md).
 - [Providers](providers.md) - subscription and API-key setup for built-in providers.
 - [Settings](settings.md) - global and project settings.
 - [Keybindings](keybindings.md) - default shortcuts and custom keybindings.
-- [Sessions](sessions.md) - session management, branching, and tree navigation.
+- [Global Conversation](sessions.md) - global conversation storage, reset/import, and tree navigation.
 - [Compaction](compaction.md) - context compaction and branch summarization.
 
 ## Customization

@@ -47,7 +47,6 @@ import {
 	TUI,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import chalk from "chalk";
 import { spawn, spawnSync } from "child_process";
 import {
 	APP_NAME,
@@ -80,7 +79,7 @@ import { DefaultPackageManager } from "../../core/package-manager.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-names.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
-import { type SessionContext, SessionManager } from "../../core/session-manager.ts";
+import type { SessionContext, SessionManager } from "../../core/session-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
@@ -89,7 +88,7 @@ import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/cha
 import { copyToClipboard } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { parseGitUrl } from "../../utils/git.ts";
-import { getCwdRelativePath } from "../../utils/paths.ts";
+import { getCwdRelativePath, resolvePath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
@@ -115,13 +114,11 @@ import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
-import { SessionSelectorComponent } from "./components/session-selector.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
-import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
@@ -195,26 +192,8 @@ function isUnknownModel(model: Model<any> | undefined): boolean {
 	return !!model && model.provider === "unknown" && model.id === "unknown" && model.api === "unknown";
 }
 
-function quoteIfNeeded(value: string): string {
-	if (value.length > 0 && !/[^a-zA-Z0-9_\-./~:@]/.test(value)) {
-		return value;
-	}
-	return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
-	if (!process.stdout.isTTY) return undefined;
-	if (!sessionManager.isPersisted()) return undefined;
-
-	const sessionFile = sessionManager.getSessionFile();
-	if (!sessionFile || !fs.existsSync(sessionFile)) return undefined;
-
-	const args = [APP_NAME];
-	if (!sessionManager.usesDefaultSessionDir()) {
-		args.push("--session-dir", quoteIfNeeded(sessionManager.getSessionDir()));
-	}
-	args.push("--session", sessionManager.getSessionId());
-	return args.join(" ");
+export function formatResumeCommand(_sessionManager: SessionManager): string | undefined {
+	return undefined;
 }
 
 function hasDefaultModelProvider(providerId: string): providerId is keyof typeof defaultModelPerProvider {
@@ -594,7 +573,7 @@ export class InteractiveMode {
 
 		this.registerSignalHandlers();
 
-		// Load changelog (only show new entries, skip for resumed sessions)
+		// Load changelog (only show new entries, skip for restored conversations)
 		this.changelogMarkdown = this.getChangelogForDisplay();
 
 		// Ensure fd and rg are available (downloads if missing, adds to PATH via getBinDir)
@@ -879,7 +858,7 @@ export class InteractiveMode {
 
 	/**
 	 * Get changelog entries to display on startup.
-	 * Only shows new entries since last seen version, skips for resumed sessions.
+	 * Only shows new entries since last seen version, skips for restored conversations.
 	 */
 	private getChangelogForDisplay(): string | undefined {
 		// Skip changelog for resumed/continued sessions (already have messages)
@@ -1527,7 +1506,7 @@ export class InteractiveMode {
 						}
 						return result;
 					} catch (error: unknown) {
-						return this.handleFatalRuntimeError("Failed to create session", error);
+						return this.handleFatalRuntimeError("Failed to reset conversation", error);
 					}
 				},
 				fork: async (entryId, options) => {
@@ -1536,11 +1515,11 @@ export class InteractiveMode {
 						if (!result.cancelled) {
 							this.renderCurrentSessionState();
 							this.editor.setText(result.selectedText ?? "");
-							this.showStatus("Forked to new session");
+							this.showStatus("Advanced fork complete");
 						}
 						return { cancelled: result.cancelled };
 					} catch (error: unknown) {
-						return this.handleFatalRuntimeError("Failed to fork session", error);
+						return this.handleFatalRuntimeError("Failed to fork conversation", error);
 					}
 				},
 				navigateTree: async (targetId, options) => {
@@ -2410,16 +2389,12 @@ export class InteractiveMode {
 				this.isBashMode = false;
 				this.updateEditorBorderColor();
 			} else if (!this.editor.getText().trim()) {
-				// Double-escape with empty editor triggers /tree, /fork, or nothing based on setting
+				// Double-escape with empty editor triggers /tree or nothing based on setting
 				const action = this.settingsManager.getDoubleEscapeAction();
 				if (action !== "none") {
 					const now = Date.now();
 					if (now - this.lastEscapeTime < 500) {
-						if (action === "tree") {
-							this.showTreeSelector();
-						} else {
-							this.showUserMessageSelector();
-						}
+						this.showTreeSelector();
 						this.lastEscapeTime = 0;
 					} else {
 						this.lastEscapeTime = now;
@@ -2444,10 +2419,8 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.editor.external", () => this.openExternalEditor());
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
-		this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
+		this.defaultEditor.onAction("app.session.new", () => this.handleResetCommand());
 		this.defaultEditor.onAction("app.session.tree", () => this.showTreeSelector());
-		this.defaultEditor.onAction("app.session.fork", () => this.showUserMessageSelector());
-		this.defaultEditor.onAction("app.session.resume", () => this.showSessionSelector());
 
 		this.defaultEditor.onChange = (text: string) => {
 			const wasBashMode = this.isBashMode;
@@ -2547,16 +2520,6 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/fork") {
-				this.showUserMessageSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/clone") {
-				this.editor.setText("");
-				await this.handleCloneCommand();
-				return;
-			}
 			if (text === "/tree") {
 				this.showTreeSelector();
 				this.editor.setText("");
@@ -2572,9 +2535,17 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/new") {
+			if (text === "/reset" || text === "/new") {
 				this.editor.setText("");
-				await this.handleClearCommand();
+				if (text === "/new") {
+					this.showWarning("/new is deprecated. Use /reset.");
+				}
+				await this.handleResetCommand();
+				return;
+			}
+			if (text === "/cwd" || text.startsWith("/cwd ")) {
+				this.editor.setText("");
+				await this.handleCwdCommand(text);
 				return;
 			}
 			if (text === "/compact" || text.startsWith("/compact ")) {
@@ -2600,11 +2571,6 @@ export class InteractiveMode {
 			}
 			if (text === "/dementedelves") {
 				this.handleDementedDelves();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/resume") {
-				this.showSessionSelector();
 				this.editor.setText("");
 				return;
 			}
@@ -3349,11 +3315,6 @@ export class InteractiveMode {
 
 		this.stop();
 		await this.runtimeHost.dispose();
-
-		const resumeCommand = formatResumeCommand(this.sessionManager);
-		if (resumeCommand) {
-			process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
-		}
 
 		process.exit(0);
 	}
@@ -4283,69 +4244,6 @@ export class InteractiveMode {
 		});
 	}
 
-	private showUserMessageSelector(): void {
-		const userMessages = this.session.getUserMessagesForForking();
-
-		if (userMessages.length === 0) {
-			this.showStatus("No messages to fork from");
-			return;
-		}
-
-		const initialSelectedId = userMessages[userMessages.length - 1]?.entryId;
-
-		this.showSelector((done) => {
-			const selector = new UserMessageSelectorComponent(
-				userMessages.map((m) => ({ id: m.entryId, text: m.text })),
-				async (entryId) => {
-					try {
-						const result = await this.runtimeHost.fork(entryId);
-						if (result.cancelled) {
-							done();
-							this.ui.requestRender();
-							return;
-						}
-
-						this.renderCurrentSessionState();
-						this.editor.setText(result.selectedText ?? "");
-						done();
-						this.showStatus("Forked to new session");
-					} catch (error: unknown) {
-						done();
-						this.showError(error instanceof Error ? error.message : String(error));
-					}
-				},
-				() => {
-					done();
-					this.ui.requestRender();
-				},
-				initialSelectedId,
-			);
-			return { component: selector, focus: selector.getMessageList() };
-		});
-	}
-
-	private async handleCloneCommand(): Promise<void> {
-		const leafId = this.sessionManager.getLeafId();
-		if (!leafId) {
-			this.showStatus("Nothing to clone yet");
-			return;
-		}
-
-		try {
-			const result = await this.runtimeHost.fork(leafId, { position: "at" });
-			if (result.cancelled) {
-				this.ui.requestRender();
-				return;
-			}
-
-			this.renderCurrentSessionState();
-			this.editor.setText("");
-			this.showStatus("Cloned to new session");
-		} catch (error: unknown) {
-			this.showError(error instanceof Error ? error.message : String(error));
-		}
-	}
-
 	private showTreeSelector(initialSelectedId?: string): void {
 		const tree = this.sessionManager.getTree();
 		const realLeafId = this.sessionManager.getLeafId();
@@ -4475,44 +4373,6 @@ export class InteractiveMode {
 		});
 	}
 
-	private showSessionSelector(): void {
-		this.showSelector((done) => {
-			const selector = new SessionSelectorComponent(
-				(onProgress) =>
-					SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionDir(), onProgress),
-				(onProgress) =>
-					this.sessionManager.usesDefaultSessionDir()
-						? SessionManager.listAll(onProgress)
-						: SessionManager.listAll(this.sessionManager.getSessionDir(), onProgress),
-				async (sessionPath) => {
-					done();
-					await this.handleResumeSession(sessionPath);
-				},
-				() => {
-					done();
-					this.ui.requestRender();
-				},
-				() => {
-					void this.shutdown();
-				},
-				() => this.ui.requestRender(),
-				{
-					renameSession: async (sessionFilePath: string, nextName: string | undefined) => {
-						const next = (nextName ?? "").trim();
-						if (!next) return;
-						const mgr = SessionManager.open(sessionFilePath);
-						mgr.appendSessionInfo(next);
-					},
-					showRenameHint: true,
-					keybindings: this.keybindings,
-				},
-
-				this.sessionManager.getSessionFile(),
-			);
-			return { component: selector, focus: selector };
-		});
-	}
-
 	private async handleResumeSession(
 		sessionPath: string,
 		options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
@@ -4530,13 +4390,13 @@ export class InteractiveMode {
 				return result;
 			}
 			this.renderCurrentSessionState();
-			this.showStatus("Resumed session");
+			this.showStatus("Switched conversation");
 			return result;
 		} catch (error: unknown) {
 			if (error instanceof MissingSessionCwdError) {
 				const selectedCwd = await this.promptForMissingSessionCwd(error);
 				if (!selectedCwd) {
-					this.showStatus("Resume cancelled");
+					this.showStatus("Switch cancelled");
 					return { cancelled: true };
 				}
 				const result = await this.runtimeHost.switchSession(sessionPath, {
@@ -4547,10 +4407,10 @@ export class InteractiveMode {
 					return result;
 				}
 				this.renderCurrentSessionState();
-				this.showStatus("Resumed session in current cwd");
+				this.showStatus("Switched conversation in current cwd");
 				return result;
 			}
-			return this.handleFatalRuntimeError("Failed to resume session", error);
+			return this.handleFatalRuntimeError("Failed to switch conversation", error);
 		}
 	}
 
@@ -5058,17 +4918,17 @@ export class InteractiveMode {
 		try {
 			if (outputPath?.endsWith(".jsonl")) {
 				const filePath = this.session.exportToJsonl(outputPath);
-				this.showStatus(`Session exported to: ${filePath}`);
+				this.showStatus(`Conversation exported to: ${filePath}`);
 			} else {
 				const filePath = await this.session.exportToHtml(outputPath);
-				this.showStatus(`Session exported to: ${filePath}`);
+				this.showStatus(`Conversation exported to: ${filePath}`);
 			}
 		} catch (error: unknown) {
-			this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
+			this.showError(`Failed to export conversation: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
 	}
 
-	private getPathCommandArgument(text: string, command: "/export" | "/import"): string | undefined {
+	private getPathCommandArgument(text: string, command: "/export" | "/import" | "/cwd"): string | undefined {
 		if (text === command) {
 			return undefined;
 		}
@@ -5104,7 +4964,10 @@ export class InteractiveMode {
 			return;
 		}
 
-		const confirmed = await this.showExtensionConfirm("Import session", `Replace current session with ${inputPath}?`);
+		const confirmed = await this.showExtensionConfirm(
+			"Import conversation",
+			`Replace global conversation with ${inputPath}?`,
+		);
 		if (!confirmed) {
 			this.showStatus("Import cancelled");
 			return;
@@ -5122,7 +4985,7 @@ export class InteractiveMode {
 				return;
 			}
 			this.renderCurrentSessionState();
-			this.showStatus(`Session imported from: ${inputPath}`);
+			this.showStatus(`Conversation imported from: ${inputPath}`);
 		} catch (error: unknown) {
 			if (error instanceof MissingSessionCwdError) {
 				const selectedCwd = await this.promptForMissingSessionCwd(error);
@@ -5136,14 +4999,48 @@ export class InteractiveMode {
 					return;
 				}
 				this.renderCurrentSessionState();
-				this.showStatus(`Session imported from: ${inputPath}`);
+				this.showStatus(`Conversation imported from: ${inputPath}`);
 				return;
 			}
 			if (error instanceof SessionImportFileNotFoundError) {
-				this.showError(`Failed to import session: ${error.message}`);
+				this.showError(`Failed to import conversation: ${error.message}`);
 				return;
 			}
-			await this.handleFatalRuntimeError("Failed to import session", error);
+			await this.handleFatalRuntimeError("Failed to import conversation", error);
+		}
+	}
+
+	private async handleCwdCommand(text: string): Promise<void> {
+		const inputPath = this.getPathCommandArgument(text, "/cwd");
+		if (!inputPath) {
+			this.showStatus(`Working context: ${this.sessionManager.getCwd()}\nUsage: /cwd <path>`);
+			return;
+		}
+		if (this.session.isStreaming) {
+			this.showWarning("Wait for the current response to finish before changing working context.");
+			return;
+		}
+		if (this.session.isCompacting) {
+			this.showWarning("Wait for compaction to finish before changing working context.");
+			return;
+		}
+
+		const nextCwd = resolvePath(inputPath, this.sessionManager.getCwd());
+		if (!fs.existsSync(nextCwd) || !fs.statSync(nextCwd).isDirectory()) {
+			this.showError(`Working context is not a directory: ${nextCwd}`);
+			return;
+		}
+
+		if (this.loadingAnimation) {
+			this.loadingAnimation.stop();
+			this.loadingAnimation = undefined;
+		}
+		this.statusContainer.clear();
+		try {
+			await this.runtimeHost.changeWorkingContext(nextCwd);
+			this.showStatus(`Working context: ${nextCwd}`);
+		} catch (error: unknown) {
+			await this.handleFatalRuntimeError("Failed to change working context", error);
 		}
 	}
 
@@ -5165,7 +5062,7 @@ export class InteractiveMode {
 		try {
 			await this.session.exportToHtml(tmpFile);
 		} catch (error: unknown) {
-			this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
+			this.showError(`Failed to export conversation: ${error instanceof Error ? error.message : "Unknown error"}`);
 			return;
 		}
 
@@ -5262,7 +5159,7 @@ export class InteractiveMode {
 			const currentName = this.sessionManager.getSessionName();
 			if (currentName) {
 				this.chatContainer.addChild(new Spacer(1));
-				this.chatContainer.addChild(new Text(theme.fg("dim", `Session name: ${currentName}`), 1, 0));
+				this.chatContainer.addChild(new Text(theme.fg("dim", `Conversation name: ${currentName}`), 1, 0));
 			} else {
 				this.showWarning("Usage: /name <name>");
 			}
@@ -5272,7 +5169,7 @@ export class InteractiveMode {
 
 		this.session.setSessionName(name);
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(theme.fg("dim", `Session name set: ${name}`), 1, 0));
+		this.chatContainer.addChild(new Text(theme.fg("dim", `Conversation name set: ${name}`), 1, 0));
 		this.ui.requestRender();
 	}
 
@@ -5463,7 +5360,7 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private async handleClearCommand(): Promise<void> {
+	private async handleResetCommand(): Promise<void> {
 		if (this.loadingAnimation) {
 			this.loadingAnimation.stop();
 			this.loadingAnimation = undefined;
@@ -5476,10 +5373,10 @@ export class InteractiveMode {
 			}
 			this.renderCurrentSessionState();
 			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(new Text(`${theme.fg("accent", "✓ New session started")}`, 1, 1));
+			this.chatContainer.addChild(new Text(`${theme.fg("accent", "New conversation started")}`, 1, 1));
 			this.ui.requestRender();
 		} catch (error: unknown) {
-			await this.handleFatalRuntimeError("Failed to create session", error);
+			await this.handleFatalRuntimeError("Failed to reset conversation", error);
 		}
 	}
 

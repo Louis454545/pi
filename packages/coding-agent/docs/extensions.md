@@ -303,13 +303,13 @@ user sends prompt ────────────────────�
                                                            │
 user sends another prompt ◄────────────────────────────────┘
 
-/new (new session) or /resume (switch session)
+/reset (archive and reset global conversation) or import
   ├─► session_before_switch (can cancel)
   ├─► session_shutdown
   ├─► session_start { reason: "new" | "resume", previousSessionFile? }
   └─► resources_discover { reason: "startup" }
 
-/fork or /clone
+advanced compatibility fork/clone APIs
   ├─► session_before_fork (can cancel)
   ├─► session_shutdown
   ├─► session_start { reason: "fork", previousSessionFile }
@@ -355,7 +355,7 @@ pi.on("resources_discover", async (event, _ctx) => {
 
 ### Session Events
 
-See [Session Format](session-format.md) for session storage internals and the SessionManager API.
+See [Session Format](session-format.md) for JSONL storage internals and the SessionManager API.
 
 #### session_start
 
@@ -371,7 +371,7 @@ pi.on("session_start", async (event, ctx) => {
 
 #### session_before_switch
 
-Fired before starting a new session (`/new`) or switching sessions (`/resume`).
+Fired before resetting/importing the global conversation or using advanced session-switch compatibility APIs.
 
 ```typescript
 pi.on("session_before_switch", async (event, ctx) => {
@@ -385,24 +385,24 @@ pi.on("session_before_switch", async (event, ctx) => {
 });
 ```
 
-After a successful switch or new-session action, pi emits `session_shutdown` for the old extension instance, reloads and rebinds extensions for the new session, then emits `session_start` with `reason: "new" | "resume"` and `previousSessionFile`.
+After a successful reset, import, or advanced switch action, pi emits `session_shutdown` for the old extension instance, reloads and rebinds extensions, then emits `session_start` with `reason: "new" | "resume"` and `previousSessionFile`.
 Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `session_start`.
 
 #### session_before_fork
 
-Fired when forking via `/fork` or cloning via `/clone`.
+Fired when using advanced fork/clone compatibility APIs.
 
 ```typescript
 pi.on("session_before_fork", async (event, ctx) => {
   // event.entryId - ID of the selected entry
-  // event.position - "before" for /fork, "at" for /clone
-  return { cancel: true }; // Cancel fork/clone
+  // event.position - "before" for fork, "at" for clone
+  return { cancel: true }; // Cancel fork/clone compatibility action
   // OR
   return { skipConversationRestore: true }; // Reserved for future conversation restore control
 });
 ```
 
-After a successful fork or clone, pi emits `session_shutdown` for the old extension instance, reloads and rebinds extensions for the new session, then emits `session_start` with `reason: "fork"` and `previousSessionFile`.
+After a successful advanced fork or clone, pi emits `session_shutdown` for the old extension instance, reloads and rebinds extensions, then emits `session_start` with `reason: "fork"` and `previousSessionFile`.
 Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `session_start`.
 
 #### session_before_compact / session_compact
@@ -434,7 +434,7 @@ pi.on("session_compact", async (event, ctx) => {
 
 #### session_before_tree / session_tree
 
-Fired on `/tree` navigation. See [Sessions](sessions.md) for tree navigation concepts.
+Fired on `/tree` navigation. See [Global Conversation](sessions.md) for tree navigation concepts.
 
 ```typescript
 pi.on("session_before_tree", async (event, ctx) => {
@@ -1024,9 +1024,9 @@ Options:
 - `setup`: mutate the new session's `SessionManager` before `withSession` runs
 - `withSession`: run post-switch work against a fresh replacement-session context. Do not use captured old `pi` / command `ctx`; see [Session replacement lifecycle and footguns](#session-replacement-lifecycle-and-footguns).
 
-### ctx.fork(entryId, options?)
+### ctx.fork(entryId, options?) Advanced Compatibility
 
-Fork from a specific entry, creating a new session file:
+Fork from a specific entry, creating a replacement session file. This API is retained for advanced compatibility and is no longer exposed in normal interactive UX:
 
 ```typescript
 const result = await ctx.fork("entry-id-123", {
@@ -1069,9 +1069,9 @@ Options:
 - `replaceInstructions`: If true, `customInstructions` replaces the default prompt instead of being appended
 - `label`: Label to attach to the branch summary entry (or target entry if not summarizing)
 
-### ctx.switchSession(sessionPath, options?)
+### ctx.switchSession(sessionPath, options?) Advanced Compatibility
 
-Switch to a different session file:
+Switch to a different session file. This API is retained for extensions that need advanced session compatibility; normal UX uses the global conversation:
 
 ```typescript
 const result = await ctx.switchSession("/path/to/session.jsonl", {
@@ -1338,7 +1338,7 @@ pi.on("session_start", async (_event, ctx) => {
 
 ### pi.setSessionName(name)
 
-Set the session display name (shown in session selector instead of first message).
+Set the conversation display name.
 
 ```typescript
 pi.setSessionName("Refactor auth module");

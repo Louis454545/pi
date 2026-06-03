@@ -219,9 +219,9 @@ export class RpcClient {
 	}
 
 	/**
-	 * Start a new session, optionally with parent tracking.
+	 * Archive and reset the global conversation, optionally with parent tracking.
 	 * @param parentSession - Optional parent session path for lineage tracking
-	 * @returns Object with `cancelled: true` if an extension cancelled the new session
+	 * @returns Object with `cancelled: true` if an extension cancelled the reset
 	 */
 	async newSession(parentSession?: string): Promise<{ cancelled: boolean }> {
 		const response = await this.send({ type: "new_session", parentSession });
@@ -353,7 +353,7 @@ export class RpcClient {
 	}
 
 	/**
-	 * Export session to HTML.
+	 * Export conversation to HTML.
 	 */
 	async exportHtml(outputPath?: string): Promise<{ path: string }> {
 		const response = await this.send({ type: "export_html", outputPath });

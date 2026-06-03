@@ -141,6 +141,11 @@ describe("parseArgs", () => {
 			expect(result.messages).toEqual([]);
 		});
 
+		test("parses --cwd", () => {
+			const result = parseArgs(["--cwd", "./workspace"]);
+			expect(result.cwd).toBe("./workspace");
+		});
+
 		test("parses --export", () => {
 			const result = parseArgs(["--export", "session.jsonl"]);
 			expect(result.export).toBe("session.jsonl");

@@ -18,9 +18,9 @@
 
 # Pi Agent Harness Mono Repo
 
-This is the home of the pi agent harness project including our self extensible coding agent.
+This is the home of the pi agent harness project including our self-extensible computer agent.
 
-* **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
+* **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive computer agent CLI
 * **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
 * **[@earendil-works/pi-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)
 
@@ -29,11 +29,11 @@ To learn more about pi:
 * [Visit pi.dev](https://pi.dev), the project website with demos
 * [Read the documentation](https://pi.dev/docs/latest), but you can also ask the agent to explain itself
 
-## Share your OSS coding agent sessions
+## Share Your OSS Pi Conversations
 
-If you use pi or other coding agents for open source work, please share your sessions.
+If you use pi or other agents for open source work, please share your conversations.
 
-Public OSS session data helps improve coding agents with real-world tasks, tool use, failures, and fixes instead of toy benchmarks.
+Public OSS conversation data helps improve agents with real-world tasks, tool use, failures, and fixes instead of toy benchmarks.
 
 For the full explanation, see [this post on X](https://x.com/badlogicgames/status/2037811643774652911).
 
@@ -51,7 +51,7 @@ I regularly publish my own `pi-mono` work sessions here:
 |---------|-------------|
 | **[@earendil-works/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
 | **[@earendil-works/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
-| **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
+| **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive computer agent CLI |
 | **[@earendil-works/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
 
 For Slack/chat automation and workflows see [earendil-works/pi-chat](https://github.com/earendil-works/pi-chat).

@@ -89,20 +89,18 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
 | `app.clipboard.pasteImage` | `ctrl+v` (`alt+v` on Windows) | Paste image from clipboard |
 
-### Sessions
+### Conversation
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `app.session.new` | *(none)* | Start a new session (`/new`) |
-| `app.session.tree` | *(none)* | Open session tree navigator (`/tree`) |
-| `app.session.fork` | *(none)* | Fork current session (`/fork`) |
-| `app.session.resume` | *(none)* | Open session resume picker (`/resume`) |
+| `app.session.new` | *(none)* | Reset the global conversation (`/reset`) |
+| `app.session.tree` | *(none)* | Open conversation tree navigator (`/tree`) |
 | `app.session.togglePath` | `ctrl+p` | Toggle path display |
 | `app.session.toggleSort` | `ctrl+s` | Toggle sort mode |
 | `app.session.toggleNamedFilter` | `ctrl+n` | Toggle named-only filter |
-| `app.session.rename` | `ctrl+r` | Rename session |
-| `app.session.delete` | `ctrl+d` | Delete session |
-| `app.session.deleteNoninvasive` | `ctrl+backspace` | Delete session when query is empty |
+| `app.session.rename` | `ctrl+r` | Advanced session selector rename action |
+| `app.session.delete` | `ctrl+d` | Advanced session selector delete action |
+| `app.session.deleteNoninvasive` | `ctrl+backspace` | Advanced session selector delete action when query is empty |
 
 ### Models and Thinking
 

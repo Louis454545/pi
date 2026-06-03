@@ -147,15 +147,15 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("persistent memory", () => {
-		test("injects memory sections in stable order before project context", () => {
+		test("injects memory sections in stable order before working context", () => {
 			const prompt = buildSystemPrompt({
 				cwd: process.cwd(),
-				contextFiles: [{ path: "/repo/AGENTS.md", content: "Project instructions" }],
+				contextFiles: [{ path: "/repo/AGENTS.md", content: "Working-context instructions" }],
 				skills: [],
 				memoryContext,
 			});
 
-			const coreIndex = prompt.indexOf("You are an expert coding assistant");
+			const coreIndex = prompt.indexOf("You are an expert computer agent");
 			const policyIndex = prompt.indexOf("# Persistent Identity and Memory");
 			const identityIndex = prompt.indexOf("# Agent Identity Context");
 			const soulIndex = prompt.indexOf("## SOUL.md");
@@ -163,7 +163,7 @@ describe("buildSystemPrompt", () => {
 			const userIndex = prompt.indexOf("## USER.md");
 			const memoryIndex = prompt.indexOf("## MEMORY.md");
 			const retrievedIndex = prompt.indexOf("# Retrieved Memory Context");
-			const projectIndex = prompt.indexOf("<project_context>");
+			const workingContextIndex = prompt.indexOf("<working_context>");
 
 			expect(coreIndex).toBeGreaterThanOrEqual(0);
 			expect(policyIndex).toBeGreaterThan(coreIndex);
@@ -173,7 +173,9 @@ describe("buildSystemPrompt", () => {
 			expect(userIndex).toBeGreaterThan(agentIdentityIndex);
 			expect(memoryIndex).toBeGreaterThan(userIndex);
 			expect(retrievedIndex).toBeGreaterThan(memoryIndex);
-			expect(projectIndex).toBeGreaterThan(retrievedIndex);
+			expect(workingContextIndex).toBeGreaterThan(retrievedIndex);
+			expect(prompt).toContain("Current working context:");
+			expect(prompt).not.toContain("<project_context>");
 		});
 	});
 });

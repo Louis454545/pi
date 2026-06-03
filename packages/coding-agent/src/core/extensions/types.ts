@@ -334,7 +334,7 @@ export interface ExtensionCommandContext extends ExtensionContext {
 	/** Wait for the agent to finish streaming */
 	waitForIdle(): Promise<void>;
 
-	/** Start a new session, optionally with initialization. */
+	/** Archive and reset the global conversation, optionally with initialization. */
 	newSession(options?: {
 		parentSession?: string;
 		setup?: (sessionManager: SessionManager) => Promise<void>;

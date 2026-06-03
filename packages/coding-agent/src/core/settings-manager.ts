@@ -102,7 +102,7 @@ export interface Settings {
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
-	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
+	doubleEscapeAction?: "fork" | "tree" | "none"; // "fork" is legacy and treated as "tree"
 	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default filter when opening /tree
 	thinkingBudgets?: ThinkingBudgetsSettings; // Custom token budgets for thinking levels
 	editorPaddingX?: number; // Horizontal padding for input editor (default: 0)
@@ -170,13 +170,14 @@ export interface SettingsError {
 
 export class FileSettingsStorage implements SettingsStorage {
 	private globalSettingsPath: string;
-	private projectSettingsPath: string;
+	private projectSettingsPath: string | undefined;
 
-	constructor(cwd: string, agentDir: string) {
+	constructor(cwd: string, agentDir: string, options: { includeProjectSettings?: boolean } = {}) {
 		const resolvedCwd = resolvePath(cwd);
 		const resolvedAgentDir = resolvePath(agentDir);
 		this.globalSettingsPath = join(resolvedAgentDir, "settings.json");
-		this.projectSettingsPath = join(resolvedCwd, CONFIG_DIR_NAME, "settings.json");
+		this.projectSettingsPath =
+			options.includeProjectSettings === false ? undefined : join(resolvedCwd, CONFIG_DIR_NAME, "settings.json");
 	}
 
 	private acquireLockSyncWithRetry(path: string): () => void {
@@ -208,6 +209,13 @@ export class FileSettingsStorage implements SettingsStorage {
 
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
 		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
+		if (!path) {
+			const next = fn(undefined);
+			if (next !== undefined) {
+				throw new Error("Cannot write project settings without an explicit working context");
+			}
+			return;
+		}
 		const dir = dirname(path);
 
 		let release: (() => void) | undefined;
@@ -286,8 +294,12 @@ export class SettingsManager {
 	}
 
 	/** Create a SettingsManager that loads from files */
-	static create(cwd: string, agentDir: string = getAgentDir()): SettingsManager {
-		const storage = new FileSettingsStorage(cwd, agentDir);
+	static create(
+		cwd: string,
+		agentDir: string = getAgentDir(),
+		options: { includeProjectSettings?: boolean } = {},
+	): SettingsManager {
+		const storage = new FileSettingsStorage(cwd, agentDir, options);
 		return SettingsManager.fromStorage(storage);
 	}
 
@@ -1023,11 +1035,12 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getDoubleEscapeAction(): "fork" | "tree" | "none" {
-		return this.settings.doubleEscapeAction ?? "tree";
+	getDoubleEscapeAction(): "tree" | "none" {
+		const action = this.settings.doubleEscapeAction ?? "tree";
+		return action === "none" ? "none" : "tree";
 	}
 
-	setDoubleEscapeAction(action: "fork" | "tree" | "none"): void {
+	setDoubleEscapeAction(action: "tree" | "none"): void {
 		this.globalSettings.doubleEscapeAction = action;
 		this.markModified("doubleEscapeAction");
 		this.save();

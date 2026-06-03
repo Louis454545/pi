@@ -356,6 +356,29 @@ Content`,
 			expect(agentsFiles).toEqual([]);
 		});
 
+		it("should skip project resources when project resources are disabled", async () => {
+			const piDir = join(cwd, ".pi");
+			mkdirSync(join(piDir, "prompts"), { recursive: true });
+			mkdirSync(join(piDir, "skills", "project-skill"), { recursive: true });
+			writeFileSync(join(cwd, "AGENTS.md"), "# Project Guidelines\n\nBe helpful.");
+			writeFileSync(join(piDir, "SYSTEM.md"), "Project system prompt");
+			writeFileSync(join(piDir, "APPEND_SYSTEM.md"), "Project append prompt");
+			writeFileSync(join(piDir, "prompts", "project.md"), "Project prompt");
+			writeFileSync(
+				join(piDir, "skills", "project-skill", "SKILL.md"),
+				"---\nname: project-skill\ndescription: Project skill\n---\nProject skill",
+			);
+
+			const loader = new DefaultResourceLoader({ cwd, agentDir, includeProjectResources: false });
+			await loader.reload();
+
+			expect(loader.getAgentsFiles().agentsFiles).toEqual([]);
+			expect(loader.getSystemPrompt()).toBeUndefined();
+			expect(loader.getAppendSystemPrompt()).toEqual([]);
+			expect(loader.getPrompts().prompts.some((prompt) => prompt.name === "project")).toBe(false);
+			expect(loader.getSkills().skills.some((skill) => skill.name === "project-skill")).toBe(false);
+		});
+
 		it("should discover SYSTEM.md from cwd/.pi", async () => {
 			const piDir = join(cwd, ".pi");
 			mkdirSync(piDir, { recursive: true });

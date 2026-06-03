@@ -129,18 +129,17 @@ The command output is sent to the model. Use `!!command` to run a command withou
 
 Use `/model` or Ctrl+L to choose a model. Use Shift+Tab to cycle thinking level. Use Ctrl+P / Shift+Ctrl+P to cycle through scoped models.
 
-### Continue later
+### Continue Later
 
-Sessions are saved automatically:
+Pi saves one global conversation automatically:
 
 ```bash
-pi -c                  # Continue most recent session
-pi -r                  # Browse previous sessions
-pi --name "my task"    # Set session display name at startup
-pi --session <path|id> # Open a specific session
+pi                         # Continue the global conversation
+pi --cwd .                 # Continue with this directory as working context
+pi --no-session            # Ephemeral mode; do not save
 ```
 
-Inside pi, use `/resume`, `/new`, `/tree`, `/fork`, and `/clone` to manage sessions.
+Inside pi, use `/cwd`, `/reset`, `/import`, and `/tree` to manage the global conversation.
 
 ### Non-interactive mode
 

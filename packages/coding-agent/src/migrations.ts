@@ -386,19 +386,20 @@ function checkDeprecatedExtensionDirs(baseDir: string, label: string): string[] 
 /**
  * Run extension system migrations (commands→prompts) and collect warnings about deprecated directories.
  */
-function migrateExtensionSystem(cwd: string): string[] {
+function migrateExtensionSystem(cwd?: string): string[] {
 	const agentDir = getAgentDir();
-	const projectDir = join(cwd, CONFIG_DIR_NAME);
 
 	// Migrate commands/ to prompts/
 	migrateCommandsToPrompts(agentDir, "Global");
-	migrateCommandsToPrompts(projectDir, "Project");
+	if (cwd !== undefined) {
+		migrateCommandsToPrompts(join(cwd, CONFIG_DIR_NAME), "Project");
+	}
 
 	// Check for deprecated directories
-	const warnings = [
-		...checkDeprecatedExtensionDirs(agentDir, "Global"),
-		...checkDeprecatedExtensionDirs(projectDir, "Project"),
-	];
+	const warnings = [...checkDeprecatedExtensionDirs(agentDir, "Global")];
+	if (cwd !== undefined) {
+		warnings.push(...checkDeprecatedExtensionDirs(join(cwd, CONFIG_DIR_NAME), "Project"));
+	}
 
 	return warnings;
 }
@@ -434,7 +435,7 @@ export async function showDeprecationWarnings(warnings: string[]): Promise<void>
  *
  * @returns Object with migration results and deprecation warnings
  */
-export function runMigrations(cwd: string): {
+export function runMigrations(cwd?: string): {
 	migratedAuthProviders: string[];
 	deprecationWarnings: string[];
 } {

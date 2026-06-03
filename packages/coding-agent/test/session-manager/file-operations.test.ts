@@ -1,9 +1,27 @@
 import { constants as bufferConstants } from "buffer";
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "fs";
+import {
+	appendFileSync,
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+	writeSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { findMostRecentSession, loadEntriesFromFile, SessionManager } from "../../src/core/session-manager.ts";
+import {
+	acquireGlobalConversationLock,
+	findMostRecentSession,
+	getGlobalConversationArchiveDir,
+	getGlobalConversationFile,
+	loadEntriesFromFile,
+	SessionManager,
+} from "../../src/core/session-manager.ts";
 
 describe("loadEntriesFromFile", () => {
 	let tempDir: string;
@@ -233,6 +251,176 @@ describe("SessionManager custom flat session directory", () => {
 
 		const continuedA = SessionManager.continueRecent(projectA, tempDir);
 		expect(continuedA.getSessionFile()).toBe(sessionA);
+	});
+});
+
+describe("SessionManager global conversation", () => {
+	let tempDir: string;
+	let agentDir: string;
+	let sessionDir: string;
+	let cwd: string;
+
+	beforeEach(() => {
+		tempDir = join(tmpdir(), `global-session-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		agentDir = join(tempDir, "agent");
+		sessionDir = join(tempDir, "sessions");
+		cwd = join(tempDir, "workspace");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(sessionDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	function writeLegacySession(relativePath: string, id: string, content: string): string {
+		const filePath = join(sessionDir, relativePath);
+		mkdirSync(join(filePath, ".."), { recursive: true });
+		writeFileSync(
+			filePath,
+			`${JSON.stringify({ type: "session", version: 3, id, timestamp: "2025-01-01T00:00:00.000Z", cwd })}\n` +
+				`${JSON.stringify({ type: "message", id: `${id}-msg`, parentId: null, timestamp: "2025-01-01T00:00:01.000Z", message: { role: "user", content, timestamp: 1 } })}\n`,
+		);
+		return filePath;
+	}
+
+	it("creates the canonical global conversation file", () => {
+		const sessionManager = SessionManager.openGlobal(agentDir, { cwd, sessionDir });
+		const canonicalFile = getGlobalConversationFile(agentDir, sessionDir);
+
+		expect(sessionManager.getSessionFile()).toBe(canonicalFile);
+		expect(existsSync(canonicalFile)).toBe(true);
+		expect(loadEntriesFromFile(canonicalFile)[0]).toMatchObject({ type: "session", cwd });
+	});
+
+	it("imports the most recent legacy session on first global open", async () => {
+		const older = writeLegacySession("old/older.jsonl", "old", "older message");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		const newer = writeLegacySession("new/newer.jsonl", "new", "newer message");
+
+		expect(SessionManager.findMostRecentLegacySession(agentDir, sessionDir)).toBe(newer);
+
+		const sessionManager = SessionManager.openGlobal(agentDir, { cwd, sessionDir });
+		const canonicalFile = getGlobalConversationFile(agentDir, sessionDir);
+		const entries = loadEntriesFromFile(canonicalFile);
+
+		expect(sessionManager.getSessionFile()).toBe(canonicalFile);
+		expect((entries[0] as { parentSession?: string }).parentSession).toBe(newer);
+		expect(JSON.stringify(entries)).toContain("newer message");
+		expect(JSON.stringify(entries)).not.toContain("older message");
+		expect(existsSync(older)).toBe(true);
+		expect(existsSync(newer)).toBe(true);
+	});
+
+	it("ignores corrupt legacy session files on first global open", async () => {
+		const valid = writeLegacySession("valid/valid.jsonl", "valid", "valid message");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		const corrupt = join(sessionDir, "corrupt/corrupt.jsonl");
+		mkdirSync(join(corrupt, ".."), { recursive: true });
+		writeFileSync(
+			corrupt,
+			`${JSON.stringify({ type: "session", version: 3, id: "corrupt", timestamp: "2025-01-01T00:00:00.000Z", cwd })}\n` +
+				"not valid json\n" +
+				`${JSON.stringify({ type: "message", id: "corrupt-msg", parentId: null, timestamp: "2025-01-01T00:00:01.000Z", message: { role: "user", content: "corrupt message", timestamp: 1 } })}\n`,
+		);
+
+		expect(SessionManager.findMostRecentLegacySession(agentDir, sessionDir)).toBe(valid);
+
+		SessionManager.openGlobal(agentDir, { cwd, sessionDir });
+		const entries = loadEntriesFromFile(getGlobalConversationFile(agentDir, sessionDir));
+
+		expect((entries[0] as { parentSession?: string }).parentSession).toBe(valid);
+		expect(JSON.stringify(entries)).toContain("valid message");
+		expect(JSON.stringify(entries)).not.toContain("corrupt message");
+	});
+
+	it("ignores canonical and archived global files when finding legacy sessions", async () => {
+		const legacy = writeLegacySession("project/session.jsonl", "legacy", "legacy message");
+		const canonicalFile = getGlobalConversationFile(agentDir, sessionDir);
+		const archiveFile = join(getGlobalConversationArchiveDir(agentDir, sessionDir), "archived.jsonl");
+		mkdirSync(join(canonicalFile, ".."), { recursive: true });
+		mkdirSync(join(archiveFile, ".."), { recursive: true });
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		writeLegacySession("global/conversation.jsonl", "canonical", "canonical message");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		writeLegacySession("global/archive/archived.jsonl", "archive", "archive message");
+
+		expect(SessionManager.findMostRecentLegacySession(agentDir, sessionDir)).toBe(legacy);
+	});
+
+	it("archives the current canonical file when resetting", () => {
+		const first = SessionManager.openGlobal(agentDir, { cwd, sessionDir });
+		first.appendMessage({ role: "user", content: "before reset", timestamp: 1 });
+
+		const reset = SessionManager.resetGlobal(agentDir, {
+			cwd,
+			sessionDir,
+			parentSession: first.getSessionFile(),
+		});
+		const canonicalFile = getGlobalConversationFile(agentDir, sessionDir);
+		const archiveDir = getGlobalConversationArchiveDir(agentDir, sessionDir);
+		const archiveFiles = readdirSync(archiveDir).filter((name) => name.endsWith(".jsonl"));
+		const entries = loadEntriesFromFile(canonicalFile);
+
+		expect(reset.getSessionFile()).toBe(canonicalFile);
+		expect(archiveFiles).toHaveLength(1);
+		expect(JSON.stringify(loadEntriesFromFile(join(archiveDir, archiveFiles[0])))).toContain("before reset");
+		expect(entries).toHaveLength(1);
+		expect(entries[0]).toMatchObject({ type: "session", parentSession: first.getSessionFile() });
+	});
+
+	it("archives the current canonical file when importing", () => {
+		const first = SessionManager.openGlobal(agentDir, { cwd, sessionDir });
+		first.appendMessage({ role: "user", content: "before import", timestamp: 1 });
+		const imported = writeLegacySession("import/import.jsonl", "imported", "imported message");
+
+		const sessionManager = SessionManager.importGlobal(agentDir, imported, { cwd, sessionDir });
+		const canonicalFile = getGlobalConversationFile(agentDir, sessionDir);
+		const archiveFiles = readdirSync(getGlobalConversationArchiveDir(agentDir, sessionDir)).filter((name) =>
+			name.endsWith(".jsonl"),
+		);
+		const entries = loadEntriesFromFile(canonicalFile);
+
+		expect(sessionManager.getSessionFile()).toBe(canonicalFile);
+		expect(archiveFiles).toHaveLength(1);
+		expect((entries[0] as { parentSession?: string }).parentSession).toBe(imported);
+		expect(JSON.stringify(entries)).toContain("imported message");
+	});
+
+	it("rejects corrupt explicit imports without archiving the current canonical file", () => {
+		const first = SessionManager.openGlobal(agentDir, { cwd, sessionDir });
+		first.appendMessage({ role: "user", content: "before corrupt import", timestamp: 1 });
+		const corrupt = join(sessionDir, "import/corrupt.jsonl");
+		mkdirSync(join(corrupt, ".."), { recursive: true });
+		writeFileSync(
+			corrupt,
+			`${JSON.stringify({ type: "session", version: 3, id: "corrupt", timestamp: "2025-01-01T00:00:00.000Z", cwd })}\n` +
+				"not valid json\n",
+		);
+
+		expect(() => SessionManager.importGlobal(agentDir, corrupt, { cwd, sessionDir })).toThrow(
+			"Cannot import invalid session file",
+		);
+
+		expect(JSON.stringify(loadEntriesFromFile(getGlobalConversationFile(agentDir, sessionDir)))).toContain(
+			"before corrupt import",
+		);
+		expect(existsSync(getGlobalConversationArchiveDir(agentDir, sessionDir))).toBe(false);
+	});
+
+	it("locks the canonical global conversation directory", async () => {
+		const release = await acquireGlobalConversationLock(agentDir, sessionDir);
+		try {
+			await expect(acquireGlobalConversationLock(agentDir, sessionDir)).rejects.toThrow(
+				"Global conversation is already open in another pi process",
+			);
+		} finally {
+			await release();
+		}
+
+		const releaseAgain = await acquireGlobalConversationLock(agentDir, sessionDir);
+		await releaseAgain();
 	});
 });
 

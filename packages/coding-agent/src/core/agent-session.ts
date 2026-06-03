@@ -3366,8 +3366,8 @@ export class AgentSession {
 	}
 
 	/**
-	 * Export session to HTML.
-	 * @param outputPath Optional output path (defaults to session directory)
+	 * Export conversation to HTML.
+	 * @param outputPath Optional output path (defaults to conversation directory)
 	 * @returns Path to exported file
 	 */
 	async exportToHtml(outputPath?: string): Promise<string> {

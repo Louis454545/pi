@@ -47,7 +47,7 @@ interface CliDirs {
 async function runCli(
 	args: string[] | ((dirs: CliDirs) => string[]),
 	setup?: (dirs: CliDirs) => void,
-): Promise<{ code: number | null; agentDir: string; stderr: string }> {
+): Promise<{ code: number | null; sessionsRoot: string; stderr: string }> {
 	const tempRoot = createTempDir();
 	const dirs: CliDirs = {
 		agentDir: join(tempRoot, "agent"),
@@ -78,7 +78,7 @@ async function runCli(
 		child.on("close", resolvePromise);
 	});
 
-	return { code, agentDir: dirs.agentDir, stderr };
+	return { code, sessionsRoot: join(tempRoot, "sessions"), stderr };
 }
 
 function writeSession(sessionDir: string, cwd: string, id: string): void {
@@ -88,24 +88,35 @@ function writeSession(sessionDir: string, cwd: string, id: string): void {
 	);
 }
 
-describe("--session-id read-only commands", () => {
+describe("deprecated --session-id read-only commands", () => {
 	it("does not reserve a session for --help", async () => {
 		const result = await runCli(["--session-id", "read-only-help", "--help"]);
 
 		expect(result.code).toBe(0);
-		expect(hasSessionWithId(join(result.agentDir, "sessions"), "read-only-help")).toBe(false);
+		expect(hasSessionWithId(result.sessionsRoot, "read-only-help")).toBe(false);
 	});
 
 	it("does not reserve a session for --list-models", async () => {
 		const result = await runCli(["--session-id", "read-only-models", "--list-models"]);
 
 		expect(result.code).toBe(0);
-		expect(hasSessionWithId(join(result.agentDir, "sessions"), "read-only-models")).toBe(false);
+		expect(hasSessionWithId(result.sessionsRoot, "read-only-models")).toBe(false);
 	});
 
-	it("rejects an existing fork target session id", async () => {
+	it("does not reserve a deprecated fork target session id", async () => {
 		const result = await runCli(
-			(dirs) => ["--session-dir", dirs.sessionDir, "--fork", "source-id", "--session-id", "existing-id", "-p", "hi"],
+			(dirs) => [
+				"--session-dir",
+				dirs.sessionDir,
+				"--fork",
+				"source-id",
+				"--session-id",
+				"existing-id",
+				"--model",
+				"missing-model",
+				"-p",
+				"hi",
+			],
 			(dirs) => {
 				mkdirSync(dirs.sessionDir, { recursive: true });
 				writeSession(dirs.sessionDir, dirs.projectDir, "source-id");
@@ -114,18 +125,24 @@ describe("--session-id read-only commands", () => {
 		);
 
 		expect(result.code).toBe(1);
-		expect(result.stderr).toContain("Session already exists with id 'existing-id'");
+		expect(result.stderr).toContain("--fork");
+		expect(result.stderr).toContain("--session-id");
+		expect(result.stderr).toContain("deprecated");
+		expect(result.stderr).not.toContain("Session already exists with id 'existing-id'");
+		expect(hasSessionWithId(join(result.sessionsRoot, "global"), "existing-id")).toBe(false);
 	});
 });
 
-describe("--session-id validation", () => {
-	it("rejects ids invalid under SessionManager rules without stack traces", async () => {
+describe("deprecated --session-id validation", () => {
+	it("ignores ids that were previously validated under SessionManager rules", async () => {
 		for (const id of ["-bad", "bad id"]) {
-			const result = await runCli(["--session-id", id, "-p", "hi"]);
+			const result = await runCli(["--session-id", id, "--model", "missing-model", "-p", "hi"]);
 
 			expect(result.code).toBe(1);
-			expect(result.stderr).toContain("Session id must be non-empty");
+			expect(result.stderr).toContain("--session-id is deprecated");
+			expect(result.stderr).not.toContain("Session id must be non-empty");
 			expect(result.stderr).not.toContain("SessionManager.create");
+			expect(hasSessionWithId(result.sessionsRoot, id)).toBe(false);
 		}
 	});
 });

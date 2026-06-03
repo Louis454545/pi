@@ -5,16 +5,20 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
-import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
-import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
-import { selectSession } from "./cli/session-picker.ts";
-import { ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.ts";
+import {
+	ENV_GLOBAL_CONVERSATION_LOCK_HELD,
+	ENV_SESSION_DIR,
+	expandTildePath,
+	getAgentDir,
+	getPackageDir,
+	VERSION,
+} from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
@@ -26,27 +30,19 @@ import { AuthStorage } from "./core/auth-storage.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
 import type { ExtensionFactory } from "./core/extensions/types.ts";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
-import { KeybindingsManager } from "./core/keybindings.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
-import {
-	formatMissingSessionCwdPrompt,
-	getMissingSessionCwdIssue,
-	MissingSessionCwdError,
-	type SessionCwdIssue,
-} from "./core/session-cwd.ts";
-import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
+import { acquireGlobalConversationLock, SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { handleDaemonCommand } from "./daemon/command.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
-import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
-import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
+import { isLocalPath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 /**
@@ -135,205 +131,38 @@ async function prepareInitialMessage(
 	});
 }
 
-/** Result from resolving a session argument */
-type ResolvedSession =
-	| { type: "path"; path: string } // Direct file path
-	| { type: "local"; path: string } // Found in current project
-	| { type: "global"; path: string; cwd: string } // Found in different project
-	| { type: "not_found"; arg: string }; // Not found anywhere
-
-/**
- * Resolve a session argument to a file path.
- * If it looks like a path, use as-is. Otherwise try to match as session ID prefix.
- */
-async function findLocalSessionByExactId(
-	sessionId: string,
-	cwd: string,
-	sessionDir?: string,
-): Promise<{ type: "local"; path: string } | undefined> {
-	const localSessions = await SessionManager.list(cwd, sessionDir);
-	const localMatch = localSessions.find((s) => s.id === sessionId);
-	return localMatch ? { type: "local", path: localMatch.path } : undefined;
-}
-
-async function resolveSessionPath(sessionArg: string, cwd: string, sessionDir?: string): Promise<ResolvedSession> {
-	// If it looks like a file path, resolve it before handing it to the session manager.
-	if (sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl")) {
-		return { type: "path", path: resolvePath(sessionArg, cwd) };
-	}
-
-	// Try to match as session ID in current project first
-	const localSessions = await SessionManager.list(cwd, sessionDir);
-	const localMatch =
-		localSessions.find((s) => s.id === sessionArg) ?? localSessions.find((s) => s.id.startsWith(sessionArg));
-
-	if (localMatch) {
-		return { type: "local", path: localMatch.path };
-	}
-
-	// Try global search across all projects
-	const allSessions = await SessionManager.listAll(sessionDir);
-	const globalMatch =
-		allSessions.find((s) => s.id === sessionArg) ?? allSessions.find((s) => s.id.startsWith(sessionArg));
-
-	if (globalMatch) {
-		return { type: "global", path: globalMatch.path, cwd: globalMatch.cwd };
-	}
-
-	// Not found anywhere
-	return { type: "not_found", arg: sessionArg };
-}
-
-/** Prompt user for yes/no confirmation */
-async function promptConfirm(message: string): Promise<boolean> {
-	return new Promise((resolve) => {
-		const rl = createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-		rl.question(`${message} [y/N] `, (answer) => {
-			rl.close();
-			resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
-		});
-	});
-}
-
-function validateForkFlags(parsed: Args): void {
-	if (!parsed.fork) return;
-
-	const conflictingFlags = [
-		parsed.session ? "--session" : undefined,
+function reportDeprecatedSessionFlags(parsed: Args): void {
+	const flags = [
 		parsed.continue ? "--continue" : undefined,
 		parsed.resume ? "--resume" : undefined,
-		parsed.noSession ? "--no-session" : undefined,
-	].filter((flag): flag is string => flag !== undefined);
-
-	if (conflictingFlags.length > 0) {
-		console.error(chalk.red(`Error: --fork cannot be combined with ${conflictingFlags.join(", ")}`));
-		process.exit(1);
-	}
-}
-
-function validateSessionIdFlags(parsed: Args): void {
-	if (parsed.sessionId === undefined) return;
-
-	const conflictingFlags = [
 		parsed.session ? "--session" : undefined,
-		parsed.continue ? "--continue" : undefined,
-		parsed.resume ? "--resume" : undefined,
-		parsed.noSession ? "--no-session" : undefined,
+		parsed.sessionId ? "--session-id" : undefined,
+		parsed.fork ? "--fork" : undefined,
 	].filter((flag): flag is string => flag !== undefined);
-
-	if (conflictingFlags.length > 0) {
-		console.error(chalk.red(`Error: --session-id cannot be combined with ${conflictingFlags.join(", ")}`));
-		process.exit(1);
+	if (flags.length > 0) {
+		console.error(
+			chalk.yellow(
+				`Warning: ${flags.join(", ")} ${flags.length === 1 ? "is" : "are"} deprecated; the global conversation is continued by default.`,
+			),
+		);
 	}
-
-	try {
-		assertValidSessionId(parsed.sessionId);
-	} catch (error: unknown) {
-		const message = error instanceof Error ? error.message : String(error);
-		console.error(chalk.red(`Error: ${message}`));
-		process.exit(1);
+	if (parsed.name !== undefined) {
+		console.error(chalk.yellow("Warning: --name is deprecated; use /name to rename the global conversation."));
 	}
 }
 
-function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string, sessionId?: string): SessionManager {
-	try {
-		return SessionManager.forkFrom(sourcePath, cwd, sessionDir, { id: sessionId });
-	} catch (error: unknown) {
-		const message = error instanceof Error ? error.message : String(error);
-		console.error(chalk.red(`Error: ${message}`));
-		process.exit(1);
-	}
-}
-
-async function createSessionManager(
+function createSessionManager(
 	parsed: Args,
+	agentDir: string,
 	cwd: string,
 	sessionDir: string | undefined,
-	settingsManager: SettingsManager,
-): Promise<SessionManager> {
+): SessionManager {
 	if (parsed.noSession || parsed.help || parsed.listModels !== undefined) {
 		return SessionManager.inMemory(cwd);
 	}
 
-	if (parsed.fork) {
-		if (parsed.sessionId) {
-			const existingTarget = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
-			if (existingTarget) {
-				console.error(chalk.red(`Session already exists with id '${parsed.sessionId}'`));
-				process.exit(1);
-			}
-		}
-
-		const resolved = await resolveSessionPath(parsed.fork, cwd, sessionDir);
-
-		switch (resolved.type) {
-			case "path":
-			case "local":
-			case "global":
-				return forkSessionOrExit(resolved.path, cwd, sessionDir, parsed.sessionId);
-
-			case "not_found":
-				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
-				process.exit(1);
-		}
-	}
-
-	if (parsed.session) {
-		const resolved = await resolveSessionPath(parsed.session, cwd, sessionDir);
-
-		switch (resolved.type) {
-			case "path":
-			case "local":
-				return SessionManager.open(resolved.path, sessionDir);
-
-			case "global": {
-				console.log(chalk.yellow(`Session found in different project: ${resolved.cwd}`));
-				const shouldFork = await promptConfirm("Fork this session into current directory?");
-				if (!shouldFork) {
-					console.log(chalk.dim("Aborted."));
-					process.exit(0);
-				}
-				return forkSessionOrExit(resolved.path, cwd, sessionDir);
-			}
-
-			case "not_found":
-				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
-				process.exit(1);
-		}
-	}
-
-	if (parsed.resume) {
-		initTheme(settingsManager.getTheme(), true);
-		try {
-			const selectedPath = await selectSession(
-				(onProgress) => SessionManager.list(cwd, sessionDir, onProgress),
-				(onProgress) => SessionManager.listAll(sessionDir, onProgress),
-			);
-			if (!selectedPath) {
-				console.log(chalk.dim("No session selected"));
-				process.exit(0);
-			}
-			return SessionManager.open(selectedPath, sessionDir);
-		} finally {
-			stopThemeWatcher();
-		}
-	}
-
-	if (parsed.continue) {
-		return SessionManager.continueRecent(cwd, sessionDir);
-	}
-
-	if (parsed.sessionId) {
-		const existingSession = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
-		if (existingSession) {
-			return SessionManager.open(existingSession.path, sessionDir);
-		}
-	}
-
-	return SessionManager.create(cwd, sessionDir, { id: parsed.sessionId });
+	reportDeprecatedSessionFlags(parsed);
+	return SessionManager.openGlobal(agentDir, { cwd, sessionDir });
 }
 
 function buildSessionOptions(
@@ -437,40 +266,6 @@ function resolveCliPaths(cwd: string, paths: string[] | undefined): string[] | u
 	return paths?.map((value) => (isLocalPath(value) ? resolvePath(value, cwd) : value));
 }
 
-async function promptForMissingSessionCwd(
-	issue: SessionCwdIssue,
-	settingsManager: SettingsManager,
-): Promise<string | undefined> {
-	initTheme(settingsManager.getTheme());
-	setKeybindings(KeybindingsManager.create());
-
-	return new Promise((resolve) => {
-		const ui = new TUI(new ProcessTerminal(), settingsManager.getShowHardwareCursor());
-		ui.setClearOnShrink(settingsManager.getClearOnShrink());
-
-		let settled = false;
-		const finish = (result: string | undefined) => {
-			if (settled) {
-				return;
-			}
-			settled = true;
-			ui.stop();
-			resolve(result);
-		};
-
-		const selector = new ExtensionSelectorComponent(
-			formatMissingSessionCwdPrompt(issue),
-			["Continue", "Cancel"],
-			(option) => finish(option === "Continue" ? issue.fallbackCwd : undefined),
-			() => finish(undefined),
-			{ tui: ui },
-		);
-		ui.addChild(selector);
-		ui.setFocus(selector);
-		ui.start();
-	});
-}
-
 export interface MainOptions {
 	extensionFactories?: ExtensionFactory[];
 }
@@ -527,7 +322,7 @@ export async function main(args: string[], options?: MainOptions) {
 			const outputPath = parsed.messages.length > 0 ? parsed.messages[0] : undefined;
 			result = await exportFromFile(parsed.export, outputPath);
 		} catch (error: unknown) {
-			const message = error instanceof Error ? error.message : "Failed to export session";
+			const message = error instanceof Error ? error.message : "Failed to export conversation";
 			console.error(chalk.red(`Error: ${message}`));
 			process.exit(1);
 		}
@@ -540,45 +335,46 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 
-	validateForkFlags(parsed);
-	validateSessionIdFlags(parsed);
+	const launchCwd = process.cwd();
+	const agentDir = getAgentDir();
+	const workingContextCwd = parsed.cwd !== undefined ? resolvePath(parsed.cwd, launchCwd) : undefined;
+	const cwd = workingContextCwd ?? agentDir;
+	const includeProjectResources = workingContextCwd !== undefined;
 
-	// Run migrations (pass cwd for project-local migrations)
-	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(process.cwd());
+	// Run project-local migrations only when a working context is explicit.
+	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(workingContextCwd);
 	time("runMigrations");
 
-	const cwd = process.cwd();
-	const agentDir = getAgentDir();
-	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
+	const startupSettingsManager = SettingsManager.create(cwd, agentDir, {
+		includeProjectSettings: includeProjectResources,
+	});
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
 
-	// Decide the final runtime cwd before creating cwd-bound runtime services.
-	// --session and --resume may select a session from another project, so project-local
-	// settings, resources, provider registrations, and models must be resolved only after
-	// the target session cwd is known. The startup-cwd settings manager is used only for
-	// sessionDir lookup during session selection.
 	const envSessionDir = process.env[ENV_SESSION_DIR];
 	const sessionDir =
-		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
+		(parsed.sessionDir ? resolvePath(parsed.sessionDir, launchCwd) : undefined) ??
 		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
 		startupSettingsManager.getSessionDir();
-	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
-	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
-	if (missingSessionCwdIssue) {
-		if (appMode === "interactive") {
-			const selectedCwd = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
-			if (!selectedCwd) {
-				process.exit(0);
-			}
-			sessionManager = SessionManager.open(missingSessionCwdIssue.sessionFile!, sessionDir, selectedCwd);
-		} else {
-			console.error(chalk.red(new MissingSessionCwdError(missingSessionCwdIssue).message));
-			process.exit(1);
-		}
+	const shouldUsePersistentGlobalConversation =
+		!parsed.noSession &&
+		!parsed.help &&
+		parsed.listModels === undefined &&
+		process.env[ENV_GLOBAL_CONVERSATION_LOCK_HELD] !== "1";
+	let releaseGlobalLock: (() => Promise<void>) | undefined;
+	if (shouldUsePersistentGlobalConversation) {
+		releaseGlobalLock = await acquireGlobalConversationLock(agentDir, sessionDir);
+	}
+	let sessionManager: SessionManager;
+	try {
+		sessionManager = createSessionManager(parsed, agentDir, cwd, sessionDir);
+	} catch (error) {
+		await releaseGlobalLock?.();
+		throw error;
 	}
 	if (parsed.name !== undefined) {
 		const name = parsed.name.trim();
 		if (!name) {
+			await releaseGlobalLock?.();
 			console.error(chalk.red("Error: --name requires a non-empty value"));
 			process.exit(1);
 		}
@@ -586,15 +382,16 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 	time("createSessionManager");
 
-	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions);
-	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
-	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates);
-	const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
+	const resolvedExtensionPaths = resolveCliPaths(launchCwd, parsed.extensions);
+	const resolvedSkillPaths = resolveCliPaths(launchCwd, parsed.skills);
+	const resolvedPromptTemplatePaths = resolveCliPaths(launchCwd, parsed.promptTemplates);
+	const resolvedThemePaths = resolveCliPaths(launchCwd, parsed.themes);
 	const authStorage = AuthStorage.create();
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
 		sessionManager,
+		includeProjectResources,
 		sessionStartEvent,
 	}) => {
 		const services = await createAgentSessionServices({
@@ -602,6 +399,7 @@ export async function main(args: string[], options?: MainOptions) {
 			agentDir,
 			authStorage,
 			extensionFlagValues: parsed.unknownFlags,
+			includeProjectResources,
 			resourceLoaderOptions: {
 				additionalExtensionPaths: resolvedExtensionPaths,
 				additionalSkillPaths: resolvedSkillPaths,
@@ -678,11 +476,20 @@ export async function main(args: string[], options?: MainOptions) {
 		};
 	};
 	time("createRuntime");
-	const runtime = await createAgentSessionRuntime(createRuntime, {
-		cwd: sessionManager.getCwd(),
-		agentDir,
-		sessionManager,
-	});
+	let runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>;
+	try {
+		runtime = await createAgentSessionRuntime(createRuntime, {
+			cwd: sessionManager.getCwd(),
+			agentDir,
+			sessionManager,
+			includeProjectResources,
+		});
+	} catch (error) {
+		await releaseGlobalLock?.();
+		throw error;
+	}
+	runtime.setReleaseLock(releaseGlobalLock);
+	releaseGlobalLock = undefined;
 	time("createAgentSessionRuntime");
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRegistry, resourceLoader } = services;
@@ -693,12 +500,14 @@ export async function main(args: string[], options?: MainOptions) {
 			.getExtensions()
 			.extensions.flatMap((extension) => Array.from(extension.flags.values()));
 		printHelp(extensionFlags);
+		await runtime.dispose();
 		process.exit(0);
 	}
 
 	if (parsed.listModels !== undefined) {
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
 		await listModels(modelRegistry, searchPattern);
+		await runtime.dispose();
 		process.exit(0);
 	}
 
@@ -729,18 +538,21 @@ export async function main(args: string[], options?: MainOptions) {
 	time("resolveModelScope");
 	reportDiagnostics(runtime.diagnostics);
 	if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+		await runtime.dispose();
 		process.exit(1);
 	}
 	time("createAgentSession");
 
 	if (appMode !== "interactive" && !session.model) {
 		console.error(chalk.red(formatNoModelsAvailableMessage()));
+		await runtime.dispose();
 		process.exit(1);
 	}
 
 	const startupBenchmark = isTruthyEnvFlag(process.env.PI_STARTUP_BENCHMARK);
 	if (startupBenchmark && appMode !== "interactive") {
 		console.error(chalk.red("Error: PI_STARTUP_BENCHMARK only supports interactive mode"));
+		await runtime.dispose();
 		process.exit(1);
 	}
 
@@ -762,6 +574,7 @@ export async function main(args: string[], options?: MainOptions) {
 			printTimings();
 			interactiveMode.stop();
 			stopThemeWatcher();
+			await runtime.dispose();
 			if (process.stdout.writableLength > 0) {
 				await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
 			}

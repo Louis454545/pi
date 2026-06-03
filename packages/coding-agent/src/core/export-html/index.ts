@@ -230,7 +230,7 @@ function preRenderCustomTools(
 }
 
 /**
- * Export session to HTML using SessionManager and AgentState.
+ * Export conversation to HTML using SessionManager and AgentState.
  * Used by TUI's /export command.
  */
 export async function exportSessionToHtml(
@@ -282,7 +282,7 @@ export async function exportSessionToHtml(
 }
 
 /**
- * Export session file to HTML (standalone, without AgentState).
+ * Export conversation file to HTML (standalone, without AgentState).
  * Used by CLI for exporting arbitrary session files.
  */
 export async function exportFromFile(inputPath: string, options?: ExportOptions | string): Promise<string> {

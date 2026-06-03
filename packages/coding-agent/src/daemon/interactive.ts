@@ -15,8 +15,6 @@ import {
 	Markdown,
 	type MarkdownTheme,
 	ProcessTerminal,
-	type SelectItem,
-	SelectList,
 	Spacer,
 	setKeybindings,
 	Text,
@@ -49,7 +47,6 @@ import { UserMessageComponent } from "../modes/interactive/components/user-messa
 import {
 	getEditorTheme,
 	getMarkdownTheme,
-	getSelectListTheme,
 	initTheme,
 	onThemeChange,
 	stopThemeWatcher,
@@ -77,15 +74,13 @@ type ToolResultPayload = {
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
 const BUILT_IN_COMMANDS: Array<{ name: string; description: string }> = [
 	{ name: "quit", description: "Exit daemon attach" },
-	{ name: "new", description: "Start a new daemon session" },
-	{ name: "compact", description: "Compact daemon session context" },
-	{ name: "session", description: "Show daemon session information" },
-	{ name: "name", description: "Set daemon session name" },
-	{ name: "export", description: "Export daemon session to HTML" },
+	{ name: "reset", description: "Archive and reset the global conversation" },
+	{ name: "compact", description: "Compact daemon conversation context" },
+	{ name: "session", description: "Show daemon conversation information" },
+	{ name: "name", description: "Set daemon conversation name" },
+	{ name: "export", description: "Export daemon conversation to HTML" },
 	{ name: "copy", description: "Copy last assistant response" },
 	{ name: "model", description: "Select or set daemon model" },
-	{ name: "fork", description: "Fork from a user message" },
-	{ name: "clone", description: "Clone the current branch" },
 	{ name: "reload", description: "Reload daemon resources" },
 	{ name: "hotkeys", description: "Show daemon attach shortcuts" },
 ];
@@ -328,33 +323,6 @@ class DaemonFooterComponent implements Component {
 			(relativeToHome !== ".." && !relativeToHome.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeToHome));
 		if (!insideHome) return this.cwd;
 		return relativeToHome === "" ? "~" : `~${path.sep}${relativeToHome}`;
-	}
-}
-
-class DaemonSelectComponent extends Container {
-	private selectList: SelectList;
-
-	constructor(title: string, items: SelectItem[], onSelect: (value: string) => void, onCancel: () => void) {
-		super();
-		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.fg("accent", title), 1, 0));
-		this.addChild(new Spacer(1));
-		this.selectList = new SelectList(items, Math.min(10, Math.max(1, items.length)), getSelectListTheme(), {
-			minPrimaryColumnWidth: 24,
-			maxPrimaryColumnWidth: 48,
-		});
-		this.selectList.onSelect = (item) => onSelect(item.value);
-		this.selectList.onCancel = onCancel;
-		this.addChild(this.selectList);
-		this.addChild(new DynamicBorder());
-	}
-
-	handleInput(keyData: string): void {
-		this.selectList.handleInput(keyData);
-	}
-
-	getFocus(): SelectList {
-		return this.selectList;
 	}
 }
 
@@ -914,8 +882,11 @@ class DaemonInteractiveMode {
 			await this.shutdown();
 			return;
 		}
-		if (text === "/new") {
-			await this.handleNewSessionCommand();
+		if (text === "/reset" || text === "/new") {
+			if (text === "/new") {
+				this.showWarning("/new is deprecated. Use /reset.");
+			}
+			await this.handleResetCommand();
 			return;
 		}
 		if (text === "/compact" || text.startsWith("/compact ")) {
@@ -946,19 +917,15 @@ class DaemonInteractiveMode {
 			await this.handleModelCommand(text.startsWith("/model ") ? text.slice(7).trim() : undefined);
 			return;
 		}
-		if (text === "/fork") {
-			await this.showForkSelector();
-			return;
-		}
-		if (text === "/clone") {
-			await this.handleCloneCommand();
-			return;
-		}
 		if (text === "/hotkeys") {
 			this.handleHotkeysCommand();
 			return;
 		}
-		if (text === "/settings" || text === "/tree" || text === "/resume") {
+		if (text === "/resume") {
+			this.showWarning("/resume is deprecated; the global conversation is continued by default.");
+			return;
+		}
+		if (text === "/settings" || text === "/tree") {
 			this.showWarning(`${text} is not available through daemon attach yet`);
 			return;
 		}
@@ -1526,17 +1493,17 @@ class DaemonInteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private async handleNewSessionCommand(): Promise<void> {
+	private async handleResetCommand(): Promise<void> {
 		try {
 			const result = await this.client.newSession();
 			if (result.cancelled) {
-				this.showStatus("New session cancelled");
+				this.showStatus("Reset cancelled");
 				return;
 			}
 			await this.refreshState();
 			await this.refreshCommands();
 			await this.renderCurrentMessages();
-			this.showStatus("New daemon session started");
+			this.showStatus("Daemon conversation reset");
 		} catch (error: unknown) {
 			this.showError(error);
 		}
@@ -1566,11 +1533,11 @@ class DaemonInteractiveMode {
 		const stats = this.stats;
 		const state = this.state;
 		if (!stats || !state) {
-			this.showWarning("Session information is unavailable");
+			this.showWarning("Conversation information is unavailable");
 			return;
 		}
 		const info = [
-			theme.bold("Session Info"),
+			theme.bold("Conversation Info"),
 			"",
 			`${theme.fg("dim", "Name:")} ${state.sessionName ?? "(unnamed)"}`,
 			`${theme.fg("dim", "File:")} ${stats.sessionFile ?? "In-memory"}`,
@@ -1596,13 +1563,13 @@ class DaemonInteractiveMode {
 	private async handleNameCommand(text: string): Promise<void> {
 		const name = text.replace(/^\/name\s*/, "").trim();
 		if (!name) {
-			this.showStatus(`Session name: ${this.state?.sessionName ?? "(unnamed)"}`);
+			this.showStatus(`Conversation name: ${this.state?.sessionName ?? "(unnamed)"}`);
 			return;
 		}
 		try {
 			await this.client.setSessionName(name);
 			await this.refreshState();
-			this.showStatus(`Session name set: ${name}`);
+			this.showStatus(`Conversation name set: ${name}`);
 		} catch (error: unknown) {
 			this.showError(error);
 		}
@@ -1612,7 +1579,7 @@ class DaemonInteractiveMode {
 		const outputPath = getPathCommandArgument(text, "/export");
 		try {
 			const result = await this.client.exportHtml(outputPath);
-			this.showStatus(`Session exported to: ${result.path}`);
+			this.showStatus(`Conversation exported to: ${result.path}`);
 		} catch (error: unknown) {
 			this.showError(error);
 		}
@@ -1707,65 +1674,6 @@ class DaemonInteractiveMode {
 		}
 	}
 
-	private async showForkSelector(): Promise<void> {
-		try {
-			const messages = await this.client.getForkMessages();
-			if (messages.length === 0) {
-				this.showStatus("No messages to fork from");
-				return;
-			}
-			const selector = new DaemonSelectComponent(
-				"Fork from message",
-				messages.map((message) => ({
-					value: message.entryId,
-					label: truncateToWidth(message.text.replace(/\s+/g, " "), 60, "..."),
-				})),
-				(entryId) => {
-					this.restoreEditorFocus();
-					void this.forkFromMessage(entryId);
-				},
-				() => this.restoreEditorFocus(),
-			);
-			this.editorContainer.clear();
-			this.editorContainer.addChild(selector);
-			this.ui.setFocus(selector.getFocus());
-			this.ui.requestRender();
-		} catch (error: unknown) {
-			this.showError(error);
-		}
-	}
-
-	private async forkFromMessage(entryId: string): Promise<void> {
-		try {
-			const result = await this.client.fork(entryId);
-			if (result.cancelled) {
-				this.showStatus("Fork cancelled");
-				return;
-			}
-			await this.refreshState();
-			await this.renderCurrentMessages();
-			this.editor.setText(result.text ?? "");
-			this.showStatus("Forked to new daemon session");
-		} catch (error: unknown) {
-			this.showError(error);
-		}
-	}
-
-	private async handleCloneCommand(): Promise<void> {
-		try {
-			const result = await this.client.clone();
-			if (result.cancelled) {
-				this.showStatus("Clone cancelled");
-				return;
-			}
-			await this.refreshState();
-			await this.renderCurrentMessages();
-			this.showStatus("Cloned daemon session");
-		} catch (error: unknown) {
-			this.showError(error);
-		}
-	}
-
 	private async handleBashCommand(command: string, excludeFromContext: boolean): Promise<void> {
 		if (this.bashComponent) {
 			this.showWarning("A bash command is already running. Press Esc to cancel it first.");
@@ -1815,7 +1723,7 @@ class DaemonInteractiveMode {
 			`| \`${keyText("app.thinking.cycle")}\` | Cycle thinking level |`,
 			`| \`${keyText("app.tools.expand")}\` | Toggle expanded output |`,
 			"",
-			"`/model`, `/new`, `/compact`, `/session`, `/name`, `/export`, `/copy`, `/fork`, `/clone`, `/quit`",
+			"`/model`, `/reset`, `/compact`, `/session`, `/name`, `/export`, `/copy`, `/quit`",
 		].join("\n");
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new DynamicBorder());

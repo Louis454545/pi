@@ -1,5 +1,5 @@
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
@@ -31,6 +31,7 @@ export type CreateAgentSessionRuntimeFactory = (options: {
 	cwd: string;
 	agentDir: string;
 	sessionManager: SessionManager;
+	includeProjectResources: boolean;
 	sessionStartEvent?: SessionStartEvent;
 }) => Promise<CreateAgentSessionRuntimeResult>;
 
@@ -73,6 +74,8 @@ export class AgentSessionRuntime {
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
 	private _diagnostics: AgentSessionRuntimeDiagnostic[];
 	private _modelFallbackMessage?: string;
+	private includeProjectResources: boolean;
+	private releaseLock?: () => Promise<void>;
 
 	constructor(
 		_session: AgentSession,
@@ -80,12 +83,14 @@ export class AgentSessionRuntime {
 		createRuntime: CreateAgentSessionRuntimeFactory,
 		_diagnostics: AgentSessionRuntimeDiagnostic[] = [],
 		_modelFallbackMessage?: string,
+		includeProjectResources = true,
 	) {
 		this._session = _session;
 		this._services = _services;
 		this.createRuntime = createRuntime;
 		this._diagnostics = _diagnostics;
 		this._modelFallbackMessage = _modelFallbackMessage;
+		this.includeProjectResources = includeProjectResources;
 	}
 
 	get services(): AgentSessionServices {
@@ -122,6 +127,10 @@ export class AgentSessionRuntime {
 	 */
 	setBeforeSessionInvalidate(beforeSessionInvalidate?: () => void): void {
 		this.beforeSessionInvalidate = beforeSessionInvalidate;
+	}
+
+	setReleaseLock(releaseLock?: () => Promise<void>): void {
+		this.releaseLock = releaseLock;
 	}
 
 	private async emitBeforeSwitch(
@@ -168,6 +177,11 @@ export class AgentSessionRuntime {
 		this.session.dispose();
 	}
 
+	private getRootSessionDir(): string | undefined {
+		const sessionDir = this.session.sessionManager.getSessionDir();
+		return basename(sessionDir) === "global" ? dirname(sessionDir) : sessionDir;
+	}
+
 	private apply(result: CreateAgentSessionRuntimeResult): void {
 		this._session = result.session;
 		this._services = result.services;
@@ -202,6 +216,7 @@ export class AgentSessionRuntime {
 				cwd: sessionManager.getCwd(),
 				agentDir: this.services.agentDir,
 				sessionManager,
+				includeProjectResources: this.includeProjectResources,
 				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
 			}),
 		);
@@ -220,11 +235,11 @@ export class AgentSessionRuntime {
 		}
 
 		const previousSessionFile = this.session.sessionFile;
-		const sessionDir = this.session.sessionManager.getSessionDir();
-		const sessionManager = SessionManager.create(this.cwd, sessionDir);
-		if (options?.parentSession) {
-			sessionManager.newSession({ parentSession: options.parentSession });
-		}
+		const sessionManager = SessionManager.resetGlobal(this.services.agentDir, {
+			cwd: this.cwd,
+			sessionDir: this.getRootSessionDir(),
+			parentSession: options?.parentSession,
+		});
 
 		await this.teardownCurrent("new", sessionManager.getSessionFile());
 		this.apply(
@@ -232,6 +247,7 @@ export class AgentSessionRuntime {
 				cwd: this.cwd,
 				agentDir: this.services.agentDir,
 				sessionManager,
+				includeProjectResources: this.includeProjectResources,
 				sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile },
 			}),
 		);
@@ -286,6 +302,7 @@ export class AgentSessionRuntime {
 						cwd: this.cwd,
 						agentDir: this.services.agentDir,
 						sessionManager,
+						includeProjectResources: this.includeProjectResources,
 						sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
 					}),
 				);
@@ -304,6 +321,7 @@ export class AgentSessionRuntime {
 					cwd: sessionManager.getCwd(),
 					agentDir: this.services.agentDir,
 					sessionManager,
+					includeProjectResources: this.includeProjectResources,
 					sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
 				}),
 			);
@@ -323,6 +341,7 @@ export class AgentSessionRuntime {
 				cwd: this.cwd,
 				agentDir: this.services.agentDir,
 				sessionManager,
+				includeProjectResources: this.includeProjectResources,
 				sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
 			}),
 		);
@@ -343,30 +362,23 @@ export class AgentSessionRuntime {
 			throw new SessionImportFileNotFoundError(resolvedPath);
 		}
 
-		const sessionDir = this.session.sessionManager.getSessionDir();
-		if (!existsSync(sessionDir)) {
-			mkdirSync(sessionDir, { recursive: true });
-		}
-
-		const destinationPath = join(sessionDir, basename(resolvedPath));
-		const beforeResult = await this.emitBeforeSwitch("resume", destinationPath);
+		const beforeResult = await this.emitBeforeSwitch("resume", resolvedPath);
 		if (beforeResult.cancelled) {
 			return beforeResult;
 		}
 
 		const previousSessionFile = this.session.sessionFile;
-		if (resolve(destinationPath) !== resolvedPath) {
-			copyFileSync(resolvedPath, destinationPath);
-		}
-
-		const sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
-		assertSessionCwdExists(sessionManager, this.cwd);
+		const sessionManager = SessionManager.importGlobal(this.services.agentDir, resolvedPath, {
+			cwd: cwdOverride ?? this.cwd,
+			sessionDir: this.getRootSessionDir(),
+		});
 		await this.teardownCurrent("resume", sessionManager.getSessionFile());
 		this.apply(
 			await this.createRuntime({
 				cwd: sessionManager.getCwd(),
 				agentDir: this.services.agentDir,
 				sessionManager,
+				includeProjectResources: this.includeProjectResources,
 				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
 			}),
 		);
@@ -374,13 +386,38 @@ export class AgentSessionRuntime {
 		return { cancelled: false };
 	}
 
+	async changeWorkingContext(cwd: string): Promise<void> {
+		const nextCwd = resolvePath(cwd);
+		const previousSessionFile = this.session.sessionFile;
+		const sessionManager = this.session.sessionManager;
+		await this.teardownCurrent("resume", this.session.sessionFile);
+		sessionManager.setCwd(nextCwd);
+		this.includeProjectResources = true;
+		this.apply(
+			await this.createRuntime({
+				cwd: nextCwd,
+				agentDir: this.services.agentDir,
+				sessionManager,
+				includeProjectResources: true,
+				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
+			}),
+		);
+		await this.finishSessionReplacement();
+	}
+
 	async dispose(): Promise<void> {
-		await emitSessionShutdownEvent(this.session.extensionRunner, {
-			type: "session_shutdown",
-			reason: "quit",
-		});
-		this.beforeSessionInvalidate?.();
-		this.session.dispose();
+		try {
+			await emitSessionShutdownEvent(this.session.extensionRunner, {
+				type: "session_shutdown",
+				reason: "quit",
+			});
+			this.beforeSessionInvalidate?.();
+			this.session.dispose();
+		} finally {
+			const releaseLock = this.releaseLock;
+			this.releaseLock = undefined;
+			await releaseLock?.();
+		}
 	}
 }
 
@@ -388,7 +425,7 @@ export class AgentSessionRuntime {
  * Create the initial runtime from a runtime factory and initial session target.
  *
  * The same factory is stored on the returned AgentSessionRuntime and reused for
- * later /new, /resume, /fork, and import flows.
+ * later reset, import, and advanced compatibility switch/fork flows.
  */
 export async function createAgentSessionRuntime(
 	createRuntime: CreateAgentSessionRuntimeFactory,
@@ -396,17 +433,20 @@ export async function createAgentSessionRuntime(
 		cwd: string;
 		agentDir: string;
 		sessionManager: SessionManager;
+		includeProjectResources?: boolean;
 		sessionStartEvent?: SessionStartEvent;
 	},
 ): Promise<AgentSessionRuntime> {
 	assertSessionCwdExists(options.sessionManager, options.cwd);
-	const result = await createRuntime(options);
+	const includeProjectResources = options.includeProjectResources ?? true;
+	const result = await createRuntime({ ...options, includeProjectResources });
 	return new AgentSessionRuntime(
 		result.session,
 		result.services,
 		createRuntime,
 		result.diagnostics,
 		result.modelFallbackMessage,
+		includeProjectResources,
 	);
 }
 

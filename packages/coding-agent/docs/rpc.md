@@ -1,6 +1,6 @@
 # RPC Mode
 
-RPC mode enables headless operation of the coding agent via a JSON protocol over stdin/stdout. This is useful for embedding the agent in other applications, IDEs, or custom UIs.
+RPC mode enables headless operation of the computer agent via a JSON protocol over stdin/stdout. This is useful for embedding the agent in other applications, IDEs, or custom UIs.
 
 **Note for Node.js/TypeScript users**: If you're building a Node.js application, consider using `AgentSession` directly from `@earendil-works/pi-coding-agent` instead of spawning a subprocess. See [`src/core/agent-session.ts`](../src/core/agent-session.ts) for the API. For a subprocess-based TypeScript client, see [`src/modes/rpc/rpc-client.ts`](../src/modes/rpc/rpc-client.ts).
 
@@ -13,9 +13,9 @@ pi --mode rpc [options]
 Common options:
 - `--provider <name>`: Set the LLM provider (anthropic, openai, google, etc.)
 - `--model <pattern>`: Model pattern or ID (supports `provider/id` and optional `:<thinking>`)
-- `--name <name>` / `-n <name>`: Set the session display name at startup
 - `--no-session`: Disable session persistence
-- `--session-dir <path>`: Custom session storage directory
+- `--cwd <path>`: Set explicit working context for tools and project resources
+- `--session-dir <path>`: Custom conversation storage directory
 
 ## Protocol Overview
 
@@ -540,7 +540,7 @@ Response:
 
 #### export_html
 
-Export session to an HTML file.
+Export the current conversation to an HTML file.
 
 ```json
 {"type": "export_html"}
@@ -563,7 +563,7 @@ Response:
 
 #### switch_session
 
-Load a different session file. Can be cancelled by a `session_before_switch` extension event handler.
+Advanced compatibility command. Load a different session file. Normal RPC use continues the global conversation and uses `new_session` to archive/reset it. This command can be cancelled by a `session_before_switch` extension event handler.
 
 ```json
 {"type": "switch_session", "sessionPath": "/path/to/session.jsonl"}
@@ -581,7 +581,7 @@ If an extension cancelled the switch:
 
 #### fork
 
-Create a new fork from a previous user message on the active branch. Can be cancelled by a `session_before_fork` extension event handler. Returns the text of the message being forked from.
+Advanced compatibility command. Create a new fork from a previous user message on the active branch. Can be cancelled by a `session_before_fork` extension event handler. Returns the text of the message being forked from.
 
 ```json
 {"type": "fork", "entryId": "abc123"}
@@ -695,7 +695,7 @@ Response:
 }
 ```
 
-The current session name is available via `get_state` in the `sessionName` field. To set the initial name when starting RPC mode, pass `--name <name>` or `-n <name>` to the `pi --mode rpc` process.
+The current conversation name is available via `get_state` in the `sessionName` field. Set it with `set_session_name`; the `--name` / `-n` startup flag still parses for compatibility but is deprecated.
 
 ### Commands
 
