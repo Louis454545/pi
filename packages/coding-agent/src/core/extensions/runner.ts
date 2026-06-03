@@ -2,6 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
+import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
@@ -37,9 +38,11 @@ import type {
 	MessageEndEvent,
 	MessageEndEventResult,
 	MessageRenderer,
+	ProactiveTriggerEvent,
 	ProviderConfig,
 	RegisteredCommand,
 	RegisteredTool,
+	RegisteredTrigger,
 	ReplacedSessionContext,
 	ResolvedCommand,
 	ResourcesDiscoverEvent,
@@ -53,6 +56,9 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 	ToolResultEventResult,
+	TriggerContext,
+	TriggerEmit,
+	TriggerEventInput,
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
@@ -78,6 +84,8 @@ const RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS = [
 	"tui.input.copy",
 	"tui.editor.deleteToLineEnd",
 ] as const;
+
+const TRIGGER_CLEANUP_TIMEOUT_MS = 5000;
 
 type BuiltInKeyBindings = Partial<Record<KeyId, { keybinding: string; restrictOverride: boolean }>>;
 
@@ -148,6 +156,15 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
 
+export type TriggerEventListener = (event: ProactiveTriggerEvent) => void | Promise<void>;
+
+interface StartedTrigger {
+	name: string;
+	extensionPath: string;
+	controller: AbortController;
+	cleanup: (() => void | Promise<void>) | undefined;
+}
+
 export type NewSessionHandler = (options?: {
 	parentSession?: string;
 	setup?: (sessionManager: SessionManager) => Promise<void>;
@@ -181,11 +198,13 @@ export async function emitSessionShutdownEvent(
 	extensionRunner: ExtensionRunner,
 	event: SessionShutdownEvent,
 ): Promise<boolean> {
+	let emitted = false;
 	if (extensionRunner.hasHandlers("session_shutdown")) {
 		await extensionRunner.emit(event);
-		return true;
+		emitted = true;
 	}
-	return false;
+	await extensionRunner.stopTriggers(event.reason);
+	return emitted;
 }
 
 const noOpUIContext: ExtensionUIContext = {
@@ -246,6 +265,8 @@ export class ExtensionRunner {
 	private shutdownHandler: ShutdownHandler = () => {};
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
+	private triggerDiagnostics: ResourceDiagnostic[] = [];
+	private activeTriggers: Map<string, StartedTrigger> = new Map();
 	private staleMessage: string | undefined;
 
 	constructor(
@@ -468,6 +489,7 @@ export class ExtensionRunner {
 	): void {
 		if (!this.staleMessage) {
 			this.staleMessage = message;
+			void this.stopTriggers("invalidate");
 			this.runtime.invalidate(message);
 		}
 	}
@@ -556,6 +578,205 @@ export class ExtensionRunner {
 
 	getCommand(name: string): ResolvedCommand | undefined {
 		return this.resolveRegisteredCommands().find((command) => command.invocationName === name);
+	}
+
+	getRegisteredTriggers(): RegisteredTrigger[] {
+		this.triggerDiagnostics = [];
+		const triggersByName = new Map<string, RegisteredTrigger>();
+
+		const addDiagnostic = (message: string, extensionPath: string) => {
+			this.triggerDiagnostics.push({ type: "warning", message, path: extensionPath });
+			if (!this.hasUI()) {
+				console.warn(message);
+			}
+		};
+
+		for (const ext of this.extensions) {
+			for (const trigger of ext.triggers.values()) {
+				if (typeof trigger.definition.name !== "string" || !trigger.definition.name.trim()) {
+					addDiagnostic(
+						`Extension trigger from ${trigger.extensionPath} has an empty name. Skipping.`,
+						trigger.extensionPath,
+					);
+					continue;
+				}
+				if (typeof trigger.definition.start !== "function") {
+					addDiagnostic(
+						`Extension trigger '${trigger.definition.name}' from ${trigger.extensionPath} does not define start(). Skipping.`,
+						trigger.extensionPath,
+					);
+					continue;
+				}
+
+				const existing = triggersByName.get(trigger.definition.name);
+				if (existing) {
+					addDiagnostic(
+						`Extension trigger conflict: '${trigger.definition.name}' registered by both ${existing.extensionPath} and ${trigger.extensionPath}. Using ${existing.extensionPath}.`,
+						trigger.extensionPath,
+					);
+					continue;
+				}
+				triggersByName.set(trigger.definition.name, trigger);
+			}
+		}
+
+		return Array.from(triggersByName.values());
+	}
+
+	getTriggerDiagnostics(): ResourceDiagnostic[] {
+		return this.triggerDiagnostics;
+	}
+
+	async startTriggers(onEvent: TriggerEventListener): Promise<void> {
+		await this.stopTriggers("restart");
+
+		for (const trigger of this.getRegisteredTriggers()) {
+			const controller = new AbortController();
+			const started: StartedTrigger = {
+				name: trigger.definition.name,
+				extensionPath: trigger.extensionPath,
+				controller,
+				cleanup: undefined,
+			};
+			this.activeTriggers.set(trigger.definition.name, started);
+
+			try {
+				const cleanup = await trigger.definition.start(
+					this.createTriggerContext(trigger.definition.name, controller.signal),
+					this.createTriggerEmit(started, onEvent),
+				);
+				if (this.activeTriggers.get(trigger.definition.name) !== started) {
+					if (typeof cleanup === "function") {
+						await this.runTriggerCleanup(started, cleanup);
+					}
+					continue;
+				}
+				if (typeof cleanup === "function") {
+					started.cleanup = cleanup;
+				}
+			} catch (err) {
+				this.activeTriggers.delete(trigger.definition.name);
+				controller.abort();
+				this.emitError({
+					extensionPath: trigger.extensionPath,
+					event: "trigger_start",
+					error: err instanceof Error ? err.message : String(err),
+					stack: err instanceof Error ? err.stack : undefined,
+				});
+			}
+		}
+	}
+
+	async stopTriggers(reason: string): Promise<void> {
+		if (this.activeTriggers.size === 0) {
+			return;
+		}
+
+		const triggers = Array.from(this.activeTriggers.values());
+		this.activeTriggers.clear();
+		for (const trigger of triggers) {
+			trigger.controller.abort();
+		}
+
+		await Promise.all(
+			triggers.map(async (trigger) => {
+				if (!trigger.cleanup) {
+					return;
+				}
+				await this.runTriggerCleanup(trigger, trigger.cleanup, reason);
+			}),
+		);
+	}
+
+	private createTriggerContext(triggerName: string, signal: AbortSignal): TriggerContext {
+		const context = Object.defineProperties(
+			{},
+			Object.getOwnPropertyDescriptors(this.createContext()),
+		) as TriggerContext;
+		Object.defineProperty(context, "triggerName", {
+			enumerable: true,
+			value: triggerName,
+		});
+		Object.defineProperty(context, "signal", {
+			enumerable: true,
+			get: () => signal,
+		});
+		return context;
+	}
+
+	private createTriggerEmit(started: StartedTrigger, onEvent: TriggerEventListener): TriggerEmit {
+		return (event: TriggerEventInput) => {
+			if (
+				this.activeTriggers.get(started.name) !== started ||
+				started.controller.signal.aborted ||
+				this.staleMessage
+			) {
+				return;
+			}
+			if (typeof event.summary !== "string" || !event.summary.trim()) {
+				this.emitError({
+					extensionPath: started.extensionPath,
+					event: "trigger_emit",
+					error: `Trigger '${started.name}' emitted an event with an empty summary. Skipping.`,
+				});
+				return;
+			}
+			const eventId = typeof event.eventId === "string" ? event.eventId.trim() : "";
+			const createdAt = typeof event.createdAt === "string" ? event.createdAt.trim() : "";
+
+			const triggerEvent: ProactiveTriggerEvent = {
+				triggerName: started.name,
+				eventId: eventId || randomUUID(),
+				summary: event.summary,
+				payload: event.payload,
+				createdAt: createdAt || new Date().toISOString(),
+			};
+
+			Promise.resolve(onEvent(triggerEvent)).catch((err) => {
+				this.emitError({
+					extensionPath: started.extensionPath,
+					event: "trigger_emit",
+					error: err instanceof Error ? err.message : String(err),
+					stack: err instanceof Error ? err.stack : undefined,
+				});
+			});
+		};
+	}
+
+	private async runTriggerCleanup(
+		trigger: StartedTrigger,
+		cleanup: () => void | Promise<void>,
+		reason = "stop",
+	): Promise<void> {
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const result = await Promise.race([
+				Promise.resolve()
+					.then(cleanup)
+					.then(() => "done" as const),
+				new Promise<"timeout">((resolve) => {
+					timeout = setTimeout(() => resolve("timeout"), TRIGGER_CLEANUP_TIMEOUT_MS);
+				}),
+			]);
+			if (result === "timeout") {
+				this.emitError({
+					extensionPath: trigger.extensionPath,
+					event: "trigger_cleanup",
+					error: `Trigger '${trigger.name}' cleanup timed out after ${TRIGGER_CLEANUP_TIMEOUT_MS}ms during ${reason}.`,
+				});
+			}
+		} catch (err) {
+			this.emitError({
+				extensionPath: trigger.extensionPath,
+				event: "trigger_cleanup",
+				error: err instanceof Error ? err.message : String(err),
+				stack: err instanceof Error ? err.stack : undefined,
+			});
+		} finally {
+			if (timeout) {
+				clearTimeout(timeout);
+			}
+		}
 	}
 
 	/**

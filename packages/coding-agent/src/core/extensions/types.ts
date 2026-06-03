@@ -326,6 +326,45 @@ export interface ExtensionContext {
 	getSystemPrompt(): string;
 }
 
+// ============================================================================
+// Trigger Types
+// ============================================================================
+
+export interface TriggerEventInput {
+	/** Stable event id for deduplication. If omitted, Pi generates one. */
+	eventId?: string;
+	/** Concise event summary for the model. */
+	summary: string;
+	/** Optional structured payload from the trigger. */
+	payload?: unknown;
+	/** Event creation time as ISO string. Defaults to now. */
+	createdAt?: string;
+}
+
+export interface ProactiveTriggerEvent {
+	triggerName: string;
+	eventId: string;
+	summary: string;
+	payload?: unknown;
+	createdAt: string;
+}
+
+export type TriggerEmit = (event: TriggerEventInput) => void;
+export type TriggerCleanup = void | (() => void | Promise<void>);
+
+export interface TriggerContext extends ExtensionContext {
+	/** The registered trigger name. */
+	triggerName: string;
+	/** Abort signal that fires when the trigger is stopped due to reload, shutdown, or session replacement. */
+	signal: AbortSignal;
+}
+
+export interface TriggerDefinition {
+	name: string;
+	description?: string;
+	start(ctx: TriggerContext, emit: TriggerEmit): TriggerCleanup | Promise<TriggerCleanup>;
+}
+
 /**
  * Extended context for command handlers.
  * Includes session control methods only safe in user-initiated commands.
@@ -1072,6 +1111,12 @@ export interface ResolvedCommand extends RegisteredCommand {
 	invocationName: string;
 }
 
+export interface RegisteredTrigger {
+	definition: TriggerDefinition;
+	extensionPath: string;
+	sourceInfo: SourceInfo;
+}
+
 // ============================================================================
 // Extension API
 // ============================================================================
@@ -1135,6 +1180,13 @@ export interface ExtensionAPI {
 	registerTool<TParams extends TSchema = TSchema, TDetails = unknown, TState = any>(
 		tool: ToolDefinition<TParams, TDetails, TState>,
 	): void;
+
+	// =========================================================================
+	// Trigger Registration
+	// =========================================================================
+
+	/** Register a proactive trigger. Trigger code starts after session_start and stops on reload/shutdown. */
+	registerTrigger(trigger: TriggerDefinition): void;
 
 	// =========================================================================
 	// Command, Shortcut, Flag Registration
@@ -1543,6 +1595,7 @@ export interface Extension {
 	sourceInfo: SourceInfo;
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool>;
+	triggers: Map<string, RegisteredTrigger>;
 	messageRenderers: Map<string, MessageRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;

@@ -8,6 +8,7 @@ Extensions are TypeScript modules that extend pi's behavior. They can subscribe 
 
 **Key capabilities:**
 - **Custom tools** - Register tools the LLM can call via `pi.registerTool()`
+- **Proactive triggers** - Start watchers with `pi.registerTrigger()` that emit structured events for the agent to evaluate
 - **Event interception** - Block or modify tool calls, inject context, customize compaction
 - **User interaction** - Prompt users via `ctx.ui` (select, confirm, input, notify)
 - **Custom UI components** - Full TUI components with keyboard input via `ctx.ui.custom()` for complex interactions
@@ -21,6 +22,7 @@ Extensions are TypeScript modules that extend pi's behavior. They can subscribe 
 - Path protection (block writes to `.env`, `node_modules/`)
 - Custom compaction (summarize conversation your way)
 - Conversation summaries (see `summarize.ts` example)
+- Proactive automations (watch local files, webhooks, CI, or inboxes from extension code)
 - Interactive tools (questions, wizards, custom dialogs)
 - Stateful tools (todo lists, connection pools)
 - External integrations (file watchers, webhooks, CI triggers)
@@ -47,6 +49,7 @@ See [examples/extensions/](../examples/extensions/) for working implementations.
 - [ExtensionAPI Methods](#extensionapi-methods)
 - [State Management](#state-management)
 - [Custom Tools](#custom-tools)
+- [Proactive Triggers](#proactive-triggers)
 - [Custom UI](#custom-ui)
 - [Error Handling](#error-handling)
 - [Mode Behavior](#mode-behavior)
@@ -94,6 +97,24 @@ export default function (pi: ExtensionAPI) {
     description: "Say hello",
     handler: async (args, ctx) => {
       ctx.ui.notify(`Hello ${args || "world"}!`, "info");
+    },
+  });
+
+  // Register a proactive trigger
+  pi.registerTrigger({
+    name: "watch-example",
+    description: "Emit a structured event when something external happens",
+    start: (ctx, emit) => {
+      const timer = setInterval(() => {
+        emit({
+          eventId: `tick-${Date.now()}`,
+          summary: "Example trigger ticked",
+          payload: { cwd: ctx.cwd },
+        });
+      }, 60_000);
+
+      ctx.signal.addEventListener("abort", () => clearInterval(timer), { once: true });
+      return () => clearInterval(timer);
     },
   });
 }
@@ -272,6 +293,7 @@ pi starts
   │
   ├─► session_start { reason: "startup" }
   └─► resources_discover { reason: "startup" }
+      └─► registered triggers start
       │
       ▼
 user sends prompt ─────────────────────────────────────────┐
@@ -332,6 +354,7 @@ thinking level changes (settings, keybinding, pi.setThinkingLevel())
 
 exit (Ctrl+C, Ctrl+D, SIGHUP, SIGTERM)
   └─► session_shutdown
+      └─► registered triggers stop
 ```
 
 ### Resource Events
@@ -1267,6 +1290,57 @@ pi.registerTool({
   renderResult(result, options, theme, context) { ... },
 });
 ```
+
+### pi.registerTrigger(definition)
+
+Register a proactive trigger. A trigger is extension-owned watcher code that starts after `session_start` and emits structured events into the active agent runtime.
+
+```typescript
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default function (pi: ExtensionAPI) {
+  pi.registerTrigger({
+    name: "ci-watch",
+    description: "Watch CI state and tell the agent when a job changes",
+    start: async (ctx, emit) => {
+      const stop = startYourWatcher({
+        signal: ctx.signal,
+        onChange(change) {
+          emit({
+            eventId: change.id,
+            summary: `CI job ${change.status}`,
+            payload: change,
+            createdAt: change.timestamp,
+          });
+        },
+      });
+
+      return async () => {
+        await stop();
+      };
+    },
+  });
+}
+```
+
+Behavior:
+- `start(ctx, emit)` runs after `session_start`; it can return sync or async cleanup.
+- `ctx.signal` aborts before cleanup during reload, shutdown, or session replacement.
+- `emit({ eventId, summary, payload, createdAt })` creates a hidden `proactive_trigger_event` custom message.
+- If the agent is idle, Pi starts a proactive model turn. If the agent is busy, Pi queues the trigger event until the current work finishes.
+- Duplicate `{ triggerName, eventId }` events are ignored for a bounded TTL window. Pending trigger events are capped; overflow drops the newest event and emits a `proactive_trigger_overflow` session event.
+- Stale `emit()` functions captured before reload, shutdown, or session replacement are ignored.
+- During proactive trigger turns only, the model receives a scoped `notify_user` tool. Calling it creates a visible `proactive_notification`; not calling it means no user notification.
+
+Triggers are normal trusted extension code. Pi core does not include provider-specific watchers such as Gmail, IMAP, calendar, OAuth, or inbox polling; put those integrations in generated extensions or packages.
+
+Placement:
+- Any normal extension location works, including configured global extension paths, project-local `.pi/extensions/` under an explicit working context, pi packages, or `--extension`.
+- For personal global automations, prefer a `triggers/<id>` subdirectory under the configured global agent extension directory. In generated code that creates paths, derive it with `path.join(getAgentDir(), "extensions", "triggers", "<id>")`.
+- `--no-extensions` disables auto-discovered trigger extensions. Explicit `--extension` paths still load because they are explicit trusted code for that run.
+- Project-local triggers only load when project resources are enabled through an explicit working context such as `--cwd` or `/cwd`.
+
+After creating or editing a trigger extension, call `/reload` or the `reload` tool so Pi starts the new trigger runtime.
 
 ### pi.sendMessage(message, options?)
 

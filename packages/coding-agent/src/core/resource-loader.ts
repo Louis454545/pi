@@ -591,6 +591,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 			for (const tool of extension.tools.values()) {
 				tool.sourceInfo = extension.sourceInfo;
 			}
+			for (const trigger of extension.triggers.values()) {
+				trigger.sourceInfo = extension.sourceInfo;
+			}
 		}
 	}
 
@@ -908,8 +911,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private detectExtensionConflicts(extensions: Extension[]): Array<{ path: string; message: string }> {
 		const conflicts: Array<{ path: string; message: string }> = [];
 
-		// Track which extension registered each tool and flag
+		// Track which extension registered each tool, trigger, and flag.
 		const toolOwners = new Map<string, string>();
+		const triggerOwners = new Map<string, string>();
 		const flagOwners = new Map<string, string>();
 
 		for (const ext of extensions) {
@@ -923,6 +927,18 @@ export class DefaultResourceLoader implements ResourceLoader {
 					});
 				} else {
 					toolOwners.set(toolName, ext.path);
+				}
+			}
+
+			for (const triggerName of ext.triggers.keys()) {
+				const existingOwner = triggerOwners.get(triggerName);
+				if (existingOwner && existingOwner !== ext.path) {
+					conflicts.push({
+						path: ext.path,
+						message: `Trigger "${triggerName}" conflicts with ${existingOwner}`,
+					});
+				} else {
+					triggerOwners.set(triggerName, ext.path);
 				}
 			}
 

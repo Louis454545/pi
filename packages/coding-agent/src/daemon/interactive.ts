@@ -1129,6 +1129,7 @@ class DaemonInteractiveMode {
 			case "monitor_event":
 			case "subagent_notification":
 			case "schedule_notification":
+			case "proactive_notification":
 				this.addMessageToChat({
 					role: "custom",
 					customType: sessionEvent.type,

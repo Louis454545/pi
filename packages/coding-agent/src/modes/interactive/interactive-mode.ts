@@ -2750,6 +2750,18 @@ export class InteractiveMode {
 				this.ui.requestRender();
 				break;
 
+			case "proactive_notification":
+				this.addMessageToChat({
+					role: "custom",
+					customType: "proactive_notification",
+					content: event.xml,
+					display: true,
+					details: event.notification,
+					timestamp: Date.now(),
+				});
+				this.ui.requestRender();
+				break;
+
 			case "message_start":
 				if (event.message.role === "custom") {
 					this.addMessageToChat(event.message);

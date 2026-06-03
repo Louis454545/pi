@@ -35,6 +35,7 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/pi-ai";
+import { type Static, Type } from "typebox";
 import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -75,6 +76,7 @@ import {
 	type MessageEndEvent,
 	type MessageStartEvent,
 	type MessageUpdateEvent,
+	type ProactiveTriggerEvent,
 	type ReplacedSessionContext,
 	type SessionBeforeCompactResult,
 	type SessionBeforeTreeResult,
@@ -148,6 +150,18 @@ export interface SubagentNotification {
 	message: string | undefined;
 }
 
+export type ProactiveNotificationSeverity = "info" | "warning" | "error";
+
+export interface ProactiveNotification {
+	title: string;
+	message: string;
+	severity: ProactiveNotificationSeverity;
+	source: string | undefined;
+	triggerName: string;
+	eventId: string;
+	createdAt: string;
+}
+
 /**
  * Parse a skill block from message text.
  * Returns null if the text doesn't contain a skill block.
@@ -183,6 +197,9 @@ export type AgentSessionEvent =
 	| { type: "monitor_event"; notification: MonitorEventNotification; xml: string }
 	| { type: "subagent_notification"; notification: SubagentNotification; xml: string }
 	| { type: "schedule_notification"; notification: ScheduleNotification; xml: string }
+	| { type: "proactive_trigger_event"; notification: ProactiveTriggerEvent; xml: string }
+	| { type: "proactive_notification"; notification: ProactiveNotification; xml: string }
+	| { type: "proactive_trigger_overflow"; dropped: ProactiveTriggerEvent; limit: number }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -308,6 +325,22 @@ interface ToolDefinitionEntry {
 
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+const PROACTIVE_TRIGGER_DEDUPE_TTL_MS = 60 * 60 * 1000;
+const PROACTIVE_TRIGGER_DEDUPE_MAX = 1024;
+const PROACTIVE_TRIGGER_PENDING_MAX = 32;
+
+const notifyUserSchema = Type.Object({
+	title: Type.String({ description: "Concise notification title." }),
+	message: Type.String({ description: "Concise notification body shown to the user." }),
+	severity: Type.Optional(
+		Type.Union([Type.Literal("info"), Type.Literal("warning"), Type.Literal("error")], {
+			description: "Notification severity. Defaults to info.",
+		}),
+	),
+	source: Type.Optional(Type.String({ description: "Optional human-readable source label." })),
+});
+
+type NotifyUserToolInput = Static<typeof notifyUserSchema>;
 
 function escapeXml(value: string): string {
 	return value
@@ -332,6 +365,53 @@ function formatSubagentNotificationXml(notification: SubagentNotification): stri
 		lines.push(`<message>${escapeXml(notification.message)}</message>`);
 	}
 	lines.push("</subagent-notification>");
+	return lines.join("\n");
+}
+
+function stringifyTriggerPayload(payload: unknown): string {
+	if (payload === undefined) {
+		return "";
+	}
+	try {
+		return JSON.stringify(payload);
+	} catch {
+		return String(payload);
+	}
+}
+
+function formatProactiveTriggerEventXml(event: ProactiveTriggerEvent): string {
+	const lines = [
+		"<proactive-trigger-event>",
+		`<trigger-name>${escapeXml(event.triggerName)}</trigger-name>`,
+		`<event-id>${escapeXml(event.eventId)}</event-id>`,
+		`<created-at>${escapeXml(event.createdAt)}</created-at>`,
+		`<summary>${escapeXml(event.summary)}</summary>`,
+	];
+	const payload = stringifyTriggerPayload(event.payload);
+	if (payload) {
+		lines.push(`<payload>${escapeXml(payload)}</payload>`);
+	}
+	lines.push(
+		"<instruction>Decide whether this event requires notifying the user. Call notify_user only when a visible user notification is warranted.</instruction>",
+		"</proactive-trigger-event>",
+	);
+	return lines.join("\n");
+}
+
+function formatProactiveNotificationXml(notification: ProactiveNotification): string {
+	const lines = [
+		"<proactive-notification>",
+		`<trigger-name>${escapeXml(notification.triggerName)}</trigger-name>`,
+		`<event-id>${escapeXml(notification.eventId)}</event-id>`,
+		`<created-at>${escapeXml(notification.createdAt)}</created-at>`,
+		`<severity>${notification.severity}</severity>`,
+		`<title>${escapeXml(notification.title)}</title>`,
+		`<message>${escapeXml(notification.message)}</message>`,
+	];
+	if (notification.source) {
+		lines.push(`<source>${escapeXml(notification.source)}</source>`);
+	}
+	lines.push("</proactive-notification>");
 	return lines.join("\n");
 }
 
@@ -378,6 +458,12 @@ export class AgentSession {
 	private _schedulesReady: Promise<void> = Promise.resolve();
 	private _subagentParent: SubagentParentBridge | undefined;
 	private _taskNotificationContinuation: Promise<void> = Promise.resolve();
+	private _proactiveTriggerDedupe: Map<string, number> = new Map();
+	private _pendingProactiveTriggerMessages: Array<{
+		event: ProactiveTriggerEvent;
+		message: Pick<CustomMessage<ProactiveTriggerEvent>, "customType" | "content" | "display" | "details">;
+	}> = [];
+	private _proactiveTriggerDrainRunning = false;
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -400,6 +486,7 @@ export class AgentSession {
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
+	private _extensionsBound = false;
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
@@ -2232,6 +2319,7 @@ export class AgentSession {
 	}
 
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
+		this._extensionsBound = true;
 		if (bindings.uiContext !== undefined) {
 			this._extensionUIContext = bindings.uiContext;
 		}
@@ -2251,6 +2339,7 @@ export class AgentSession {
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+		await this._extensionRunner.startTriggers((event) => this.handleProactiveTriggerEvent(event));
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
@@ -2640,14 +2729,10 @@ export class AgentSession {
 			includeAllExtensionTools: true,
 		});
 
-		const hasBindings =
-			this._extensionUIContext ||
-			this._extensionCommandContextActions ||
-			this._extensionShutdownHandler ||
-			this._extensionErrorListener;
-		if (hasBindings) {
+		if (this._extensionsBound) {
 			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
 			await this.extendResourcesFromExtensions("reload");
+			await this._extensionRunner.startTriggers((event) => this.handleProactiveTriggerEvent(event));
 		}
 		if (scope === "all") {
 			this._schedulesReady = this._schedulerManager.reload();
@@ -2983,6 +3068,162 @@ export class AgentSession {
 				await this.sendCustomMessage(message, { triggerTurn: false });
 			});
 		await this._taskNotificationContinuation;
+	}
+
+	async handleProactiveTriggerEvent(event: ProactiveTriggerEvent): Promise<void> {
+		if (!this._rememberProactiveTriggerEvent(event)) {
+			return;
+		}
+
+		const xml = formatProactiveTriggerEventXml(event);
+		this._emit({ type: "proactive_trigger_event", notification: event, xml });
+
+		if (this._pendingProactiveTriggerMessages.length >= PROACTIVE_TRIGGER_PENDING_MAX) {
+			this._emit({ type: "proactive_trigger_overflow", dropped: event, limit: PROACTIVE_TRIGGER_PENDING_MAX });
+			return;
+		}
+
+		this._pendingProactiveTriggerMessages.push({
+			event,
+			message: {
+				customType: "proactive_trigger_event",
+				content: xml,
+				display: false,
+				details: event,
+			},
+		});
+		this._drainProactiveTriggerQueue();
+	}
+
+	private _rememberProactiveTriggerEvent(event: ProactiveTriggerEvent): boolean {
+		const now = Date.now();
+		for (const [key, expiresAt] of this._proactiveTriggerDedupe) {
+			if (expiresAt <= now) {
+				this._proactiveTriggerDedupe.delete(key);
+			}
+		}
+
+		const key = `${event.triggerName}\0${event.eventId}`;
+		const expiresAt = this._proactiveTriggerDedupe.get(key);
+		if (expiresAt !== undefined && expiresAt > now) {
+			return false;
+		}
+
+		this._proactiveTriggerDedupe.set(key, now + PROACTIVE_TRIGGER_DEDUPE_TTL_MS);
+		while (this._proactiveTriggerDedupe.size > PROACTIVE_TRIGGER_DEDUPE_MAX) {
+			const oldestKey = this._proactiveTriggerDedupe.keys().next().value;
+			if (oldestKey === undefined) {
+				break;
+			}
+			this._proactiveTriggerDedupe.delete(oldestKey);
+		}
+		return true;
+	}
+
+	private _drainProactiveTriggerQueue(): void {
+		if (this._proactiveTriggerDrainRunning) {
+			return;
+		}
+		this._proactiveTriggerDrainRunning = true;
+
+		void (async () => {
+			while (this._pendingProactiveTriggerMessages.length > 0) {
+				if (this.isStreaming) {
+					await this.agent.waitForIdle();
+					continue;
+				}
+
+				const pending = this._pendingProactiveTriggerMessages.shift();
+				if (!pending) {
+					continue;
+				}
+
+				if (!this.model || !this._modelRegistry.hasConfiguredAuth(this.model)) {
+					await this.sendCustomMessage(pending.message, { triggerTurn: false });
+					continue;
+				}
+
+				await this._runProactiveTriggerTurn(pending.message, pending.event);
+			}
+		})()
+			.catch(async () => {
+				for (const pending of this._pendingProactiveTriggerMessages.splice(0)) {
+					await this.sendCustomMessage(pending.message, { triggerTurn: false });
+				}
+			})
+			.finally(() => {
+				this._proactiveTriggerDrainRunning = false;
+				if (this._pendingProactiveTriggerMessages.length > 0) {
+					this._drainProactiveTriggerQueue();
+				}
+			});
+	}
+
+	private async _runProactiveTriggerTurn(
+		message: Pick<CustomMessage<ProactiveTriggerEvent>, "customType" | "content" | "display" | "details">,
+		event: ProactiveTriggerEvent,
+	): Promise<void> {
+		const appMessage = {
+			role: "custom" as const,
+			customType: message.customType,
+			content: message.content,
+			display: message.display,
+			details: message.details,
+			timestamp: Date.now(),
+		} satisfies CustomMessage<ProactiveTriggerEvent>;
+		const previousTools = this.agent.state.tools;
+		this.agent.state.tools = [
+			...previousTools.filter((tool) => tool.name !== "notify_user"),
+			this._createNotifyUserTool(event),
+		];
+		try {
+			await this._runAgentPrompt(appMessage);
+		} finally {
+			this.agent.state.tools = previousTools;
+		}
+	}
+
+	private _createNotifyUserTool(
+		event: ProactiveTriggerEvent,
+	): AgentTool<typeof notifyUserSchema, ProactiveNotification> {
+		return {
+			name: "notify_user",
+			label: "Notify User",
+			description:
+				"Send a visible notification to the user for the current proactive trigger event. Only call this when the user should be interrupted or informed.",
+			parameters: notifyUserSchema,
+			executionMode: "sequential",
+			execute: async (_toolCallId: string, params: NotifyUserToolInput) => {
+				const notification: ProactiveNotification = {
+					title: params.title.trim(),
+					message: params.message.trim(),
+					severity: params.severity ?? "info",
+					source: params.source?.trim() || undefined,
+					triggerName: event.triggerName,
+					eventId: event.eventId,
+					createdAt: new Date().toISOString(),
+				};
+				this._handleProactiveNotification(notification);
+				return {
+					content: [{ type: "text", text: "Notification sent to the user." }],
+					details: notification,
+				};
+			},
+		};
+	}
+
+	private _handleProactiveNotification(notification: ProactiveNotification): void {
+		const xml = formatProactiveNotificationXml(notification);
+		this.agent.state.messages.push({
+			role: "custom",
+			customType: "proactive_notification",
+			content: xml,
+			display: true,
+			details: notification,
+			timestamp: Date.now(),
+		});
+		this.sessionManager.appendCustomMessageEntry("proactive_notification", xml, true, notification);
+		this._emit({ type: "proactive_notification", notification, xml });
 	}
 
 	private _queueNotificationMessage<TDetails>(customType: string, xml: string, details: TDetails): void {

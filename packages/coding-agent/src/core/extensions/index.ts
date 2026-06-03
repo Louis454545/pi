@@ -97,6 +97,7 @@ export type {
 	MessageUpdateEvent,
 	ModelSelectEvent,
 	ModelSelectSource,
+	ProactiveTriggerEvent,
 	// Provider Registration
 	ProviderConfig,
 	ProviderModelConfig,
@@ -105,6 +106,7 @@ export type {
 	// Commands
 	RegisteredCommand,
 	RegisteredTool,
+	RegisteredTrigger,
 	ReplacedSessionContext,
 	ResolvedCommand,
 	// Events - Resources
@@ -147,6 +149,11 @@ export type {
 	ToolResultEvent,
 	ToolResultEventResult,
 	TreePreparation,
+	TriggerCleanup,
+	TriggerContext,
+	TriggerDefinition,
+	TriggerEmit,
+	TriggerEventInput,
 	TurnEndEvent,
 	TurnStartEvent,
 	// Events - User Bash

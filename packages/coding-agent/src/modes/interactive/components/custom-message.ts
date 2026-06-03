@@ -1,7 +1,7 @@
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { Component } from "@earendil-works/pi-tui";
 import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
-import type { SubagentNotification } from "../../../core/agent-session.ts";
+import type { ProactiveNotification, SubagentNotification } from "../../../core/agent-session.ts";
 import type { BackgroundTaskNotification, MonitorEventNotification } from "../../../core/background-tasks.ts";
 import type { MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
@@ -169,6 +169,22 @@ export class CustomMessageComponent extends Container {
 					);
 				}
 				return true;
+			case "proactive_notification":
+				if (!isProactiveNotification(this.message.details)) {
+					return false;
+				}
+				this.renderNotificationBlock(`proactive:${this.message.details.severity}`, this.message.details.title, [
+					["trigger", this.message.details.triggerName],
+					["event", this.message.details.eventId],
+					["source", this.message.details.source],
+				]);
+				this.box.addChild(new Spacer(1));
+				this.box.addChild(
+					new Markdown(this.message.details.message, 0, 0, this.markdownTheme, {
+						color: (text: string) => theme.fg("customMessageText", text),
+					}),
+				);
+				return true;
 			default:
 				return false;
 		}
@@ -250,5 +266,18 @@ function isScheduleNotification(value: unknown): value is ScheduleNotification {
 		isString(value.timestamp) &&
 		isString(value.summary) &&
 		isOptionalString(value.message)
+	);
+}
+
+function isProactiveNotification(value: unknown): value is ProactiveNotification {
+	return (
+		isObject(value) &&
+		isString(value.title) &&
+		isString(value.message) &&
+		(value.severity === "info" || value.severity === "warning" || value.severity === "error") &&
+		isOptionalString(value.source) &&
+		isString(value.triggerName) &&
+		isString(value.eventId) &&
+		isString(value.createdAt)
 	);
 }

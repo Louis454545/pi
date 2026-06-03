@@ -39,6 +39,7 @@ import type {
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
+	TriggerDefinition,
 } from "./types.ts";
 
 /** Modules available to extensions via virtualModules (for compiled Bun binary) */
@@ -212,6 +213,15 @@ function createExtensionAPI(
 			runtime.refreshTools();
 		},
 
+		registerTrigger(trigger: TriggerDefinition): void {
+			runtime.assertActive();
+			extension.triggers.set(trigger.name, {
+				definition: trigger,
+				extensionPath: extension.path,
+				sourceInfo: extension.sourceInfo,
+			});
+		},
+
 		registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
 			runtime.assertActive();
 			extension.commands.set(name, {
@@ -372,6 +382,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		sourceInfo: createSyntheticSourceInfo(extensionPath, { source, baseDir }),
 		handlers: new Map(),
 		tools: new Map(),
+		triggers: new Map(),
 		messageRenderers: new Map(),
 		commands: new Map(),
 		flags: new Map(),

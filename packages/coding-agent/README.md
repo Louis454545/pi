@@ -341,12 +341,13 @@ Place in `~/.pi/agent/skills/`, `~/.agents/skills/`, `.pi/skills/`, or `.agents/
 
 <p align="center"><img src="docs/images/doom-extension.png" alt="Doom Extension" width="600"></p>
 
-TypeScript modules that extend pi with custom tools, commands, keyboard shortcuts, event handlers, and UI components.
+TypeScript modules that extend pi with custom tools, commands, keyboard shortcuts, event handlers, proactive triggers, and UI components.
 
 ```typescript
 export default function (pi: ExtensionAPI) {
   pi.registerTool({ name: "deploy", ... });
   pi.registerCommand("stats", { ... });
+  pi.registerTrigger({ name: "watch-ci", start: async (ctx, emit) => { ... } });
   pi.on("tool_call", async (event, ctx) => { ... });
 }
 ```
@@ -355,6 +356,7 @@ The default export can also be `async`. pi waits for async extension factories b
 
 **What's possible:**
 - Custom tools (or replace built-in tools entirely)
+- Proactive triggers that emit structured events and let the agent decide whether to notify you
 - Sub-agents and plan mode
 - Custom compaction and summarization
 - Permission gates and path protection
@@ -367,7 +369,7 @@ The default export can also be `async`. pi waits for async extension factories b
 - Games while waiting (yes, Doom runs)
 - ...anything you can dream up
 
-Place in `~/.pi/agent/extensions/`, `.pi/extensions/`, or a [pi package](#pi-packages) to share with others. See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
+Place in `~/.pi/agent/extensions/`, `.pi/extensions/`, or a [pi package](#pi-packages) to share with others. For generated personal triggers, prefer a `triggers/<id>` subdirectory under the configured global agent extension directory. See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
 
 ### Schedules
 
@@ -558,7 +560,7 @@ Available built-in tools: `read`, `bash`, `edit`, `write`, `reload`, `task_stop`
 | Option | Description |
 |--------|-------------|
 | `-e`, `--extension <source>` | Load extension from path, npm, or git (repeatable) |
-| `--no-extensions` | Disable extension discovery |
+| `--no-extensions` | Disable extension discovery, including auto-discovered triggers |
 | `--skill <path>` | Load skill (repeatable) |
 | `--no-skills` | Disable skill discovery |
 | `--prompt-template <path>` | Load prompt template (repeatable) |
