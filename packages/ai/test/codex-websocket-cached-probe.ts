@@ -2,14 +2,14 @@
 /**
  * Live probe for OpenAI Codex Responses websocket-cached mode.
  *
- * Runs a simple tool loop directly against the pi-ai provider source so it does not
- * depend on built dist packages or coding-agent SDK wiring.
+ * Runs a simple tool loop directly against the morgan-ai provider source so it does not
+ * depend on built dist packages or morgan-agent SDK wiring.
  */
 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Type } from "typebox";
-import { AuthStorage } from "../../coding-agent/src/core/auth-storage.ts";
+import { AuthStorage } from "../../morgan-agent/src/core/auth-storage.ts";
 import { getModel } from "../src/models.ts";
 import {
 	closeOpenAICodexWebSocketSessions,
@@ -37,7 +37,7 @@ function parseArgs(argv: string[]): Args {
 	let transport: Transport = "websocket-cached";
 	let maxTokens = DEFAULT_MAX_TOKENS;
 	let reasoning: ThinkingLevel = "low";
-	let sessionId = `pi-ai-codex-ws-cached-probe-${Date.now()}`;
+	let sessionId = `morgan-ai-codex-ws-cached-probe-${Date.now()}`;
 
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -107,7 +107,7 @@ function buildPrompt(turn: number): string {
 	];
 	for (let i = 1; i <= 180; i++) {
 		lines.push(
-			`Turn ${turn} synthetic record ${String(i).padStart(3, "0")}: alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega.`,
+			`Turn ${turn} synthetic record ${String(i).padStart(3, "0")}: alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron morgan rho sigma tau upsilon phi chi psi omega.`,
 		);
 	}
 	return lines.join("\n");
@@ -162,7 +162,7 @@ async function main(): Promise<void> {
 	const authStorage = AuthStorage.create();
 	const apiKey = (await authStorage.getApiKey("openai-codex")) ?? (await authStorage.getApiKey("openai"));
 	if (!apiKey) {
-		throw new Error("No OpenAI Codex API key found in coding-agent auth storage.");
+		throw new Error("No OpenAI Codex API key found in morgan-agent auth storage.");
 	}
 	const context: Context = {
 		systemPrompt:

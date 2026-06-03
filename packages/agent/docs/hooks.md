@@ -292,7 +292,7 @@ Harness does not store handlers, chain listeners, or know extension policy.
 Context is a normal object, not rebuilt per emit.
 
 ```ts
-const hooks = new CodingAgentHooks({
+const hooks = new MorganAgentHooks({
 	harness: harnessFacade,
 	session: sessionFacade,
 	ui: noUiFacade,
@@ -311,7 +311,7 @@ hooks.setContext({
 For dynamic state, prefer stable facades/methods over getter maze:
 
 ```ts
-interface CodingAgentHookContext {
+interface MorganAgentHookContext {
 	harness: HarnessFacade;
 	session: SessionFacade;
 	ui: UiFacade;
@@ -329,7 +329,7 @@ Extension loading can live next to harness and construct hooks:
 const hooks = await loadExtensions({
 	paths,
 	context,
-	hooks: new CodingAgentHooks(context),
+	hooks: new MorganAgentHooks(context),
 });
 const harness = new AgentHarness({ ..., hooks });
 ```
@@ -354,14 +354,14 @@ harness.setHooks(nextHooks); // idle-only if supported
 
 ### 1. Error policy must be explicit
 
-Existing coding-agent catches extension errors, reports them, and continues. New hooks need the same policy, likely:
+Existing morgan-agent catches extension errors, reports them, and continues. New hooks need the same policy, likely:
 
 ```ts
 errorMode: "continue" | "throw"
 onError(error)
 ```
 
-For coding-agent, default should be `"continue"`.
+For morgan-agent, default should be `"continue"`.
 
 ### 2. Source metadata matters
 
@@ -379,7 +379,7 @@ Or `on(type, handler, { sourceInfo })`.
 
 ### 3. Some extension capabilities are registries, not hooks
 
-These are not covered by `emit()` and should stay as registries on `CodingAgentHooks` or an extension host:
+These are not covered by `emit()` and should stay as registries on `MorganAgentHooks` or an extension host:
 
 - tools
 - commands
@@ -392,7 +392,7 @@ These are not covered by `emit()` and should stay as registries on `CodingAgentH
 
 That is fine. They do not belong in `AgentHarness`.
 
-### 4. Existing coding-agent events can be represented
+### 4. Existing morgan-agent events can be represented
 
 No blocker for:
 
@@ -411,11 +411,11 @@ No blocker for:
 - model/thinking selection events
 - agent/turn/message/tool lifecycle events
 
-They become additional event types handled by `CodingAgentHooks`.
+They become additional event types handled by `MorganAgentHooks`.
 
 ### 5. Need to preserve exact old semantics
 
-When porting coding-agent, special cases must be copied:
+When porting morgan-agent, special cases must be copied:
 
 - `input`: transform chain, `handled` short-circuits.
 - `user_bash`: first meaningful result wins.
@@ -437,7 +437,7 @@ Observers see the original emitted event once. They do not see every intermediat
 
 ## Verdict
 
-This design can implement a new coding-agent. It is simpler than the current runner, keeps harness clean, and preserves the important extension capabilities as long as `CodingAgentHooks` adds source-aware scopes, registries, cleanup, and the exact old event semantics.
+This design can implement a new morgan-agent. It is simpler than the current runner, keeps harness clean, and preserves the important extension capabilities as long as `MorganAgentHooks` adds source-aware scopes, registries, cleanup, and the exact old event semantics.
 
 --- Comments ---
 

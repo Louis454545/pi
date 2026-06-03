@@ -1,0 +1,424 @@
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { TriggerEmit } from "@earendil-works/morgan-agent";
+import type { AgentTool } from "@earendil-works/morgan-agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/morgan-ai";
+import { Type } from "typebox";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { DefaultResourceLoader } from "../../src/core/resource-loader.ts";
+import { createHarness, getAssistantTexts, type Harness } from "./harness.ts";
+
+async function waitForCondition(condition: () => boolean): Promise<void> {
+	const deadline = Date.now() + 2000;
+	while (Date.now() < deadline) {
+		if (condition()) {
+			return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("Timed out waiting for condition");
+}
+
+function createTempDir(): string {
+	const tempDir = join(tmpdir(), `morgan-proactive-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	mkdirSync(tempDir, { recursive: true });
+	return tempDir;
+}
+
+function createWaitingTool(): {
+	tool: AgentTool;
+	waitForStart: Promise<void>;
+	release: () => void;
+} {
+	let releaseTool: (() => void) | undefined;
+	let resolveStart: (() => void) | undefined;
+	const waitForStart = new Promise<void>((resolve) => {
+		resolveStart = resolve;
+	});
+	const releasePromise = new Promise<void>((resolve) => {
+		releaseTool = resolve;
+	});
+	const tool: AgentTool = {
+		name: "wait",
+		label: "Wait",
+		description: "Wait for release",
+		parameters: Type.Object({}),
+		execute: async () => {
+			resolveStart?.();
+			await releasePromise;
+			return {
+				content: [{ type: "text", text: "released" }],
+				details: {},
+			};
+		},
+	};
+	return {
+		tool,
+		waitForStart,
+		release: () => releaseTool?.(),
+	};
+}
+
+describe("AgentSession proactive triggers", () => {
+	const harnesses: Harness[] = [];
+	const tempDirs: string[] = [];
+
+	afterEach(() => {
+		while (harnesses.length > 0) {
+			harnesses.pop()?.cleanup();
+		}
+		while (tempDirs.length > 0) {
+			const tempDir = tempDirs.pop();
+			if (tempDir && existsSync(tempDir)) {
+				rmSync(tempDir, { recursive: true, force: true });
+			}
+		}
+	});
+
+	it("registers triggers and reports duplicate trigger diagnostics", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(morgan) => {
+					morgan.registerTrigger({ name: "same", start: () => {} });
+				},
+				(morgan) => {
+					morgan.registerTrigger({ name: "same", start: () => {} });
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const triggers = harness.session.extensionRunner.getRegisteredTriggers();
+
+		expect(triggers).toHaveLength(1);
+		expect(triggers[0]?.definition.name).toBe("same");
+		expect(harness.session.extensionRunner.getTriggerDiagnostics()[0]?.message).toContain("conflict");
+		warnSpy.mockRestore();
+	});
+
+	it("starts triggers on session_start, cleans them up on reload, and ignores stale emit", async () => {
+		let starts = 0;
+		let cleanups = 0;
+		let staleEmit: TriggerEmit | undefined;
+		let activeEmit: TriggerEmit | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(morgan) => {
+					morgan.registerTrigger({
+						name: "lifecycle",
+						start: (_ctx, emit) => {
+							starts++;
+							if (!staleEmit) {
+								staleEmit = emit;
+							}
+							activeEmit = emit;
+							return () => {
+								cleanups++;
+							};
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		await harness.session.bindExtensions({});
+		expect(starts).toBe(1);
+
+		await harness.session.reload();
+		expect(starts).toBe(2);
+		expect(cleanups).toBe(1);
+
+		staleEmit?.({ eventId: "stale", summary: "stale event" });
+		activeEmit?.({ eventId: "active", summary: "active event" });
+		await waitForCondition(() => harness.eventsOfType("proactive_trigger_event").length === 1);
+
+		expect(harness.eventsOfType("proactive_trigger_event")[0]?.notification.eventId).toBe("active");
+	});
+
+	it("reports trigger startup and malformed emit errors through extension errors", async () => {
+		const errors: Array<{ event: string; error: string }> = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(morgan) => {
+					morgan.registerTrigger({
+						name: "bad-start",
+						start: () => {
+							throw new Error("startup failed");
+						},
+					});
+					morgan.registerTrigger({
+						name: "bad-emit",
+						start: (_ctx, emit) => {
+							emit({ eventId: "empty", summary: "" });
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		await harness.session.bindExtensions({
+			onError: (error) => {
+				errors.push({ event: error.event, error: error.error });
+			},
+		});
+
+		expect(errors).toEqual(
+			expect.arrayContaining([
+				{ event: "trigger_start", error: "startup failed" },
+				{
+					event: "trigger_emit",
+					error: "Trigger 'bad-emit' emitted an event with an empty summary. Skipping.",
+				},
+			]),
+		);
+		expect(harness.eventsOfType("proactive_trigger_event")).toHaveLength(0);
+	});
+
+	it("persists hidden trigger events and starts a proactive turn while idle", async () => {
+		let emit: TriggerEmit | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(morgan) => {
+					morgan.registerTrigger({
+						name: "idle",
+						start: (_ctx, triggerEmit) => {
+							emit = triggerEmit;
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("handled proactive event")]);
+		await harness.session.bindExtensions({});
+
+		emit?.({ eventId: "idle-1", summary: "idle event", payload: { ok: true } });
+		await waitForCondition(() => getAssistantTexts(harness).includes("handled proactive event"));
+
+		const customMessage = harness.session.messages.find(
+			(message) => message.role === "custom" && message.customType === "proactive_trigger_event",
+		);
+		if (!customMessage || customMessage.role !== "custom") {
+			throw new Error("Expected proactive trigger custom message");
+		}
+		expect(customMessage.display).toBe(false);
+		expect(customMessage.details).toMatchObject({
+			triggerName: "idle",
+			eventId: "idle-1",
+			summary: "idle event",
+			payload: { ok: true },
+		});
+	});
+
+	it("queues trigger events while busy and does not create a concurrent proactive turn", async () => {
+		let emit: TriggerEmit | undefined;
+		const waiting = createWaitingTool();
+		const harness = await createHarness({
+			tools: [waiting.tool],
+			extensionFactories: [
+				(morgan) => {
+					morgan.registerTrigger({
+						name: "busy",
+						start: (_ctx, triggerEmit) => {
+							emit = triggerEmit;
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("original complete"),
+			fauxAssistantMessage("busy event handled"),
+		]);
+		await harness.session.bindExtensions({});
+
+		const promptPromise = harness.session.prompt("start");
+		await waiting.waitForStart;
+		emit?.({ eventId: "busy-1", summary: "busy event" });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(getAssistantTexts(harness)).toEqual([""]);
+
+		waiting.release();
+		await promptPromise;
+		await waitForCondition(() => getAssistantTexts(harness).includes("busy event handled"));
+		expect(getAssistantTexts(harness)).toEqual(["", "original complete", "busy event handled"]);
+	});
+
+	it("deduplicates event ids and drops newest events beyond the pending queue bound", async () => {
+		let emit: TriggerEmit | undefined;
+		const waiting = createWaitingTool();
+		const harness = await createHarness({
+			tools: [waiting.tool],
+			extensionFactories: [
+				(morgan) => {
+					morgan.registerTrigger({
+						name: "bounded",
+						start: (_ctx, triggerEmit) => {
+							emit = triggerEmit;
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" })]);
+		await harness.session.bindExtensions({});
+
+		const promptPromise = harness.session.prompt("start");
+		await waiting.waitForStart;
+		emit?.({ eventId: "dup", summary: "first duplicate" });
+		emit?.({ eventId: "dup", summary: "second duplicate" });
+		for (let i = 0; i < 40; i++) {
+			emit?.({ eventId: `event-${i}`, summary: `event ${i}` });
+		}
+
+		await waitForCondition(() => harness.eventsOfType("proactive_trigger_overflow").length > 0);
+		expect(
+			harness.eventsOfType("proactive_trigger_event").filter((event) => event.notification.eventId === "dup"),
+		).toHaveLength(1);
+		expect(harness.eventsOfType("proactive_trigger_overflow").at(-1)?.dropped.eventId).toBe("event-39");
+
+		waiting.release();
+		await promptPromise;
+	});
+
+	it("exposes notify_user only during proactive turns and creates a visible notification", async () => {
+		let emit: TriggerEmit | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(morgan) => {
+					morgan.registerTrigger({
+						name: "notify",
+						start: (_ctx, triggerEmit) => {
+							emit = triggerEmit;
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("notify_user", {
+					title: "CI failed",
+					message: "The release job failed.",
+					severity: "warning",
+					source: "ci",
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("notification turn done"),
+		]);
+		await harness.session.bindExtensions({});
+
+		expect(harness.session.getActiveToolNames()).not.toContain("notify_user");
+		emit?.({ eventId: "notify-1", summary: "CI failed" });
+		await waitForCondition(() => harness.eventsOfType("proactive_notification").length === 1);
+
+		const notification = harness.eventsOfType("proactive_notification")[0]?.notification;
+		expect(notification).toMatchObject({
+			title: "CI failed",
+			message: "The release job failed.",
+			severity: "warning",
+			source: "ci",
+			triggerName: "notify",
+			eventId: "notify-1",
+		});
+		expect(
+			harness.session.messages.some(
+				(message) => message.role === "custom" && message.customType === "proactive_notification",
+			),
+		).toBe(true);
+		await waitForCondition(() => getAssistantTexts(harness).includes("notification turn done"));
+		expect(harness.session.getActiveToolNames()).not.toContain("notify_user");
+	});
+
+	it("runs triggers without UI bindings", async () => {
+		let emit: TriggerEmit | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(morgan) => {
+					morgan.registerTrigger({
+						name: "rpc",
+						start: (_ctx, triggerEmit) => {
+							emit = triggerEmit;
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("rpc handled")]);
+		await harness.session.bindExtensions({});
+
+		emit?.({ eventId: "rpc-1", summary: "rpc event" });
+		await waitForCondition(() => getAssistantTexts(harness).includes("rpc handled"));
+		expect(harness.eventsOfType("proactive_trigger_event")[0]?.notification.triggerName).toBe("rpc");
+	});
+
+	it("does not load project-local trigger extensions without explicit project resources", async () => {
+		const tempDir = createTempDir();
+		tempDirs.push(tempDir);
+		const agentDir = join(tempDir, "agent");
+		const localExtensionsDir = join(tempDir, ".morgan", "extensions");
+		mkdirSync(localExtensionsDir, { recursive: true });
+		writeFileSync(
+			join(localExtensionsDir, "trigger.ts"),
+			`
+				export default function(morgan) {
+					morgan.registerTrigger({ name: "project", start: () => {} });
+				}
+			`,
+		);
+
+		const disabledLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			includeProjectResources: false,
+		});
+		await disabledLoader.reload();
+		expect(disabledLoader.getExtensions().extensions.flatMap((extension) => [...extension.triggers.keys()])).toEqual(
+			[],
+		);
+
+		const enabledLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			includeProjectResources: true,
+		});
+		await enabledLoader.reload();
+		expect(enabledLoader.getExtensions().extensions.flatMap((extension) => [...extension.triggers.keys()])).toEqual([
+			"project",
+		]);
+	});
+
+	it("discovers triggers from normal configured extension locations", async () => {
+		const tempDir = createTempDir();
+		tempDirs.push(tempDir);
+		const configuredExtension = join(tempDir, "plain-extension.ts");
+		writeFileSync(
+			configuredExtension,
+			`
+				export default function(morgan) {
+					morgan.registerTrigger({ name: "plain", start: () => {} });
+				}
+			`,
+		);
+		const loaded = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir: join(tempDir, "agent"),
+			additionalExtensionPaths: [configuredExtension],
+		});
+		await loaded.reload();
+
+		expect(loaded.getExtensions().extensions.flatMap((extension) => [...extension.triggers.keys()])).toEqual([
+			"plain",
+		]);
+	});
+});

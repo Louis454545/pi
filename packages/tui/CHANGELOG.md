@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Renamed the package from `@earendil-works/pi-tui` to `@earendil-works/morgan-tui`.
+
 ## [0.78.0] - 2026-05-29
 
 ### Fixed

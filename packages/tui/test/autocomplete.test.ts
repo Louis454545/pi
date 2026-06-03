@@ -120,7 +120,7 @@ describe("CombinedAutocompleteProvider", () => {
 		let outsideDir = "";
 
 		beforeEach(() => {
-			rootDir = mkdtempSync(join(tmpdir(), "pi-autocomplete-root-"));
+			rootDir = mkdtempSync(join(tmpdir(), "morgan-autocomplete-root-"));
 			baseDir = join(rootDir, "cwd");
 			outsideDir = join(rootDir, "outside");
 			mkdirSync(baseDir, { recursive: true });
@@ -282,9 +282,9 @@ describe("CombinedAutocompleteProvider", () => {
 
 		test("includes hidden paths but excludes .git", async () => {
 			setupFolder(baseDir, {
-				dirs: [".pi", ".github", ".git"],
+				dirs: [".morgan", ".github", ".git"],
 				files: {
-					".pi/config.json": "{}",
+					".morgan/config.json": "{}",
 					".github/workflows/ci.yml": "name: ci",
 					".git/config": "[core]",
 				},
@@ -295,7 +295,7 @@ describe("CombinedAutocompleteProvider", () => {
 			const result = await getSuggestions(provider, [line], 0, line.length);
 
 			const values = result?.items.map((item) => item.value) ?? [];
-			assert.ok(values.includes("@.pi/"));
+			assert.ok(values.includes("@.morgan/"));
 			assert.ok(values.includes("@.github/"));
 			assert.ok(!values.some((value) => value === "@.git" || value.startsWith("@.git/")));
 		});
@@ -362,9 +362,9 @@ describe("CombinedAutocompleteProvider", () => {
 			mkdirSync(queryInPathBaseDir, { recursive: true });
 
 			const structure = {
-				dirs: ["packages/coding-agent/examples/extensions/plan-mode"],
+				dirs: ["packages/morgan-agent/examples/extensions/plan-mode"],
 				files: {
-					"packages/coding-agent/examples/extensions/plan-mode/README.md": "readme",
+					"packages/morgan-agent/examples/extensions/plan-mode/README.md": "readme",
 					"packages/tui/docs/plan.md": "plan",
 				},
 			};
@@ -383,7 +383,7 @@ describe("CombinedAutocompleteProvider", () => {
 
 			assert.deepStrictEqual(normalize(queryInPathResult), normalize(normalResult));
 			assert.ok(
-				normalize(normalResult).includes("plan-mode/ :: packages/coding-agent/examples/extensions/plan-mode"),
+				normalize(normalResult).includes("plan-mode/ :: packages/morgan-agent/examples/extensions/plan-mode"),
 			);
 			assert.ok(normalize(normalResult).includes("plan.md :: packages/tui/docs/plan.md"));
 		});
@@ -431,7 +431,7 @@ describe("CombinedAutocompleteProvider", () => {
 		let baseDir = "";
 
 		beforeEach(() => {
-			baseDir = mkdtempSync(join(tmpdir(), "pi-autocomplete-"));
+			baseDir = mkdtempSync(join(tmpdir(), "morgan-autocomplete-"));
 		});
 
 		afterEach(() => {
@@ -477,7 +477,7 @@ describe("CombinedAutocompleteProvider", () => {
 		let baseDir = "";
 
 		beforeEach(() => {
-			baseDir = mkdtempSync(join(tmpdir(), "pi-autocomplete-"));
+			baseDir = mkdtempSync(join(tmpdir(), "morgan-autocomplete-"));
 		});
 
 		afterEach(() => {

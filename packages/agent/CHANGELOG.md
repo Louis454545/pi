@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Renamed the package from `@earendil-works/pi-agent-core` to `@earendil-works/morgan-agent-core`.
+
 ## [0.78.0] - 2026-05-29
 
 ## [0.77.0] - 2026-05-28

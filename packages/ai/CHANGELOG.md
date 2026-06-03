@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Renamed the package from `@earendil-works/pi-ai` to `@earendil-works/morgan-ai`, and renamed the CLI from `pi-ai` to `morgan-ai`.
+
 ## [0.78.0] - 2026-05-29
 
 ### Breaking Changes

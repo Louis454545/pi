@@ -1,60 +1,60 @@
 <p align="center">
-  <a href="https://pi.dev">
-    <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
+  <a href="https://morgan.dev">
+    <img alt="morgan logo" src="https://morgan.dev/logo-auto.svg" width="128">
   </a>
 </p>
 <p align="center">
   <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
 </p>
 <p align="center">
-  <a href="https://pi.dev">pi.dev</a> domain graciously donated by
+  <a href="https://morgan.dev">morgan.dev</a> domain graciously donated by
   <br /><br />
-  <a href="https://exe.dev"><img src="packages/coding-agent/docs/images/exy.png" alt="Exy mascot" width="48" /><br />exe.dev</a>
+  <a href="https://exe.dev"><img src="packages/morgan-agent/docs/images/exy.png" alt="Exy mascot" width="48" /><br />exe.dev</a>
 </p>
 
 > New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
-# Pi Agent Harness Mono Repo
+# Morgan Agent Harness Mono Repo
 
-This is the home of the pi agent harness project including our self-extensible computer agent.
+This is the home of the morgan agent harness project including our self-extensible computer agent.
 
-* **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive computer agent CLI
-* **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
-* **[@earendil-works/pi-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)
+* **[@earendil-works/morgan-agent](packages/morgan-agent)**: Interactive computer agent CLI
+* **[@earendil-works/morgan-agent-core](packages/agent)**: Agent runtime with tool calling and state management
+* **[@earendil-works/morgan-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)
 
-To learn more about pi:
+To learn more about morgan:
 
-* [Visit pi.dev](https://pi.dev), the project website with demos
-* [Read the documentation](https://pi.dev/docs/latest), but you can also ask the agent to explain itself
+* [Visit morgan.dev](https://morgan.dev), the project website with demos
+* [Read the documentation](https://morgan.dev/docs/latest), but you can also ask the agent to explain itself
 
-## Share Your OSS Pi Conversations
+## Share Your OSS Morgan Conversations
 
-If you use pi or other agents for open source work, please share your conversations.
+If you use morgan or other agents for open source work, please share your conversations.
 
 Public OSS conversation data helps improve agents with real-world tasks, tool use, failures, and fixes instead of toy benchmarks.
 
 For the full explanation, see [this post on X](https://x.com/badlogicgames/status/2037811643774652911).
 
-To publish sessions, use [`badlogic/pi-share-hf`](https://github.com/badlogic/pi-share-hf). Read its README.md for setup instructions. All you need is a Hugging Face account, the Hugging Face CLI, and `pi-share-hf`.
+To publish sessions, use [`badlogic/morgan-share-hf`](https://github.com/badlogic/morgan-share-hf). Read its README.md for setup instructions. All you need is a Hugging Face account, the Hugging Face CLI, and `morgan-share-hf`.
 
-You can also watch [this video](https://x.com/badlogicgames/status/2041151967695634619), where I show how I publish my `pi-mono` sessions.
+You can also watch [this video](https://x.com/badlogicgames/status/2041151967695634619), where I show how I publish my `morgan-mono` sessions.
 
-I regularly publish my own `pi-mono` work sessions here:
+I regularly publish my own `morgan-mono` work sessions here:
 
-- [badlogicgames/pi-mono on Hugging Face](https://huggingface.co/datasets/badlogicgames/pi-mono)
+- [badlogicgames/morgan-mono on Hugging Face](https://huggingface.co/datasets/badlogicgames/morgan-mono)
 
 ## All Packages
 
 | Package | Description |
 |---------|-------------|
-| **[@earendil-works/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
-| **[@earendil-works/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
-| **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive computer agent CLI |
-| **[@earendil-works/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
+| **[@earendil-works/morgan-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
+| **[@earendil-works/morgan-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
+| **[@earendil-works/morgan-agent](packages/morgan-agent)** | Interactive computer agent CLI |
+| **[@earendil-works/morgan-tui](packages/tui)** | Terminal UI library with differential rendering |
 
-For Slack/chat automation and workflows see [earendil-works/pi-chat](https://github.com/earendil-works/pi-chat).
+For Slack/chat automation and workflows see [earendil-works/morgan-chat](https://github.com/earendil-works/morgan-chat).
 
 ## Contributing
 
@@ -67,7 +67,7 @@ npm install --ignore-scripts  # Install all dependencies without running lifecyc
 npm run build        # Build all packages
 npm run check        # Lint, format, and type check
 ./test.sh            # Run tests (skips LLM-dependent tests without API keys)
-./pi-test.sh         # Run pi from sources (can be run from any directory)
+./morgan-test.sh         # Run morgan from sources (can be run from any directory)
 ```
 
 ## Supply-chain hardening
@@ -75,12 +75,12 @@ npm run check        # Lint, format, and type check
 We treat npm dependency changes as reviewed code changes.
 
 - Direct external dependencies are pinned to exact versions. Internal workspace packages remain version-ranged.
-- `.npmrc` sets `save-exact=true` and `min-release-age=2` to avoid same-day dependency releases during npm resolution.
-- `package-lock.json` is the dependency ground truth. Pre-commit blocks accidental lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1` is set.
-- `npm run check` verifies pinned direct deps, native TypeScript import compatibility, and the generated coding-agent shrinkwrap.
-- The published CLI package includes `packages/coding-agent/npm-shrinkwrap.json`, generated from the root lockfile, to pin transitive deps for npm users.
+- `.npmrc` sets `save-exact=true` so npm persists direct dependency changes as exact versions.
+- `package-lock.json` is the dependency ground truth. Pre-commit blocks accidental lockfile commits unless `MORGAN_ALLOW_LOCKFILE_CHANGE=1` is set.
+- `npm run check` verifies pinned direct deps, native TypeScript import compatibility, and the generated morgan-agent shrinkwrap.
+- The published CLI package includes `packages/morgan-agent/npm-shrinkwrap.json`, generated from the root lockfile, to pin transitive deps for npm users.
 - Release smoke tests use `npm run release:local` to build, pack, and create isolated npm and Bun installs outside the repo before tagging a release.
-- Local release installs, documented npm installs, and `pi update --self` use `--ignore-scripts` where supported.
+- Local release installs, documented npm installs, and `morgan update --self` use `--ignore-scripts` where supported.
 - CI installs with `npm ci --ignore-scripts`, and a scheduled GitHub workflow runs `npm audit --omit=dev` plus `npm audit signatures --omit=dev`.
 - Shrinkwrap generation has an explicit allowlist for dependency lifecycle scripts; new lifecycle-script deps fail checks until reviewed.
 
