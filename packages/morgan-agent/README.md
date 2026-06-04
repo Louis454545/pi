@@ -252,7 +252,7 @@ Use `/session` in interactive mode to see the current conversation file and stat
 - Filter modes (Ctrl+O): default → no-tools → user-only → labeled-only → all
 - Press Shift+L to label entries as bookmarks and Shift+T to toggle label timestamps
 
-**`/reset`** archives the current canonical file under `~/.morgan/sessions/global/archive/` and starts a fresh global conversation. `/new` is a deprecated alias.
+**`/reset`** archives the current canonical file under `~/.morgan/sessions/global/archive/` and starts a fresh global conversation.
 
 **`/import <jsonl>`** archives the current canonical file and replaces it with the imported JSONL after confirmation.
 

@@ -2540,11 +2540,8 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/reset" || text === "/new") {
+			if (text === "/reset") {
 				this.editor.setText("");
-				if (text === "/new") {
-					this.showWarning("/new is deprecated. Use /reset.");
-				}
 				await this.handleResetCommand();
 				return;
 			}

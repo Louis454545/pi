@@ -8,7 +8,6 @@ describe("built-in slash commands", () => {
 		expect(commandNames.has("resume")).toBe(false);
 		expect(commandNames.has("fork")).toBe(false);
 		expect(commandNames.has("clone")).toBe(false);
-		expect(commandNames.has("new")).toBe(false);
 		expect(commandNames.has("reset")).toBe(true);
 		expect(commandNames.has("cwd")).toBe(true);
 		expect(commandNames.has("import")).toBe(true);

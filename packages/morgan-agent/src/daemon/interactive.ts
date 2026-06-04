@@ -882,10 +882,7 @@ class DaemonInteractiveMode {
 			await this.shutdown();
 			return;
 		}
-		if (text === "/reset" || text === "/new") {
-			if (text === "/new") {
-				this.showWarning("/new is deprecated. Use /reset.");
-			}
+		if (text === "/reset") {
 			await this.handleResetCommand();
 			return;
 		}
