@@ -87,9 +87,13 @@ Skill content here.`,
 
 			const { skills } = loader.getSkills();
 			const scheduledTasks = skills.find((s) => s.name === "scheduled-tasks");
+			const morganTriggers = skills.find((s) => s.name === "morgan-triggers");
 			expect(scheduledTasks).toBeDefined();
 			expect(scheduledTasks?.filePath).toBe(join(getBundledSkillsDir(), "scheduled-tasks", "SKILL.md"));
 			expect(scheduledTasks?.sourceInfo.source).toBe("bundled");
+			expect(morganTriggers).toBeDefined();
+			expect(morganTriggers?.filePath).toBe(join(getBundledSkillsDir(), "morgan-triggers", "SKILL.md"));
+			expect(morganTriggers?.sourceInfo.source).toBe("bundled");
 		});
 
 		it("should let settings disable bundled default skills", async () => {
