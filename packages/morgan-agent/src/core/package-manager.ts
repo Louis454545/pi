@@ -557,6 +557,49 @@ function resolveExtensionEntries(dir: string): string[] | null {
 	return null;
 }
 
+function collectTriggerExtensionEntries(dir: string, rootDir: string, ignoreMatcher: IgnoreMatcher): string[] {
+	const entries: string[] = [];
+	if (!existsSync(dir)) return entries;
+
+	const rootEntries = resolveExtensionEntries(dir);
+	if (rootEntries) {
+		entries.push(...rootEntries);
+	}
+
+	try {
+		const dirEntries = readdirSync(dir, { withFileTypes: true });
+		for (const entry of dirEntries) {
+			if (entry.name.startsWith(".")) continue;
+			if (entry.name === "node_modules") continue;
+
+			const fullPath = join(dir, entry.name);
+			let isDir = entry.isDirectory();
+
+			if (entry.isSymbolicLink()) {
+				try {
+					isDir = statSync(fullPath).isDirectory();
+				} catch {
+					continue;
+				}
+			}
+
+			if (!isDir) continue;
+
+			const relPath = toPosixPath(relative(rootDir, fullPath));
+			if (ignoreMatcher.ignores(`${relPath}/`)) continue;
+
+			const resolvedEntries = resolveExtensionEntries(fullPath);
+			if (resolvedEntries) {
+				entries.push(...resolvedEntries);
+			}
+		}
+	} catch {
+		// Ignore errors
+	}
+
+	return entries;
+}
+
 function collectAutoExtensionEntries(dir: string): string[] {
 	const entries: string[] = [];
 	if (!existsSync(dir)) return entries;
@@ -598,6 +641,10 @@ function collectAutoExtensionEntries(dir: string): string[] {
 			if (isFile && (entry.name.endsWith(".ts") || entry.name.endsWith(".js"))) {
 				entries.push(fullPath);
 			} else if (isDir) {
+				if (entry.name === "triggers") {
+					entries.push(...collectTriggerExtensionEntries(fullPath, dir, ig));
+					continue;
+				}
 				const resolvedEntries = resolveExtensionEntries(fullPath);
 				if (resolvedEntries) {
 					entries.push(...resolvedEntries);

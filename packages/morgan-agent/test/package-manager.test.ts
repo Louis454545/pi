@@ -120,6 +120,17 @@ describe("DefaultPackageManager", () => {
 			expect(result.extensions.some((r) => r.path === extPath && r.enabled)).toBe(true);
 		});
 
+		it("should auto-discover trigger extension subdirectories", async () => {
+			const triggerDir = join(agentDir, "extensions", "triggers", "gmail-new-mail");
+			mkdirSync(triggerDir, { recursive: true });
+			const triggerPath = join(triggerDir, "index.ts");
+			writeFileSync(triggerPath, "export default function() {}");
+
+			const result = await packageManager.resolve();
+
+			expect(result.extensions.some((r) => r.path === triggerPath && r.enabled)).toBe(true);
+		});
+
 		it("should resolve skill paths from settings", async () => {
 			const skillDir = join(agentDir, "skills", "my-skill");
 			mkdirSync(skillDir, { recursive: true });

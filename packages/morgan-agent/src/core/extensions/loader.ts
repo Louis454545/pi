@@ -515,6 +515,40 @@ function resolveExtensionEntries(dir: string): string[] | null {
 	return null;
 }
 
+function discoverTriggerExtensionsInDir(dir: string): string[] {
+	if (!fs.existsSync(dir)) {
+		return [];
+	}
+
+	const discovered: string[] = [];
+	const rootEntries = resolveExtensionEntries(dir);
+	if (rootEntries) {
+		discovered.push(...rootEntries);
+	}
+
+	try {
+		const entries = fs.readdirSync(dir, { withFileTypes: true });
+		for (const entry of entries) {
+			if (entry.name.startsWith(".") || entry.name === "node_modules") {
+				continue;
+			}
+			if (!(entry.isDirectory() || entry.isSymbolicLink())) {
+				continue;
+			}
+
+			const childPath = path.join(dir, entry.name);
+			const childEntries = resolveExtensionEntries(childPath);
+			if (childEntries) {
+				discovered.push(...childEntries);
+			}
+		}
+	} catch {
+		return discovered;
+	}
+
+	return discovered;
+}
+
 /**
  * Discover extensions in a directory.
  *
@@ -522,8 +556,9 @@ function resolveExtensionEntries(dir: string): string[] | null {
  * 1. Direct files: `extensions/*.ts` or `*.js` → load
  * 2. Subdirectory with index: `extensions/* /index.ts` or `index.js` → load
  * 3. Subdirectory with package.json: `extensions/* /package.json` with "morgan" field → load what it declares
+ * 4. Trigger subdirectories: `extensions/triggers/* /index.ts` or package manifest → load
  *
- * No recursion beyond one level. Complex packages must use package.json manifest.
+ * No general recursion beyond one level. Complex packages must use package.json manifest.
  */
 function discoverExtensionsInDir(dir: string): string[] {
 	if (!fs.existsSync(dir)) {
@@ -546,6 +581,10 @@ function discoverExtensionsInDir(dir: string): string[] {
 
 			// 2 & 3. Subdirectories
 			if (entry.isDirectory() || entry.isSymbolicLink()) {
+				if (entry.name === "triggers") {
+					discovered.push(...discoverTriggerExtensionsInDir(entryPath));
+					continue;
+				}
 				const entries = resolveExtensionEntries(entryPath);
 				if (entries) {
 					discovered.push(...entries);

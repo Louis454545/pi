@@ -239,6 +239,26 @@ describe("extensions discovery", () => {
 		expect(result.extensions).toHaveLength(0);
 	});
 
+	it("discovers trigger extension subdirectories", async () => {
+		const triggerDir = path.join(extensionsDir, "triggers", "gmail-new-mail");
+		fs.mkdirSync(triggerDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(triggerDir, "index.ts"),
+			`
+				export default function(morgan) {
+					morgan.registerTrigger({ name: "gmail-new-mail", start: () => {} });
+				}
+			`,
+		);
+
+		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions).toHaveLength(1);
+		expect(result.extensions[0].path).toContain(path.join("triggers", "gmail-new-mail", "index.ts"));
+		expect(result.extensions[0].triggers.has("gmail-new-mail")).toBe(true);
+	});
+
 	it("handles mixed direct files and subdirectories", async () => {
 		// Direct file
 		fs.writeFileSync(path.join(extensionsDir, "direct.ts"), extensionCode);
