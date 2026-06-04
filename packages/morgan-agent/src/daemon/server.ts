@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { once } from "node:events";
 import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
+import { homedir } from "node:os";
 import { parseArgs } from "../cli/args.ts";
 import {
 	APP_NAME,
@@ -157,8 +158,8 @@ async function acquireDaemonGlobalConversationLock(agentArgs: string[]): Promise
 	const launchCwd = process.cwd();
 	const agentDir = getAgentDir();
 	const workingContextCwd = parsed.cwd !== undefined ? resolvePath(parsed.cwd, launchCwd) : undefined;
-	const cwd = workingContextCwd ?? agentDir;
-	const includeProjectResources = workingContextCwd !== undefined;
+	const cwd = workingContextCwd ?? homedir();
+	const includeProjectResources = true;
 	runMigrations(workingContextCwd);
 
 	const settingsManager = SettingsManager.create(cwd, agentDir, {

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getBundledBrowserHarnessDir } from "../src/config.ts";
+import { getBundledBrowserHarnessDir, getBundledSkillsDir } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
@@ -79,6 +79,28 @@ Skill content here.`,
 
 			const { skills } = loader.getSkills();
 			expect(skills.some((s) => s.name === "browser")).toBe(false);
+		});
+
+		it("should load bundled default skills", async () => {
+			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			await loader.reload();
+
+			const { skills } = loader.getSkills();
+			const scheduledTasks = skills.find((s) => s.name === "scheduled-tasks");
+			expect(scheduledTasks).toBeDefined();
+			expect(scheduledTasks?.filePath).toBe(join(getBundledSkillsDir(), "scheduled-tasks", "SKILL.md"));
+			expect(scheduledTasks?.sourceInfo.source).toBe("bundled");
+		});
+
+		it("should let settings disable bundled default skills", async () => {
+			const settingsManager = SettingsManager.inMemory();
+			settingsManager.setSkillPaths(["-scheduled-tasks"]);
+
+			const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+			await loader.reload();
+
+			const { skills } = loader.getSkills();
+			expect(skills.some((s) => s.name === "scheduled-tasks")).toBe(false);
 		});
 
 		it("should prefer user browser skill over the bundled browser skill", async () => {

@@ -5,6 +5,7 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
+import { homedir } from "node:os";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/morgan-ai";
 import chalk from "chalk";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
@@ -338,8 +339,8 @@ export async function main(args: string[], options?: MainOptions) {
 	const launchCwd = process.cwd();
 	const agentDir = getAgentDir();
 	const workingContextCwd = parsed.cwd !== undefined ? resolvePath(parsed.cwd, launchCwd) : undefined;
-	const cwd = workingContextCwd ?? agentDir;
-	const includeProjectResources = workingContextCwd !== undefined;
+	const cwd = workingContextCwd ?? homedir();
+	const includeProjectResources = true;
 
 	// Run project-local migrations only when a working context is explicit.
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(workingContextCwd);

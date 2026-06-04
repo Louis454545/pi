@@ -453,6 +453,21 @@ export function getBundledBrowserHarnessDir(): string {
 	return join(packageDir, srcOrDist, "browser-harness");
 }
 
+/**
+ * Get path to bundled default skills.
+ * - For Bun binary: bundled-skills/ next to executable
+ * - For Node.js (dist/): dist/bundled-skills/
+ * - For tsx (src/): src/bundled-skills/
+ */
+export function getBundledSkillsDir(): string {
+	if (isBunBinary) {
+		return join(getPackageDir(), "bundled-skills");
+	}
+	const packageDir = getPackageDir();
+	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
+	return join(packageDir, srcOrDist, "bundled-skills");
+}
+
 // =============================================================================
 // App Config (from package.json morganConfig)
 // =============================================================================

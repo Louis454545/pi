@@ -27,7 +27,7 @@ import type { Readable } from "node:stream";
 import { globSync } from "glob";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
-import { CONFIG_DIR_NAME, getBundledBrowserHarnessDir } from "../config.ts";
+import { CONFIG_DIR_NAME, getBundledBrowserHarnessDir, getBundledSkillsDir } from "../config.ts";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
@@ -2367,25 +2367,40 @@ export class DefaultPackageManager implements PackageManager {
 		globalSettings: ReturnType<SettingsManager["getGlobalSettings"]>,
 		projectSettings: ReturnType<SettingsManager["getProjectSettings"]>,
 	): void {
+		const bundledSkillsDir = getBundledSkillsDir();
+		const overrides = [
+			...((projectSettings.skills ?? []) as string[]),
+			...((globalSettings.skills ?? []) as string[]),
+		];
+		const metadata: PathMetadata = {
+			source: "bundled",
+			scope: "temporary",
+			origin: "top-level",
+			baseDir: bundledSkillsDir,
+		};
+
+		for (const skill of collectAutoSkillEntries(bundledSkillsDir, "morgan")) {
+			const skillName = basename(dirname(skill));
+			const disabledByName = overrides.some((pattern) => pattern === `-${skillName}` || pattern === `!${skillName}`);
+			const enabled = !disabledByName && isEnabledByOverrides(skill, overrides, bundledSkillsDir);
+			this.addResource(accumulator.skills, skill, metadata, enabled);
+		}
+
 		const browserHarnessDir = getBundledBrowserHarnessDir();
 		const browserSkill = join(browserHarnessDir, "SKILL.md");
 		if (!existsSync(browserSkill)) {
 			return;
 		}
 
-		const metadata: PathMetadata = {
+		const browserMetadata: PathMetadata = {
 			source: "bundled",
 			scope: "temporary",
 			origin: "top-level",
 			baseDir: browserHarnessDir,
 		};
-		const overrides = [
-			...((projectSettings.skills ?? []) as string[]),
-			...((globalSettings.skills ?? []) as string[]),
-		];
 		const disablesBrowserByName = overrides.some((pattern) => pattern === "-browser" || pattern === "!browser");
 		const enabled = !disablesBrowserByName && isEnabledByOverrides(browserSkill, overrides, browserHarnessDir);
-		this.addResource(accumulator.skills, browserSkill, metadata, enabled);
+		this.addResource(accumulator.skills, browserSkill, browserMetadata, enabled);
 	}
 
 	private collectFilesFromPaths(paths: string[], resourceType: ResourceType): string[] {
