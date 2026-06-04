@@ -369,6 +369,7 @@ describe("daemon RPC proxy routing", () => {
 		expect(shouldRewriteClientMessageForRpc({ id: "cmd_1", type: "prompt", message: "hi" })).toBe(true);
 		expect(shouldRewriteClientMessageForRpc({ id: "cmd_2", type: "reload" })).toBe(true);
 		expect(shouldRewriteClientMessageForRpc({ id: "cmd_3", type: "abort_compaction" })).toBe(true);
+		expect(shouldRewriteClientMessageForRpc({ id: "cmd_4", type: "get_schedules" })).toBe(true);
 		expect(shouldRewriteClientMessageForRpc({ id: "ui_1", type: "extension_ui_response", value: "ok" })).toBe(false);
 	});
 

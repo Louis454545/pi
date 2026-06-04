@@ -75,6 +75,7 @@ const RPC_COMMAND_TYPES = new Set<string>([
 	"set_session_name",
 	"get_messages",
 	"get_commands",
+	"get_schedules",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
