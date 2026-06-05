@@ -1,4 +1,4 @@
-import { type Model, modelsAreEqual } from "@earendil-works/morgan-ai";
+import { type Api, type Model, modelsAreEqual } from "@earendil-works/morgan-ai";
 import {
 	Container,
 	type Focusable,
@@ -27,6 +27,11 @@ interface ScopedModelItem {
 }
 
 type ModelScope = "all" | "scoped";
+
+interface ModelSelectorOptions {
+	models?: Model<Api>[];
+	hintText?: string;
+}
 
 /**
  * Component that renders a model selector with search
@@ -60,6 +65,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private scope: ModelScope = "all";
 	private scopeText?: Text;
 	private scopeHintText?: Text;
+	private options: ModelSelectorOptions;
 
 	constructor(
 		tui: TUI,
@@ -70,6 +76,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		onSelect: (model: Model<any>) => void,
 		onCancel: () => void,
 		initialSearchInput?: string,
+		options: ModelSelectorOptions = {},
 	) {
 		super();
 
@@ -81,6 +88,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.scope = scopedModels.length > 0 ? "scoped" : "all";
 		this.onSelectCallback = onSelect;
 		this.onCancelCallback = onCancel;
+		this.options = options;
 
 		// Add top border
 		this.addChild(new DynamicBorder());
@@ -93,7 +101,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.scopeHintText = new Text(this.getScopeHintText(), 0, 0);
 			this.addChild(this.scopeHintText);
 		} else {
-			const hintText = "Only showing models from configured providers. Use /login to add providers.";
+			const hintText =
+				this.options.hintText ?? "Only showing models from configured providers. Use /login to add providers.";
 			this.addChild(new Text(theme.fg("warning", hintText), 0, 0));
 		}
 		this.addChild(new Spacer(1));
@@ -146,21 +155,29 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.errorMessage = loadError;
 		}
 
-		// Load available models (built-in models still work even if models.json failed)
-		try {
-			const availableModels = await this.modelRegistry.getAvailable();
-			models = availableModels.map((model: Model<any>) => ({
+		if (this.options.models) {
+			models = this.options.models.map((model) => ({
 				provider: model.provider,
 				id: model.id,
 				model,
 			}));
-		} catch (error) {
-			this.allModels = [];
-			this.scopedModelItems = [];
-			this.activeModels = [];
-			this.filteredModels = [];
-			this.errorMessage = error instanceof Error ? error.message : String(error);
-			return;
+		} else {
+			// Load available models (built-in models still work even if models.json failed)
+			try {
+				const availableModels = await this.modelRegistry.getAvailable();
+				models = availableModels.map((model: Model<any>) => ({
+					provider: model.provider,
+					id: model.id,
+					model,
+				}));
+			} catch (error) {
+				this.allModels = [];
+				this.scopedModelItems = [];
+				this.activeModels = [];
+				this.filteredModels = [];
+				this.errorMessage = error instanceof Error ? error.message : String(error);
+				return;
+			}
 		}
 
 		this.allModels = this.sortModels(models);

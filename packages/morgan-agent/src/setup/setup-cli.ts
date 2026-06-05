@@ -1,9 +1,12 @@
+import { setKeybindings } from "@earendil-works/morgan-tui";
 import chalk from "chalk";
 import { APP_NAME, getAgentDir } from "../config.ts";
 import { AuthStorage } from "../core/auth-storage.ts";
+import { KeybindingsManager } from "../core/keybindings.ts";
 import { ModelRegistry } from "../core/model-registry.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
-import { TerminalSetupPrompter } from "./prompter.ts";
+import { initTheme, stopThemeWatcher } from "../modes/interactive/theme/theme.ts";
+import { SetupCancelledError, TuiSetupPrompter } from "./prompter.ts";
 import { runSetupWizard } from "./setup-wizard.ts";
 
 export interface SetupCommandResult {
@@ -84,7 +87,9 @@ export async function handleSetupCommand(args: string[]): Promise<SetupCommandRe
 	const authStorage = AuthStorage.create();
 	const modelRegistry = ModelRegistry.create(authStorage);
 	const settingsManager = SettingsManager.create(process.cwd(), agentDir, { includeProjectSettings: false });
-	const prompter = new TerminalSetupPrompter();
+	initTheme(settingsManager.getTheme(), true);
+	setKeybindings(KeybindingsManager.create());
+	const prompter = new TuiSetupPrompter({ authStorage, modelRegistry, settingsManager });
 
 	try {
 		await runSetupWizard({
@@ -95,8 +100,15 @@ export async function handleSetupCommand(args: string[]): Promise<SetupCommandRe
 			settingsManager,
 			prompter,
 		});
+	} catch (error) {
+		if (error instanceof SetupCancelledError) {
+			process.exitCode = 1;
+			return { handled: true };
+		}
+		throw error;
 	} finally {
 		prompter.close();
+		stopThemeWatcher();
 	}
 
 	if (options.noLaunch) {

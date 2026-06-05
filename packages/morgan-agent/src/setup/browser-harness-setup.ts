@@ -39,6 +39,21 @@ class DefaultBrowserHarnessRunner implements BrowserHarnessRunner {
 	}
 }
 
+async function runWithSuspendedPrompter(
+	prompter: SetupPrompter,
+	command: string,
+	args: string[],
+	runner: BrowserHarnessRunner,
+	options?: { env?: NodeJS.ProcessEnv },
+): Promise<number> {
+	prompter.suspend?.();
+	try {
+		return await runner.run(command, args, options);
+	} finally {
+		prompter.resume?.();
+	}
+}
+
 function getManagedBrowserHarnessDir(agentDir: string): string {
 	return join(agentDir, "browser-harness");
 }
@@ -96,7 +111,12 @@ export async function setupBrowserHarness(options: BrowserHarnessSetupOptions): 
 			};
 		}
 
-		const uvInstallCode = await runner.run("sh", ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"]);
+		const uvInstallCode = await runWithSuspendedPrompter(
+			options.prompter,
+			"sh",
+			["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"],
+			runner,
+		);
 		if (uvInstallCode !== 0) {
 			return {
 				status: "pending",
@@ -106,7 +126,15 @@ export async function setupBrowserHarness(options: BrowserHarnessSetupOptions): 
 	}
 
 	const env = getUvInstallPathEnv();
-	const installCode = await runner.run("uv", ["tool", "install", "-e", targetDir], { env });
+	const installCode = await runWithSuspendedPrompter(
+		options.prompter,
+		"uv",
+		["tool", "install", "-e", targetDir],
+		runner,
+		{
+			env,
+		},
+	);
 	if (installCode !== 0) {
 		return {
 			status: "pending",
@@ -114,7 +142,9 @@ export async function setupBrowserHarness(options: BrowserHarnessSetupOptions): 
 		};
 	}
 
-	const doctorCode = await runner.run("browser-harness", ["--doctor"], { env });
+	const doctorCode = await runWithSuspendedPrompter(options.prompter, "browser-harness", ["--doctor"], runner, {
+		env,
+	});
 	if (doctorCode !== 0) {
 		return {
 			status: "pending",

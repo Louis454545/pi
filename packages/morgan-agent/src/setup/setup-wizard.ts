@@ -4,6 +4,7 @@ import type { AuthStorage } from "../core/auth-storage.ts";
 import type { ModelRegistry } from "../core/model-registry.ts";
 import { defaultModelPerProvider } from "../core/model-resolver.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
+import type { AuthSelectorProvider } from "../modes/interactive/components/oauth-selector.ts";
 import {
 	type BrowserHarnessRunner,
 	type BrowserHarnessSetupResult,
@@ -43,16 +44,26 @@ async function selectProvider(
 	prompter: SetupPrompter,
 	providers: string[],
 	message: string,
+	authType: AuthSelectorProvider["authType"],
 ): Promise<string | undefined> {
 	if (providers.length === 0) {
 		prompter.warn("No providers are available.");
 		return undefined;
 	}
 
-	const options: SelectOption<string>[] = providers.map((provider) => ({
+	const providerOptions: AuthSelectorProvider[] = providers.map((provider) => ({
 		id: provider,
-		label: modelRegistry.getProviderDisplayName(provider),
-		description: provider,
+		name: modelRegistry.getProviderDisplayName(provider),
+		authType,
+	}));
+	if (prompter.selectAuthProvider) {
+		return await prompter.selectAuthProvider(message, providerOptions);
+	}
+
+	const options: SelectOption<string>[] = providerOptions.map((provider) => ({
+		id: provider.id,
+		label: provider.name,
+		description: provider.id,
 	}));
 	return await prompter.select(message, options);
 }
@@ -72,18 +83,28 @@ async function configureModelDefaults(
 	}
 
 	const defaultModel = defaultModelForProvider(provider, modelRegistry.getAll());
-	const options: SelectOption<string>[] = models
-		.slice()
-		.sort((a, b) => a.id.localeCompare(b.id))
-		.map((model) => ({
-			id: model.id,
-			label: model.name ? `${model.name} (${model.id})` : model.id,
-		}));
-	const selectedModelId = await prompter.select("Choose the default model:", options, {
-		defaultId: defaultModel?.id,
+	const selectedModel = await prompter.selectModel?.({
+		provider,
+		models,
+		currentModel: defaultModel,
 	});
-
-	settingsManager.setDefaultModelAndProvider(provider, selectedModelId);
+	if (selectedModel) {
+		settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id);
+	} else if (!prompter.selectModel) {
+		const options: SelectOption<string>[] = models
+			.slice()
+			.sort((a, b) => a.id.localeCompare(b.id))
+			.map((model) => ({
+				id: model.id,
+				label: model.name ? `${model.name} (${model.id})` : model.id,
+			}));
+		const selectedModelId = await prompter.select("Choose the default model:", options, {
+			defaultId: defaultModel?.id,
+		});
+		settingsManager.setDefaultModelAndProvider(provider, selectedModelId);
+	} else {
+		return;
+	}
 	const thinkingLevel = await prompter.select<ThinkingLevel>(
 		"Choose the default thinking level:",
 		[
@@ -108,6 +129,7 @@ async function configureApiKeyAuth(options: SetupWizardOptions): Promise<void> {
 		options.prompter,
 		providers,
 		"Choose an API key provider:",
+		"api_key",
 	);
 	if (!provider) {
 		return;
@@ -139,16 +161,19 @@ async function configureSubscriptionAuth(options: SetupWizardOptions): Promise<v
 		return;
 	}
 
-	const provider = await options.prompter.select(
-		"Choose a subscription provider:",
+	const provider = await selectProvider(
+		options.modelRegistry,
+		options.prompter,
 		oauthProviders
 			.slice()
 			.sort((a, b) => a.name.localeCompare(b.name))
-			.map((provider) => ({
-				id: provider.id,
-				label: provider.name,
-			})),
+			.map((provider) => provider.id),
+		"Choose a subscription provider:",
+		"oauth",
 	);
+	if (!provider) {
+		return;
+	}
 	await configureModelDefaults(provider, options.modelRegistry, options.settingsManager, options.prompter);
 	options.prompter.info(`Launch Morgan and run /login ${provider} to finish subscription authentication.`);
 }
@@ -180,9 +205,6 @@ async function configureAuthAndModel(options: SetupWizardOptions): Promise<void>
 }
 
 export async function runSetupWizard(options: SetupWizardOptions): Promise<SetupWizardResult> {
-	options.prompter.info("Morgan setup");
-	options.prompter.info("This configures global defaults in ~/.morgan/agent and prepares bundled capabilities.");
-
 	await configureAuthAndModel(options);
 	options.settingsManager.setEnableSkillCommands(true);
 	await options.settingsManager.flush();
