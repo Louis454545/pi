@@ -2561,6 +2561,11 @@ export class InteractiveMode {
 				await this.handleReloadCommand();
 				return;
 			}
+			if (text === "/dev-reload") {
+				this.editor.setText("");
+				await this.handleDevReloadCommand();
+				return;
+			}
 			if (text === "/debug") {
 				this.handleDebugCommand();
 				this.editor.setText("");
@@ -4936,6 +4941,31 @@ export class InteractiveMode {
 			dismissReloadBox(previousEditor as Component);
 			this.showError(`Reload failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
+	}
+
+	private async handleDevReloadCommand(): Promise<void> {
+		const exitCodeText = process.env.MORGAN_DEV_RELOAD_EXIT_CODE;
+		const exitCode = exitCodeText === undefined ? Number.NaN : Number.parseInt(exitCodeText, 10);
+		if (!Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255) {
+			this.showWarning("/dev-reload is only available under npm run dev:morgan.");
+			return;
+		}
+		if (this.session.isStreaming) {
+			this.showWarning("Wait for the current response to finish before restarting.");
+			return;
+		}
+		if (this.session.isCompacting) {
+			this.showWarning("Wait for compaction to finish before restarting.");
+			return;
+		}
+		if (this.isShuttingDown) return;
+
+		this.isShuttingDown = true;
+		this.unregisterSignalHandlers();
+		await this.ui.terminal.drainInput(1000);
+		this.stop();
+		await this.runtimeHost.dispose();
+		process.exit(exitCode);
 	}
 
 	private async handleExportCommand(text: string): Promise<void> {

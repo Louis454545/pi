@@ -35,5 +35,8 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "cwd", description: "Set working context and load project resources" },
 	{ name: "compact", description: "Manually compact the conversation context" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
+	...(process.env.MORGAN_DEV_RELOAD_EXIT_CODE
+		? [{ name: "dev-reload", description: "Restart the source dev runner" }]
+		: []),
 	{ name: "quit", description: `Quit ${APP_NAME}` },
 ];

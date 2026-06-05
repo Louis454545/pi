@@ -17,6 +17,7 @@
 		"check:pinned-deps": "node scripts/check-pinned-deps.mjs",
 		"check:shrinkwrap": "node scripts/generate-morgan-agent-shrinkwrap.mjs --check",
 		"check:ts-imports": "node scripts/check-ts-relative-imports.mjs",
+		"dev:morgan": "node scripts/morgan-dev.mjs",
 		"profile:tui": "node scripts/profile-morgan-agent-node.mjs --mode tui",
 		"profile:rpc": "node scripts/profile-morgan-agent-node.mjs --mode rpc",
 		"test": "npm run test --workspaces --if-present",
