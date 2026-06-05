@@ -25,9 +25,9 @@ export interface SetupPrompter {
 	select<T extends string>(message: string, options: SelectOption<T>[], optionsConfig?: { defaultId?: T }): Promise<T>;
 	selectAuthProvider?(message: string, providers: AuthSelectorProvider[]): Promise<string | undefined>;
 	selectModel?(options: SetupModelSelectOptions): Promise<Model<Api> | undefined>;
-	suspend?(): void;
-	resume?(): void;
-	close(): void;
+	suspend?(): void | Promise<void>;
+	resume?(): void | Promise<void>;
+	close(): void | Promise<void>;
 }
 
 export interface SetupModelSelectOptions {
@@ -257,10 +257,11 @@ export class TuiSetupPrompter implements SetupPrompter {
 		});
 	}
 
-	suspend(): void {
+	async suspend(): Promise<void> {
 		if (!this.active) {
 			return;
 		}
+		await this.tui.terminal.drainInput(1000);
 		this.tui.stop();
 		this.active = false;
 	}
@@ -274,8 +275,9 @@ export class TuiSetupPrompter implements SetupPrompter {
 		this.active = true;
 	}
 
-	close(): void {
+	async close(): Promise<void> {
 		if (this.active) {
+			await this.tui.terminal.drainInput(1000);
 			this.tui.stop();
 			this.active = false;
 		}

@@ -107,7 +107,7 @@ export async function handleSetupCommand(args: string[]): Promise<SetupCommandRe
 		}
 		throw error;
 	} finally {
-		prompter.close();
+		await prompter.close();
 		stopThemeWatcher();
 	}
 

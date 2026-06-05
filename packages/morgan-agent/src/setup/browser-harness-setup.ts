@@ -46,11 +46,11 @@ async function runWithSuspendedPrompter(
 	runner: BrowserHarnessRunner,
 	options?: { env?: NodeJS.ProcessEnv },
 ): Promise<number> {
-	prompter.suspend?.();
+	await prompter.suspend?.();
 	try {
 		return await runner.run(command, args, options);
 	} finally {
-		prompter.resume?.();
+		await prompter.resume?.();
 	}
 }
 
