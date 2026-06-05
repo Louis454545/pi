@@ -43,6 +43,7 @@ import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { handleSetupCommand } from "./setup/setup-cli.ts";
 import { isLocalPath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
@@ -285,6 +286,14 @@ export async function main(args: string[], options?: MainOptions) {
 
 	if (await handleDaemonCommand(args)) {
 		return;
+	}
+
+	const setupCommand = await handleSetupCommand(args);
+	if (setupCommand.handled) {
+		if (!setupCommand.launchArgs) {
+			return;
+		}
+		args = setupCommand.launchArgs;
 	}
 
 	if (await handlePackageCommand(args)) {

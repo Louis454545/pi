@@ -8,6 +8,7 @@ Install Morgan with npm:
 
 ```bash
 npm install -g --ignore-scripts @earendil-works/morgan-agent
+morgan setup
 ```
 
 `--ignore-scripts` disables dependency lifecycle scripts during install. Morgan does not require install scripts for normal npm installs.
@@ -17,6 +18,8 @@ On Linux or macOS, you can also use the installer:
 ```bash
 curl -fsSL https://morgan.dev/install.sh | sh
 ```
+
+The installer launches `morgan setup` automatically when run interactively.
 
 To uninstall morgan itself, use npm for curl and npm installs:
 

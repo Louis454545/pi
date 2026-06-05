@@ -8,9 +8,18 @@ Morgan is distributed as an npm package:
 
 ```bash
 npm install -g --ignore-scripts @earendil-works/morgan-agent
+morgan setup
 ```
 
 `--ignore-scripts` disables dependency lifecycle scripts during install. Morgan does not require install scripts for normal npm installs.
+
+Installer alternative:
+
+```bash
+curl -fsSL https://morgan.dev/install.sh | sh
+```
+
+The installer launches `morgan setup` after installation when run in an interactive terminal.
 
 ### Uninstall
 
@@ -38,6 +47,8 @@ Then start morgan in the project directory you want it to work on:
 cd /path/to/project
 morgan
 ```
+
+`morgan setup` configures global defaults, enables bundled skills, and installs the bundled browser harness into `~/.morgan/agent/browser-harness` when possible. If browser setup cannot finish, Morgan still starts and reports browser setup as pending.
 
 ## Authenticate
 

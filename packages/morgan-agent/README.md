@@ -70,6 +70,7 @@ I regularly publish my own `morgan-mono` work sessions here:
 
 ```bash
 npm install -g --ignore-scripts @earendil-works/morgan-agent
+morgan setup
 ```
 
 `--ignore-scripts` disables dependency lifecycle scripts during install. Morgan does not require install scripts for normal npm installs.
@@ -79,6 +80,8 @@ Installer alternative:
 ```bash
 curl -fsSL https://morgan.dev/install.sh | sh
 ```
+
+The installer launches `morgan setup` after installation when run in an interactive terminal. Setup configures global defaults, enables bundled skills, installs the bundled browser harness when possible, and then starts Morgan.
 
 Authenticate with an API key:
 
