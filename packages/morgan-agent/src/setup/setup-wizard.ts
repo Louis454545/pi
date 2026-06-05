@@ -11,8 +11,14 @@ import {
 	setupBrowserHarness,
 } from "./browser-harness-setup.ts";
 import type { SelectOption, SetupPrompter } from "./prompter.ts";
+import {
+	setupTelegramBridge,
+	type TelegramBridgeClient,
+	type TelegramBridgeSetupResult,
+} from "./telegram-bridge-setup.ts";
 
 type AuthChoice = "api-key" | "subscription" | "skip";
+type CommunicationChoice = "tui" | "telegram";
 
 export interface SetupWizardOptions {
 	force?: boolean;
@@ -22,11 +28,13 @@ export interface SetupWizardOptions {
 	settingsManager: SettingsManager;
 	prompter: SetupPrompter;
 	browserRunner?: BrowserHarnessRunner;
+	telegramClient?: TelegramBridgeClient;
 }
 
 export interface SetupWizardResult {
 	launchMorgan: boolean;
 	browser: BrowserHarnessSetupResult;
+	communication: TelegramBridgeSetupResult;
 }
 
 function uniqueProviders(models: Model<Api>[]): string[] {
@@ -174,8 +182,31 @@ async function configureSubscriptionAuth(options: SetupWizardOptions): Promise<v
 	if (!provider) {
 		return;
 	}
+
+	const providerInfo = oauthProviders.find((oauthProvider) => oauthProvider.id === provider);
+	const providerName = providerInfo?.name ?? options.modelRegistry.getProviderDisplayName(provider);
+	if (!options.force && options.authStorage.has(provider)) {
+		const replace = await options.prompter.confirm(
+			`A stored subscription credential already exists for ${providerName}. Replace it?`,
+			false,
+		);
+		if (!replace) {
+			await configureModelDefaults(provider, options.modelRegistry, options.settingsManager, options.prompter);
+			return;
+		}
+	}
+
+	await options.prompter.loginOAuth(
+		provider,
+		providerName,
+		providerInfo?.usesCallbackServer ?? false,
+		async (callbacks) => {
+			await options.authStorage.login(provider, callbacks);
+		},
+	);
+	options.modelRegistry.refresh();
 	await configureModelDefaults(provider, options.modelRegistry, options.settingsManager, options.prompter);
-	options.prompter.info(`Launch Morgan and run /login ${provider} to finish subscription authentication.`);
+	options.prompter.info(`Logged in to ${providerName}.`);
 }
 
 async function configureAuthAndModel(options: SetupWizardOptions): Promise<void> {
@@ -204,8 +235,39 @@ async function configureAuthAndModel(options: SetupWizardOptions): Promise<void>
 	}
 }
 
+async function configureCommunicationBridge(options: SetupWizardOptions): Promise<TelegramBridgeSetupResult> {
+	const communicationChoice = await options.prompter.select<CommunicationChoice>(
+		"Choose communication channel:",
+		[
+			{ id: "tui", label: "TUI only" },
+			{ id: "telegram", label: "Telegram" },
+		],
+		{ defaultId: "tui" },
+	);
+
+	if (communicationChoice === "tui") {
+		return { status: "skipped", messages: ["Communication channel: TUI only."] };
+	}
+
+	return await setupTelegramBridge({
+		agentDir: options.agentDir,
+		force: options.force,
+		prompter: options.prompter,
+		client: options.telegramClient,
+	});
+}
+
 export async function runSetupWizard(options: SetupWizardOptions): Promise<SetupWizardResult> {
 	await configureAuthAndModel(options);
+	const communication = await configureCommunicationBridge(options);
+	for (const message of communication.messages) {
+		if (communication.status === "ready" || communication.status === "skipped") {
+			options.prompter.info(message);
+		} else {
+			options.prompter.warn(message);
+		}
+	}
+
 	options.settingsManager.setEnableSkillCommands(true);
 	await options.settingsManager.flush();
 
@@ -225,5 +287,5 @@ export async function runSetupWizard(options: SetupWizardOptions): Promise<Setup
 	}
 
 	options.prompter.info("Setup complete.");
-	return { launchMorgan: true, browser };
+	return { launchMorgan: true, browser, communication };
 }

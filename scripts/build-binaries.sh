@@ -157,6 +157,7 @@ for platform in "${PLATFORMS[@]}"; do
     cp -r examples "$OUTPUT_DIR/$platform/"
     cp -r dist/browser-harness "$OUTPUT_DIR/$platform/"
     cp -r dist/bundled-skills "$OUTPUT_DIR/$platform/"
+    cp -r dist/bundled-extensions "$OUTPUT_DIR/$platform/"
 
     case "$platform" in
         darwin-arm64)

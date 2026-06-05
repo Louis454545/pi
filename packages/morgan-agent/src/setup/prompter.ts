@@ -1,6 +1,7 @@
 import { stdin as input, stdout as output } from "node:process";
 import readline from "node:readline/promises";
 import type { Api, Model } from "@earendil-works/morgan-ai";
+import type { OAuthLoginCallbacks, OAuthSelectPrompt } from "@earendil-works/morgan-ai/oauth";
 import { type Component, ProcessTerminal, Spacer, Text, TUI } from "@earendil-works/morgan-tui";
 import type { AuthStorage } from "../core/auth-storage.ts";
 import type { ModelRegistry } from "../core/model-registry.ts";
@@ -25,6 +26,12 @@ export interface SetupPrompter {
 	select<T extends string>(message: string, options: SelectOption<T>[], optionsConfig?: { defaultId?: T }): Promise<T>;
 	selectAuthProvider?(message: string, providers: AuthSelectorProvider[]): Promise<string | undefined>;
 	selectModel?(options: SetupModelSelectOptions): Promise<Model<Api> | undefined>;
+	loginOAuth(
+		providerId: string,
+		providerName: string,
+		usesCallbackServer: boolean,
+		login: (callbacks: OAuthLoginCallbacks) => Promise<void>,
+	): Promise<void>;
 	suspend?(): void | Promise<void>;
 	resume?(): void | Promise<void>;
 	close(): void | Promise<void>;
@@ -109,6 +116,44 @@ export class TerminalSetupPrompter implements SetupPrompter {
 			}
 			this.warn("Invalid selection.");
 		}
+	}
+
+	async loginOAuth(
+		_providerId: string,
+		_providerName: string,
+		_usesCallbackServer: boolean,
+		login: (callbacks: OAuthLoginCallbacks) => Promise<void>,
+	): Promise<void> {
+		await login({
+			onAuth: (info) => {
+				this.info(`Open this URL to authenticate: ${info.url}`);
+				if (info.instructions) {
+					this.info(info.instructions);
+				}
+			},
+			onDeviceCode: (info) => {
+				this.info(`Open this URL to authenticate: ${info.verificationUri}`);
+				this.info(`Enter code: ${info.userCode}`);
+			},
+			onPrompt: async (prompt) => {
+				return await this.input(prompt.message, { allowEmpty: prompt.allowEmpty });
+			},
+			onProgress: (message) => {
+				this.info(message);
+			},
+			onManualCodeInput: async () => {
+				return await this.input("Paste redirect URL:");
+			},
+			onSelect: async (prompt) => {
+				if (prompt.options.length === 0) {
+					return undefined;
+				}
+				return await this.select(
+					prompt.message,
+					prompt.options.map((option) => ({ id: option.id, label: option.label })),
+				);
+			},
+		});
 	}
 
 	close(): void {
@@ -257,6 +302,80 @@ export class TuiSetupPrompter implements SetupPrompter {
 		});
 	}
 
+	async loginOAuth(
+		providerId: string,
+		providerName: string,
+		usesCallbackServer: boolean,
+		login: (callbacks: OAuthLoginCallbacks) => Promise<void>,
+	): Promise<void> {
+		await this.withComponent<void>((resolve, reject) => {
+			const dialog = new LoginDialogComponent(
+				this.tui,
+				providerId,
+				(success, message) => {
+					if (!success) {
+						reject(
+							message === "Login cancelled" ? new SetupCancelledError() : new Error(message ?? "Login failed"),
+						);
+					}
+				},
+				providerName,
+			);
+
+			let manualCodeResolve: ((code: string) => void) | undefined;
+			let manualCodeReject: ((error: Error) => void) | undefined;
+			const manualCodePromise = new Promise<string>((manualResolve, manualReject) => {
+				manualCodeResolve = manualResolve;
+				manualCodeReject = manualReject;
+			});
+
+			Promise.resolve()
+				.then(async () => {
+					await login({
+						onAuth: (info) => {
+							dialog.showAuth(info.url, info.instructions);
+							if (usesCallbackServer) {
+								dialog
+									.showManualInput("Paste redirect URL below, or complete login in browser:")
+									.then((value) => {
+										if (value && manualCodeResolve) {
+											manualCodeResolve(value);
+											manualCodeResolve = undefined;
+										}
+									})
+									.catch(() => {
+										if (manualCodeReject) {
+											manualCodeReject(new SetupCancelledError());
+											manualCodeReject = undefined;
+										}
+									});
+							}
+						},
+						onDeviceCode: (info) => {
+							dialog.showDeviceCode(info);
+							dialog.showWaiting("Waiting for authentication...");
+						},
+						onPrompt: async (prompt) => {
+							return await dialog.showPrompt(prompt.message, prompt.placeholder);
+						},
+						onProgress: (message) => {
+							dialog.showProgress(message);
+						},
+						onManualCodeInput: () => manualCodePromise,
+						onSelect: (prompt) => this.showOAuthLoginSelect(dialog, prompt),
+						signal: dialog.signal,
+					});
+					resolve();
+				})
+				.catch((error: unknown) => {
+					const message = error instanceof Error ? error.message : String(error);
+					reject(message === "Login cancelled" ? new SetupCancelledError() : new Error(message));
+				});
+
+			return dialog;
+		});
+	}
+
 	async suspend(): Promise<void> {
 		if (!this.active) {
 			return;
@@ -328,6 +447,43 @@ export class TuiSetupPrompter implements SetupPrompter {
 			this.renderStatus();
 			this.tui.addChild(component);
 			this.tui.setFocus(component);
+			this.tui.requestRender(true);
+		});
+	}
+
+	private showOAuthLoginSelect(dialog: LoginDialogComponent, prompt: OAuthSelectPrompt): Promise<string | undefined> {
+		return new Promise((resolve) => {
+			const labels = new Map<string, string>();
+			const displayLabels = prompt.options.map((option, index) => {
+				let label = option.label;
+				if (labels.has(label)) {
+					label = `${label} (${option.id || index + 1})`;
+				}
+				labels.set(label, option.id);
+				return label;
+			});
+			const restoreDialog = (selector: Component) => {
+				this.tui.removeChild(selector);
+				this.tui.addChild(dialog);
+				this.tui.setFocus(dialog);
+				this.tui.requestRender(true);
+			};
+			const selector = new ExtensionSelectorComponent(
+				prompt.message,
+				displayLabels,
+				(optionLabel) => {
+					restoreDialog(selector);
+					resolve(labels.get(optionLabel));
+				},
+				() => {
+					restoreDialog(selector);
+					resolve(undefined);
+				},
+				{ tui: this.tui },
+			);
+			this.tui.removeChild(dialog);
+			this.tui.addChild(selector);
+			this.tui.setFocus(selector);
 			this.tui.requestRender(true);
 		});
 	}

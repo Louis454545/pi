@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { OAuthLoginCallbacks } from "@earendil-works/morgan-ai/oauth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
@@ -9,9 +10,15 @@ import type { BrowserHarnessRunner } from "../src/setup/browser-harness-setup.ts
 import type { SelectOption, SetupPrompter } from "../src/setup/prompter.ts";
 import { handleSetupCommand } from "../src/setup/setup-cli.ts";
 import { runSetupWizard } from "../src/setup/setup-wizard.ts";
+import type {
+	TelegramAllowedPeer,
+	TelegramBotIdentity,
+	TelegramBridgeClient,
+} from "../src/setup/telegram-bridge-setup.ts";
 
 class FakePrompter implements SetupPrompter {
 	readonly messages: string[] = [];
+	readonly oauthLogins: string[] = [];
 	private readonly selections: string[];
 	private readonly inputs: string[];
 	private readonly confirmations: boolean[];
@@ -53,6 +60,15 @@ class FakePrompter implements SetupPrompter {
 		return value as T;
 	}
 
+	async loginOAuth(
+		providerId: string,
+		_providerName: string,
+		_usesCallbackServer: boolean,
+		_login: (callbacks: OAuthLoginCallbacks) => Promise<void>,
+	): Promise<void> {
+		this.oauthLogins.push(providerId);
+	}
+
 	close(): void {}
 }
 
@@ -73,6 +89,37 @@ class FakeBrowserRunner implements BrowserHarnessRunner {
 	async run(command: string, args: string[]): Promise<number> {
 		this.calls.push({ command, args });
 		return this.exitCodes.shift() ?? 0;
+	}
+}
+
+class FakeTelegramBridgeClient implements TelegramBridgeClient {
+	readonly calls: string[] = [];
+	readonly bot: TelegramBotIdentity;
+	readonly peer: TelegramAllowedPeer | undefined;
+	latestOffset = 0;
+
+	constructor(options: { bot?: TelegramBotIdentity; peer?: TelegramAllowedPeer } = {}) {
+		this.bot = options.bot ?? { id: 42, username: "morgan_test_bot", firstName: "Morgan" };
+		this.peer = options.peer;
+	}
+
+	async validateBot(): Promise<TelegramBotIdentity> {
+		this.calls.push("validateBot");
+		return this.bot;
+	}
+
+	async clearWebhook(): Promise<void> {
+		this.calls.push("clearWebhook");
+	}
+
+	async getLatestOffset(): Promise<number> {
+		this.calls.push("getLatestOffset");
+		return this.latestOffset;
+	}
+
+	async waitForStart(): Promise<TelegramAllowedPeer | undefined> {
+		this.calls.push("waitForStart");
+		return this.peer;
 	}
 }
 
@@ -119,6 +166,7 @@ describe("setup wizard", () => {
 
 		expect(result.launchMorgan).toBe(true);
 		expect(result.browser.status).toBe("ready");
+		expect(result.communication.status).toBe("skipped");
 		expect(authStorage.get("anthropic")).toEqual({ type: "api_key", key: "sk-test" });
 		expect(settingsManager.getDefaultProvider()).toBe("anthropic");
 		expect(settingsManager.getDefaultModel()).toBe("claude-opus-4-8");
@@ -152,6 +200,100 @@ describe("setup wizard", () => {
 		expect(result.launchMorgan).toBe(true);
 		expect(result.browser.status).toBe("pending");
 		expect(result.browser.messages.join("\n")).toContain("browser connection is not ready");
+	});
+
+	it("logs in to subscription providers during setup", async () => {
+		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
+		const prompter = new FakePrompter(["subscription", "anthropic", "claude-opus-4-8", "medium"]);
+		const browserRunner = new FakeBrowserRunner(true);
+
+		await runSetupWizard({
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			prompter,
+			browserRunner,
+			force: true,
+		});
+
+		expect(prompter.oauthLogins).toEqual(["anthropic"]);
+		expect(settingsManager.getDefaultProvider()).toBe("anthropic");
+		expect(settingsManager.getDefaultModel()).toBe("claude-opus-4-8");
+		expect(prompter.messages.some((message) => message.startsWith("Logged in to "))).toBe(true);
+	});
+
+	it("installs an editable Telegram bridge when selected", async () => {
+		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
+		const prompter = new FakePrompter(["skip", "telegram", "manual"], ["123456:token", "123,-456"]);
+		const browserRunner = new FakeBrowserRunner(true);
+		const telegramClient = new FakeTelegramBridgeClient();
+		telegramClient.latestOffset = 99;
+
+		const result = await runSetupWizard({
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			prompter,
+			browserRunner,
+			telegramClient,
+		});
+
+		expect(result.communication.status).toBe("ready");
+		expect(telegramClient.calls).toEqual(["validateBot", "clearWebhook", "getLatestOffset"]);
+		const bridgeDir = join(agentDir, "extensions", "triggers", "telegram-bridge");
+		expect(existsSync(join(bridgeDir, "index.ts"))).toBe(true);
+		expect(existsSync(join(bridgeDir, "README.md"))).toBe(true);
+
+		const config = JSON.parse(readFileSync(join(bridgeDir, "config.json"), "utf-8")) as {
+			enabled?: boolean;
+			botToken?: string;
+			botUsername?: string;
+			allowedChatIds?: number[];
+			allowedUserIds?: number[];
+			dataDir?: string;
+		};
+		expect(config).toMatchObject({
+			enabled: true,
+			botToken: "123456:token",
+			botUsername: "morgan_test_bot",
+			allowedChatIds: [123, -456],
+			allowedUserIds: [123],
+			dataDir: join(agentDir, "telegram-bridge"),
+		});
+
+		const state = JSON.parse(readFileSync(join(bridgeDir, "state.json"), "utf-8")) as { offset?: number };
+		expect(state.offset).toBe(99);
+	});
+
+	it("pairs the Telegram allowlist with /start when available", async () => {
+		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
+		const prompter = new FakePrompter(["skip", "telegram", "pair"], ["123456:token"]);
+		const browserRunner = new FakeBrowserRunner(true);
+		const telegramClient = new FakeTelegramBridgeClient({
+			peer: { chatId: 555, userId: 777, offset: 12, label: "Louis" },
+		});
+
+		const result = await runSetupWizard({
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			prompter,
+			browserRunner,
+			telegramClient,
+		});
+
+		expect(result.communication.status).toBe("ready");
+		expect(telegramClient.calls).toEqual(["validateBot", "clearWebhook", "waitForStart"]);
+		const bridgeDir = join(agentDir, "extensions", "triggers", "telegram-bridge");
+		const config = JSON.parse(readFileSync(join(bridgeDir, "config.json"), "utf-8")) as {
+			allowedChatIds?: number[];
+			allowedUserIds?: number[];
+		};
+		expect(config.allowedChatIds).toEqual([555]);
+		expect(config.allowedUserIds).toEqual([777]);
 	});
 
 	it("asks before installing uv when it is missing", async () => {

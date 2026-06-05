@@ -468,6 +468,21 @@ export function getBundledSkillsDir(): string {
 	return join(packageDir, srcOrDist, "bundled-skills");
 }
 
+/**
+ * Get path to bundled extension templates.
+ * - For Bun binary: bundled-extensions/ next to executable
+ * - For Node.js (dist/): dist/bundled-extensions/
+ * - For tsx (src/): src/bundled-extensions/
+ */
+export function getBundledExtensionsDir(): string {
+	if (isBunBinary) {
+		return join(getPackageDir(), "bundled-extensions");
+	}
+	const packageDir = getPackageDir();
+	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
+	return join(packageDir, srcOrDist, "bundled-extensions");
+}
+
 // =============================================================================
 // App Config (from package.json morganConfig)
 // =============================================================================
