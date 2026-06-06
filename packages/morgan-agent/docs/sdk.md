@@ -351,18 +351,14 @@ const { session } = await createAgentSession({
 
 `cwd` is used by `DefaultResourceLoader` for:
 - Project extensions (`.morgan/extensions/`)
-- Project skills:
-  - `.morgan/skills/`
-  - `.agents/skills/` in `cwd` and ancestor directories (up to git repo root, or filesystem root when not in a repo)
+- Project skills (`.morgan/skills/`)
 - Project prompts (`.morgan/prompts/`)
 - Context files (`AGENTS.md` walking up from cwd)
 - Session directory naming
 
 `agentDir` is used by `DefaultResourceLoader` for:
 - Global extensions (`extensions/`)
-- Global skills:
-  - `skills/` under `agentDir` (for example `~/.morgan/agent/skills/`)
-  - `~/.agents/skills/`
+- Global skills (`skills/` under `agentDir`, for example `~/.morgan/agent/skills/`)
 - Global prompts (`prompts/`)
 - Global context file (`AGENTS.md`)
 - Settings (`settings.json`)

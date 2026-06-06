@@ -103,6 +103,15 @@ If you start struggling with a specific mechanic while navigating, look in inter
 
 ## Gotchas (field-tested)
 
+- **Input text duplication / Key event issues:** If `fill_input()` results in duplicated characters (e.g. `ll.bbaarrnnoouuxx11`) due to browser/OS keyboard event dispatching, bypass it using direct JS property assignment and event dispatching:
+  ```python
+  js("""
+  const el = document.querySelector('SELECTOR');
+  el.value = 'VALUE';
+  el.dispatchEvent(new Event('input', {bubbles: true}));
+  el.dispatchEvent(new Event('change', {bubbles: true}));
+  """)
+  ```
 - Omnibox popups are fake page targets. Filter chrome://omnibox-popup... and other internals when you need a real tab.
 - CDP target order != Chrome's visible tab-strip order. Use UI automation when the user means "the first/second tab I can see"; Target.activateTarget only shows a known target.
 - Default daemon sessions can go stale. ensure_real_tab() re-attaches to a real page.

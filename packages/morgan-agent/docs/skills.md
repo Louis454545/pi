@@ -25,10 +25,8 @@ Morgan loads skills from:
 
 - Global:
   - `~/.morgan/agent/skills/`
-  - `~/.agents/skills/`
 - Project:
   - `.morgan/skills/`
-  - `.agents/skills/` in `cwd` and ancestor directories (up to git repo root, or filesystem root when not in a repo)
 - Packages: `skills/` directories or `morgan.skills` entries in `package.json`
 - Settings: `skills` array with files or directories
 - CLI: `--skill <path>` (repeatable, additive even with `--no-skills`)
@@ -36,7 +34,6 @@ Morgan loads skills from:
 Discovery rules:
 - In `~/.morgan/agent/skills/` and `.morgan/skills/`, direct root `.md` files are discovered as individual skills
 - In all skill locations, directories containing `SKILL.md` are discovered recursively
-- In `~/.agents/skills/` and project `.agents/skills/`, root `.md` files are ignored
 
 Disable discovery with `--no-skills` (explicit `--skill` paths still load).
 

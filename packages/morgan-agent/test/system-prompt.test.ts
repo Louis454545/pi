@@ -59,6 +59,32 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("personal, technical, research, automation, and software tasks");
 			expect(prompt).toContain("For durable, reusable, or long-running capabilities");
 			expect(prompt).toContain("Do not create an extension for every task");
+			expect(prompt).toContain("Skills and extensions are different:");
+			expect(prompt).toContain("Skills are reusable knowledge packages");
+			expect(prompt).toContain("Extensions are runtime capability packages");
+			expect(prompt).toContain("A skill can document how to use, configure, troubleshoot, or maintain an extension");
+			expect(prompt).toContain("Create skills proactively");
+			expect(prompt).toContain("After completing a complex task, fixing a tricky error");
+			expect(prompt).toContain("Prefer updating an existing relevant skill");
+			expect(prompt).toContain("Use skills aggressively when they are available");
+			expect(prompt).toContain("If a skill is relevant or even partially relevant");
+			expect(prompt).toContain("Err on the side of loading a skill");
+			expect(prompt).toContain("update it before finishing the task");
+			expect(prompt).toContain(
+				"Store stable user facts, preferences, relationships, and long-term context in memory",
+			);
+			expect(prompt).toContain("Store procedures, workflows, checklists, command sequences");
+			expect(prompt).toContain("Do not put procedural instructions in memory when they should become a skill");
+			expect(prompt).toContain("When authoring a skill, make it operational, not vague");
+			expect(prompt).toContain("specific trigger-focused description");
+			expect(prompt).toContain("Create Morgan-owned resources in Morgan-owned locations:");
+			expect(prompt).toContain("Global personal skills: ~/.morgan/agent/skills/<skill-name>/SKILL.md");
+			expect(prompt).toContain("Project skills: <current working context>/.morgan/skills/<skill-name>/SKILL.md");
+			expect(prompt).toContain("Global personal extensions: ~/.morgan/agent/extensions/<extension-name>.ts");
+			expect(prompt).toContain(
+				"Project extensions: <current working context>/.morgan/extensions/<extension-name>.ts",
+			);
+			expect(prompt).toContain("Global proactive trigger extensions:");
 		});
 
 		test("includes all default tools when snippets are provided", () => {

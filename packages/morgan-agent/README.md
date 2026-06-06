@@ -338,7 +338,7 @@ Use this skill when the user asks about X.
 2. Then that
 ```
 
-Place in `~/.morgan/agent/skills/`, `~/.agents/skills/`, `.morgan/skills/`, or `.agents/skills/` (from `cwd` up through parent directories) or a [morgan package](#morgan-packages) to share with others. See [docs/skills.md](docs/skills.md).
+Place in `~/.morgan/agent/skills/` or `.morgan/skills/`, or ship via a [morgan package](#morgan-packages). See [docs/skills.md](docs/skills.md).
 
 ### Extensions
 
