@@ -10,7 +10,7 @@ The runtime example shows how to build a recreate function that closes over proc
 |------|-------------|
 | `01-minimal.ts` | Simplest usage with all defaults |
 | `02-custom-model.ts` | Select model and thinking level |
-| `03-custom-prompt.ts` | Replace or modify system prompt |
+| `03-custom-prompt.ts` | Append system prompt instructions |
 | `04-skills.ts` | Discover, filter, or replace skills |
 | `05-tools.ts` | Built-in tool allowlists |
 | `06-extensions.ts` | Logging, blocking, result modification |
@@ -53,9 +53,9 @@ const { session } = await createAgentSession({ authStorage, modelRegistry });
 const model = getModel("anthropic", "claude-opus-4-5");
 const { session } = await createAgentSession({ model, thinkingLevel: "high", authStorage, modelRegistry });
 
-// Modify prompt
+// Append prompt instructions
 const loader = new DefaultResourceLoader({
-  systemPromptOverride: (base) => `${base}\n\nBe concise.`,
+  appendSystemPromptOverride: (base) => [...base, "Be concise."],
 });
 await loader.reload();
 const { session } = await createAgentSession({ resourceLoader: loader, authStorage, modelRegistry });
@@ -76,7 +76,7 @@ customAuth.setRuntimeApiKey("anthropic", process.env.MY_KEY!);
 const customRegistry = ModelRegistry.create(customAuth);
 
 const resourceLoader = new DefaultResourceLoader({
-  systemPromptOverride: () => "You are helpful.",
+  appendSystemPromptOverride: () => ["Be concise."],
   extensionFactories: [myExtension],
   skillsOverride: () => ({ skills: [], diagnostics: [] }),
   agentsFilesOverride: () => ({ agentsFiles: [] }),

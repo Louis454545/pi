@@ -306,7 +306,7 @@ Disable context file loading with `--no-context-files` (or `-nc`).
 
 ### System Prompt
 
-Replace the default system prompt with `.morgan/SYSTEM.md` (project) or `~/.morgan/agent/SYSTEM.md` (global). Append without replacing via `APPEND_SYSTEM.md`.
+Morgan's default system prompt is fixed by the core agent. Add extra instructions without replacing it via `.morgan/APPEND_SYSTEM.md` (project) or `~/.morgan/agent/APPEND_SYSTEM.md` (global).
 
 ---
 
@@ -579,7 +579,6 @@ Combine `--no-*` with explicit flags to load exactly what you need, ignoring set
 
 | Option | Description |
 |--------|-------------|
-| `--system-prompt <text>` | Replace default prompt (context files and skills still appended) |
 | `--append-system-prompt <text>` | Append to system prompt |
 | `--verbose` | Force verbose startup |
 | `-h`, `--help` | Show help |

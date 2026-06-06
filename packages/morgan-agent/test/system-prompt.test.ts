@@ -48,6 +48,19 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("default tools", () => {
+		test("identifies Morgan as a universal extensible agent", () => {
+			const prompt = buildSystemPrompt({
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain("You are Morgan: a proactive universal computer agent");
+			expect(prompt).toContain("personal, technical, research, automation, and software tasks");
+			expect(prompt).toContain("For durable, reusable, or long-running capabilities");
+			expect(prompt).toContain("Do not create an extension for every task");
+		});
+
 		test("includes all default tools when snippets are provided", () => {
 			const prompt = buildSystemPrompt({
 				toolSnippets: {
@@ -77,6 +90,40 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain(
 				"- When reading morgan docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
 			);
+		});
+	});
+
+	describe("extensions", () => {
+		test("includes active extension paths", () => {
+			const prompt = buildSystemPrompt({
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+				extensions: {
+					active: [{ path: "/tmp/morgan/extensions/deploy.ts" }],
+					errors: [],
+				},
+			});
+
+			expect(prompt).toContain("# Morgan Runtime Extensions");
+			expect(prompt).toContain("Active extensions loaded in this session:");
+			expect(prompt).toContain("- /tmp/morgan/extensions/deploy.ts");
+		});
+
+		test("includes extension load errors", () => {
+			const prompt = buildSystemPrompt({
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+				extensions: {
+					active: [],
+					errors: [{ path: "/tmp/broken.ts", error: "Failed to load extension" }],
+				},
+			});
+
+			expect(prompt).toContain("Active extensions loaded in this session: (none)");
+			expect(prompt).toContain("Extension load errors visible to this session:");
+			expect(prompt).toContain("- /tmp/broken.ts: Failed to load extension");
 		});
 	});
 
@@ -155,7 +202,7 @@ describe("buildSystemPrompt", () => {
 				memoryContext,
 			});
 
-			const coreIndex = prompt.indexOf("You are a proactive universal agent operating inside Morgan");
+			const coreIndex = prompt.indexOf("You are Morgan: a proactive universal computer agent");
 			const policyIndex = prompt.indexOf("# Persistent Identity and Memory");
 			const identityIndex = prompt.indexOf("# Agent Identity Context");
 			const soulIndex = prompt.indexOf("## SOUL.md");

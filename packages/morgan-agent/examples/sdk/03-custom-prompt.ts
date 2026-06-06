@@ -1,7 +1,7 @@
 /**
- * Custom System Prompt
+ * System Prompt Additions
  *
- * Shows how to replace or modify the default system prompt.
+ * Shows how to append instructions to the default system prompt.
  */
 
 import { createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager } from "@earendil-works/morgan-agent";
@@ -9,14 +9,16 @@ import { createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager 
 const cwd = process.cwd();
 const agentDir = getAgentDir();
 
-// Option 1: Replace prompt entirely
+// Option 1: Add style instructions
 const loader1 = new DefaultResourceLoader({
 	cwd,
 	agentDir,
-	systemPromptOverride: () => `You are a helpful assistant that speaks like a pirate.
-Always end responses with "Arrr!"`,
-	// Needed to avoid DefaultResourceLoader appending APPEND_SYSTEM.md from ~/.morgan/agent or <cwd>/.morgan.
-	appendSystemPromptOverride: () => [],
+	appendSystemPromptOverride: (base) => [
+		...base,
+		`## Additional Instructions
+- Speak like a pirate
+- Always end responses with "Arrr!"`,
+	],
 });
 await loader1.reload();
 
@@ -32,14 +34,14 @@ try {
 		}
 	});
 
-	console.log("=== Replace prompt ===");
+	console.log("=== Add pirate style ===");
 	await session1.prompt("What is 2 + 2?");
 	console.log("\n");
 } finally {
 	session1.dispose();
 }
 
-// Option 2: Append instructions to the default prompt
+// Option 2: Add formatting instructions
 const loader2 = new DefaultResourceLoader({
 	cwd,
 	agentDir,

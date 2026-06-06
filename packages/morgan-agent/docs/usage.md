@@ -101,14 +101,9 @@ Persistent identity and memory are loaded from global, instance-level files unde
 
 Use `--cwd <path>` or `/cwd <path>` to opt into project context files. Disable loading with `--no-context-files` or `-nc`.
 
-### System Prompt Files
+### System Prompt Additions
 
-Replace the default system prompt with:
-
-- `.morgan/SYSTEM.md` for the explicit working context
-- `~/.morgan/agent/SYSTEM.md` globally
-
-Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location.
+Morgan's default system prompt is fixed by the core agent. Add extra instructions without replacing it with `.morgan/APPEND_SYSTEM.md` for the explicit working context or `~/.morgan/agent/APPEND_SYSTEM.md` globally.
 
 ## Exporting and Sharing Sessions
 
@@ -212,7 +207,6 @@ morgan --no-extensions -e ./my-extension.ts
 
 | Option | Description |
 |--------|-------------|
-| `--system-prompt <text>` | Replace default prompt; context files and skills are still appended |
 | `--append-system-prompt <text>` | Append to system prompt |
 | `--verbose` | Force verbose startup |
 | `-h`, `--help` | Show help |

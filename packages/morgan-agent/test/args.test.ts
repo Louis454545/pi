@@ -100,9 +100,9 @@ describe("parseArgs", () => {
 			expect(result.apiKey).toBe("sk-test-key");
 		});
 
-		test("parses --system-prompt", () => {
+		test("treats --system-prompt as an unknown option", () => {
 			const result = parseArgs(["--system-prompt", "You are a helpful assistant"]);
-			expect(result.systemPrompt).toBe("You are a helpful assistant");
+			expect(result.unknownFlags.get("system-prompt")).toBe("You are a helpful assistant");
 		});
 
 		test("parses --append-system-prompt", () => {

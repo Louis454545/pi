@@ -497,7 +497,6 @@ morgan.on("before_agent_start", async (event, ctx) => {
   // event.systemPrompt - current chained system prompt for this handler
   //   (includes changes from earlier before_agent_start handlers)
   // event.systemPromptOptions - structured options used to build the system prompt
-  //   .customPrompt - any custom system prompt (from --system-prompt, SYSTEM.md, or custom templates)
   //   .selectedTools - tools currently active in the prompt
   //   .toolSnippets - one-line descriptions for each tool
   //   .promptGuidelines - custom guideline bullets
@@ -505,6 +504,7 @@ morgan.on("before_agent_start", async (event, ctx) => {
   //   .cwd - working directory
   //   .contextFiles - AGENTS.md files and other loaded context files
   //   .skills - loaded skills
+  //   .extensions - active extension paths and extension load errors
 
   return {
     // Inject a persistent message (stored in session, sent to LLM)
@@ -519,7 +519,7 @@ morgan.on("before_agent_start", async (event, ctx) => {
 });
 ```
 
-The `systemPromptOptions` field gives extensions access to the same structured data Morgan uses to build the system prompt. This lets you inspect what Morgan has loaded — custom prompts, guidelines, tool snippets, context files, skills — without re-discovering resources or re-parsing flags. Use it when your extension needs to make deep, informed changes to the system prompt while respecting user-provided configuration.
+The `systemPromptOptions` field gives extensions access to the same structured data Morgan uses to build the system prompt. This lets you inspect what Morgan has loaded — guidelines, tool snippets, context files, skills, and extension status — without re-discovering resources or re-parsing flags. Use it when your extension needs to make deep, informed changes to the system prompt while respecting user-provided configuration.
 
 Inside `before_agent_start`, `event.systemPrompt` and `ctx.getSystemPrompt()` both reflect the chained system prompt as of the current handler. Later `before_agent_start` handlers can still modify it again.
 

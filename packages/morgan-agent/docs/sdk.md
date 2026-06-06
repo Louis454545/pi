@@ -454,15 +454,15 @@ const simpleRegistry = ModelRegistry.inMemory(authStorage);
 
 > See [examples/sdk/09-api-keys-and-oauth.ts](../examples/sdk/09-api-keys-and-oauth.ts)
 
-### System Prompt
+### System Prompt Additions
 
-Use a `ResourceLoader` to override the system prompt:
+Use a `ResourceLoader` to append extra instructions without replacing Morgan's core system prompt:
 
 ```typescript
 import { createAgentSession, DefaultResourceLoader } from "@earendil-works/morgan-agent";
 
 const loader = new DefaultResourceLoader({
-  systemPromptOverride: () => "You are a helpful assistant.",
+  appendSystemPromptOverride: () => ["Prefer terse answers for this embedded app."],
 });
 await loader.reload();
 
@@ -934,7 +934,7 @@ const loader = new DefaultResourceLoader({
   cwd: process.cwd(),
   agentDir: "/custom/agent",
   settingsManager,
-  systemPromptOverride: () => "You are a minimal assistant. Be concise.",
+  appendSystemPromptOverride: () => ["Use a minimal answer style in this embedded integration."],
 });
 await loader.reload();
 

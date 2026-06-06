@@ -7,8 +7,6 @@ import type { AgentMemoryPromptContext } from "./agent-memory.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
 export interface BuildSystemPromptOptions {
-	/** Custom system prompt (replaces default). */
-	customPrompt?: string;
 	/** Tools to include in prompt. Default: [read, bash, edit, write] */
 	selectedTools?: string[];
 	/** Optional one-line tool snippets keyed by tool name. */
@@ -23,6 +21,11 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
+	/** Pre-loaded extension status. */
+	extensions?: {
+		active: Array<{ path: string }>;
+		errors: Array<{ path: string; error: string }>;
+	};
 	/** Pre-loaded global identity and memory context. */
 	memoryContext?: AgentMemoryPromptContext;
 }
@@ -64,10 +67,34 @@ function appendMemorySections(prompt: string, memoryContext: AgentMemoryPromptCo
 	return nextPrompt;
 }
 
+function formatExtensionsForPrompt(extensions: BuildSystemPromptOptions["extensions"]): string {
+	if (!extensions || (extensions.active.length === 0 && extensions.errors.length === 0)) {
+		return "";
+	}
+
+	const lines = ["", "", "# Morgan Runtime Extensions", ""];
+	if (extensions.active.length > 0) {
+		lines.push("Active extensions loaded in this session:");
+		for (const extension of extensions.active) {
+			lines.push(`- ${extension.path}`);
+		}
+	} else {
+		lines.push("Active extensions loaded in this session: (none)");
+	}
+
+	if (extensions.errors.length > 0) {
+		lines.push("", "Extension load errors visible to this session:");
+		for (const error of extensions.errors) {
+			lines.push(`- ${error.path}: ${error.error}`);
+		}
+	}
+
+	return lines.join("\n");
+}
+
 /** Build the system prompt with tools, guidelines, and context */
 export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const {
-		customPrompt,
 		selectedTools,
 		toolSnippets,
 		promptGuidelines,
@@ -75,6 +102,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
+		extensions,
 	} = options;
 	const resolvedCwd = cwd;
 	const promptCwd = resolvedCwd.replace(/\\/g, "/");
@@ -89,38 +117,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
-
-	if (customPrompt) {
-		let prompt = customPrompt;
-
-		if (appendSection) {
-			prompt += appendSection;
-		}
-
-		prompt = appendMemorySections(prompt, options.memoryContext);
-
-		// Append working context files
-		if (contextFiles.length > 0) {
-			prompt += "\n\n<working_context>\n\n";
-			prompt += "Working-context instructions and guidelines:\n\n";
-			for (const { path: filePath, content } of contextFiles) {
-				prompt += `<working_context_instructions path="${filePath}">\n${content}\n</working_context_instructions>\n\n`;
-			}
-			prompt += "</working_context>\n";
-		}
-
-		// Append skills section (only if read tool is available)
-		const customPromptHasRead = !selectedTools || selectedTools.includes("read");
-		if (customPromptHasRead && skills.length > 0) {
-			prompt += formatSkillsForPrompt(skills);
-		}
-
-		// Add date and working directory last
-		prompt += `\nCurrent date: ${date}`;
-		prompt += `\nCurrent working context: ${promptCwd}`;
-
-		return prompt;
-	}
 
 	// Get absolute paths to documentation and examples
 	const readmePath = getReadmePath();
@@ -172,7 +168,11 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-	let prompt = `You are a proactive universal agent operating inside Morgan. You help users by reading files, executing commands, editing code, writing new files, managing durable memory, and responding to trusted scheduled or triggered events.
+	let prompt = `You are Morgan: a proactive universal computer agent. You are designed to accomplish personal, technical, research, automation, and software tasks end-to-end by using tools, files, commands, durable memory, skills, scripts, schedules, triggers, and extensions.
+
+You can expand your capabilities. For one-off work, prefer direct tools, shell commands, or temporary scripts. For durable, reusable, or long-running capabilities, create or modify a Morgan extension or skill, then reload the running agent when needed. Do not create an extension for every task; use extensions when the capability should persist or be reused.
+
+When a capability is missing, state the gap briefly, use a practical fallback if one exists, or add the durable capability when that is justified.
 
 Available tools:
 ${toolsList}
@@ -191,6 +191,8 @@ Morgan documentation (read only when the user asks about morgan itself, its SDK,
 - When working on morgan topics, read the docs and examples, and follow .md cross-references before implementing
 - For proactive automations, create a Morgan extension with morgan.registerTrigger(), place it in a configured extension location, recommend path.join(getAgentDir(), "extensions", "triggers", "<id>") for global personal triggers, and call reload after editing agent-affecting files
 - Always read morgan .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
+
+	prompt += formatExtensionsForPrompt(extensions);
 
 	if (appendSection) {
 		prompt += appendSection;

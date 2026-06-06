@@ -128,7 +128,6 @@ export interface DefaultResourceLoaderOptions {
 	noThemes?: boolean;
 	noContextFiles?: boolean;
 	includeProjectResources?: boolean;
-	systemPrompt?: string;
 	appendSystemPrompt?: string[];
 	extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
 	skillsOverride?: (base: { skills: Skill[]; diagnostics: ResourceDiagnostic[] }) => {
@@ -146,7 +145,6 @@ export interface DefaultResourceLoaderOptions {
 	agentsFilesOverride?: (base: { agentsFiles: Array<{ path: string; content: string }> }) => {
 		agentsFiles: Array<{ path: string; content: string }>;
 	};
-	systemPromptOverride?: (base: string | undefined) => string | undefined;
 	appendSystemPromptOverride?: (base: string[]) => string[];
 }
 
@@ -167,7 +165,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private noThemes: boolean;
 	private noContextFiles: boolean;
 	private includeProjectResources: boolean;
-	private systemPromptSource?: string;
 	private appendSystemPromptSource?: string[];
 	private extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
 	private skillsOverride?: (base: { skills: Skill[]; diagnostics: ResourceDiagnostic[] }) => {
@@ -185,7 +182,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private agentsFilesOverride?: (base: { agentsFiles: Array<{ path: string; content: string }> }) => {
 		agentsFiles: Array<{ path: string; content: string }>;
 	};
-	private systemPromptOverride?: (base: string | undefined) => string | undefined;
 	private appendSystemPromptOverride?: (base: string[]) => string[];
 
 	private extensionsResult: LoadExtensionsResult;
@@ -196,7 +192,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private themes: Theme[];
 	private themeDiagnostics: ResourceDiagnostic[];
 	private agentsFiles: Array<{ path: string; content: string }>;
-	private systemPrompt?: string;
 	private appendSystemPrompt: string[];
 	private lastSkillPaths: string[];
 	private extensionSkillSourceInfos: Map<string, SourceInfo>;
@@ -229,14 +224,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.noPromptTemplates = options.noPromptTemplates ?? false;
 		this.noThemes = options.noThemes ?? false;
 		this.noContextFiles = options.noContextFiles ?? false;
-		this.systemPromptSource = options.systemPrompt;
 		this.appendSystemPromptSource = options.appendSystemPrompt;
 		this.extensionsOverride = options.extensionsOverride;
 		this.skillsOverride = options.skillsOverride;
 		this.promptsOverride = options.promptsOverride;
 		this.themesOverride = options.themesOverride;
 		this.agentsFilesOverride = options.agentsFilesOverride;
-		this.systemPromptOverride = options.systemPromptOverride;
 		this.appendSystemPromptOverride = options.appendSystemPromptOverride;
 
 		this.extensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
@@ -277,7 +270,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	getSystemPrompt(): string | undefined {
-		return this.systemPrompt;
+		return undefined;
 	}
 
 	getAppendSystemPrompt(): string[] {
@@ -479,12 +472,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		};
 		const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;
 		this.agentsFiles = resolvedAgentsFiles.agentsFiles;
-
-		const baseSystemPrompt = resolvePromptInput(
-			this.systemPromptSource ?? this.discoverSystemPromptFile(),
-			"system prompt",
-		);
-		this.systemPrompt = this.systemPromptOverride ? this.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
 
 		const appendSources =
 			this.appendSystemPromptSource ??
@@ -865,22 +852,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 
 		return { themes: Array.from(seen.values()), diagnostics };
-	}
-
-	private discoverSystemPromptFile(): string | undefined {
-		if (this.includeProjectResources) {
-			const projectPath = join(this.cwd, CONFIG_DIR_NAME, "SYSTEM.md");
-			if (existsSync(projectPath)) {
-				return projectPath;
-			}
-		}
-
-		const globalPath = join(this.agentDir, "SYSTEM.md");
-		if (existsSync(globalPath)) {
-			return globalPath;
-		}
-
-		return undefined;
 	}
 
 	private discoverAppendSystemPromptFile(): string | undefined {

@@ -405,7 +405,7 @@ Content`,
 			expect(loader.getSkills().skills.some((skill) => skill.name === "project-skill")).toBe(false);
 		});
 
-		it("should discover SYSTEM.md from cwd/.morgan", async () => {
+		it("should ignore SYSTEM.md from cwd/.morgan", async () => {
 			const morganDir = join(cwd, ".morgan");
 			mkdirSync(morganDir, { recursive: true });
 			writeFileSync(join(morganDir, "SYSTEM.md"), "You are a helpful assistant.");
@@ -413,7 +413,7 @@ Content`,
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 			await loader.reload();
 
-			expect(loader.getSystemPrompt()).toBe("You are a helpful assistant.");
+			expect(loader.getSystemPrompt()).toBeUndefined();
 		});
 
 		it("should discover APPEND_SYSTEM.md", async () => {
@@ -601,17 +601,6 @@ Content`,
 			const { skills } = loader.getSkills();
 			expect(skills).toHaveLength(1);
 			expect(skills[0].name).toBe("injected");
-		});
-
-		it("should apply systemPromptOverride", async () => {
-			const loader = new DefaultResourceLoader({
-				cwd,
-				agentDir,
-				systemPromptOverride: () => "Custom system prompt",
-			});
-			await loader.reload();
-
-			expect(loader.getSystemPrompt()).toBe("Custom system prompt");
 		});
 	});
 

@@ -1152,12 +1152,12 @@ export class AgentSession {
 			}
 		}
 
-		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
 		const appendSystemPrompt =
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
+		const loadedExtensions = this._resourceLoader.getExtensions();
 		const memoryContext = loadAgentMemoryPromptContext({
 			agentDir: this._agentDir,
 			query: memoryQuery,
@@ -1168,11 +1168,14 @@ export class AgentSession {
 			skills: loadedSkills,
 			contextFiles: loadedContextFiles,
 			memoryContext,
-			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
+			extensions: {
+				active: loadedExtensions.extensions.map((extension) => ({ path: extension.path })),
+				errors: loadedExtensions.errors.map(({ path, error }) => ({ path, error })),
+			},
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}
