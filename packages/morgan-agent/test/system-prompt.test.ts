@@ -85,6 +85,19 @@ describe("buildSystemPrompt", () => {
 				"Project extensions: <current working context>/.morgan/extensions/<extension-name>.ts",
 			);
 			expect(prompt).toContain("Global proactive trigger extensions:");
+			expect(prompt).toContain("Finish the job");
+			expect(prompt).toContain("real completed result backed by tool output");
+			expect(prompt).toContain("never substitute fabricated data");
+			expect(prompt).toContain("Act, do not ask, when the default interpretation is clear");
+			expect(prompt).toContain("Ask for clarification only when the ambiguity genuinely changes");
+			expect(prompt).toContain("Before finalizing, verify your work:");
+			expect(prompt).toContain("Correctness: the result satisfies every stated requirement");
+			expect(prompt).toContain("Grounding: factual claims are backed by tool output");
+			expect(prompt).toContain(
+				"Completeness: no required step, file, command, test, or follow-up check was skipped",
+			);
+			expect(prompt).toContain("Formatting: the response matches the user's requested format or schema");
+			expect(prompt).toContain("Safety: side effects stayed within the intended scope");
 		});
 
 		test("includes all default tools when snippets are provided", () => {
