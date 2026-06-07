@@ -37,22 +37,15 @@ function formatMemoryManagementInstructions(memoryContext: AgentMemoryPromptCont
 
 	return `
 
-# Persistent Identity and Memory
+# Memory
 
-Morgan has global, instance-level memory under ${memoryContext.morganHomeDir}. These files are not workspace-specific.
+Morgan has global, instance-level memory under ${memoryContext.memoryDir}. These files are not workspace-specific.
 
-- SOUL.md and IDENTITY.md describe who the agent is.
-- USER.md describes durable context about the primary user.
-- MEMORY.md stores compact durable long-term memory.
-- ${memoryContext.dailyMemoryPath} is today's episodic daily memory.
 - ${memoryContext.morganHomeDir}/sessions stores raw session history.
-- ${memoryContext.morganHomeDir}/memory-index stores local search/index data for memories and sessions.
+- ${memoryContext.snapshotPath} is the synthesized memory snapshot.
+- ${memoryContext.recentPath} is the curator-maintained recent conversation scratchpad.
 
-Manage memory proactively when it will reduce future repetition from the user. Notice explicit "remember this" requests, recurring preferences, corrections, stable personal context, durable decisions, and long-term facts about people, channels, routines, projects, or goals. Search existing memory or prior sessions before asking the user to repeat durable context.
-
-Update or remove stale memories when corrected, and consolidate redundant memories when possible. Store memory entries as compact declarative facts, not imperative commands. Do not save temporary task progress, raw logs, large code blocks, transient debugging details, one-off plans, or facts likely to become stale quickly.
-
-Use daily memory for detailed notes, fresh context, observations, open loops, and memory candidates. Promote only durable facts from daily memory into USER.md or MEMORY.md. Before compaction or context loss, preserve genuinely useful long-term context and avoid saving temporary task state.`;
+Use curated memory when it is relevant to the user's request. A separate memory curator updates this state after conversations; do not decide what to save during the main agent turn.`;
 }
 
 function appendMemorySections(prompt: string, memoryContext: AgentMemoryPromptContext | undefined): string {
@@ -60,11 +53,7 @@ function appendMemorySections(prompt: string, memoryContext: AgentMemoryPromptCo
 		return prompt;
 	}
 
-	let nextPrompt = `${prompt}${formatMemoryManagementInstructions(memoryContext)}\n\n${memoryContext.identitySection}`;
-	if (memoryContext.retrievedSection) {
-		nextPrompt += `\n\n${memoryContext.retrievedSection}`;
-	}
-	return nextPrompt;
+	return `${prompt}${formatMemoryManagementInstructions(memoryContext)}\n\n${memoryContext.promptSection}`;
 }
 
 function formatExtensionsForPrompt(extensions: BuildSystemPromptOptions["extensions"]): string {
@@ -181,7 +170,7 @@ Create skills proactively. After completing a complex task, fixing a tricky erro
 
 Use skills aggressively when they are available. Before starting work, scan the available skill summaries. If a skill is relevant or even partially relevant, load its full instructions and follow them before choosing a generic approach. Err on the side of loading a skill: skills may contain project conventions, user preferences, API details, exact commands, quality standards, pitfalls, and proven workflows that general reasoning or terminal exploration can miss. If you load a skill and find it outdated, incomplete, misleading, or missing a pitfall you discovered, update it before finishing the task.
 
-Keep durable knowledge in the right place. Store stable user facts, preferences, relationships, and long-term context in memory. Store procedures, workflows, checklists, command sequences, troubleshooting playbooks, extension operating guides, and repeatable task knowledge in skills. Do not put procedural instructions in memory when they should become a skill.
+Keep durable knowledge in the right place. Stable user facts, preferences, relationships, and long-term context belong in curated memory, which is synthesized by the separate memory curator after conversations. Store procedures, workflows, checklists, command sequences, troubleshooting playbooks, extension operating guides, and repeatable task knowledge in skills. Do not put procedural instructions in memory when they should become a skill.
 
 When authoring a skill, make it operational, not vague. Include a specific trigger-focused description, when-to-use guidance, concrete steps or commands, common pitfalls, verification checks, and references/scripts/templates when useful. Prefer compact SKILL.md instructions with larger details split into references, scripts, templates, or assets.
 

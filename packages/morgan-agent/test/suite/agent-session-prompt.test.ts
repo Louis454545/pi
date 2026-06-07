@@ -399,8 +399,13 @@ describe("AgentSession prompt characterization", () => {
 	it("reloads global memory before each provider request", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		const memoryPath = join(harness.tempDir, "MEMORY.md");
-		writeFileSync(memoryPath, "# MEMORY.md\n\nFirst durable fact.\n");
+		const memoryDir = join(harness.tempDir, "memory");
+		mkdirSync(memoryDir, { recursive: true });
+		const memoryPath = join(memoryDir, "snapshot.md");
+		writeFileSync(
+			memoryPath,
+			"# User Bio\n\n- First durable fact.\n\n# Recent Conversation Content\n\n- (none)\n\n# User Interaction Metadata\n\n- (none)\n\n# User Knowledge Memories\n\n- First durable fact.\n",
+		);
 		const systemPrompts: string[] = [];
 
 		harness.setResponses([
@@ -415,7 +420,10 @@ describe("AgentSession prompt characterization", () => {
 		]);
 
 		await harness.session.prompt("first");
-		writeFileSync(memoryPath, "# MEMORY.md\n\nSecond durable fact.\n");
+		writeFileSync(
+			memoryPath,
+			"# User Bio\n\n- Second durable fact.\n\n# Recent Conversation Content\n\n- (none)\n\n# User Interaction Metadata\n\n- (none)\n\n# User Knowledge Memories\n\n- Second durable fact.\n",
+		);
 		await harness.session.prompt("second");
 
 		expect(systemPrompts[0]).toContain("First durable fact.");
@@ -433,7 +441,10 @@ describe("AgentSession prompt characterization", () => {
 					description: "Update global memory",
 					parameters: Type.Object({}),
 					execute: async () => {
-						writeFileSync(memoryPath, "# MEMORY.md\n\nSecond active-loop fact.\n");
+						writeFileSync(
+							memoryPath,
+							"# User Bio\n\n- Second active-loop fact.\n\n# Recent Conversation Content\n\n- (none)\n\n# User Interaction Metadata\n\n- (none)\n\n# User Knowledge Memories\n\n- Second active-loop fact.\n",
+						);
 						return {
 							content: [{ type: "text", text: "updated memory" }],
 							details: {},
@@ -443,8 +454,13 @@ describe("AgentSession prompt characterization", () => {
 			],
 		});
 		harnesses.push(harness);
-		memoryPath = join(harness.tempDir, "MEMORY.md");
-		writeFileSync(memoryPath, "# MEMORY.md\n\nFirst active-loop fact.\n");
+		const memoryDir = join(harness.tempDir, "memory");
+		mkdirSync(memoryDir, { recursive: true });
+		memoryPath = join(memoryDir, "snapshot.md");
+		writeFileSync(
+			memoryPath,
+			"# User Bio\n\n- First active-loop fact.\n\n# Recent Conversation Content\n\n- (none)\n\n# User Interaction Metadata\n\n- (none)\n\n# User Knowledge Memories\n\n- First active-loop fact.\n",
+		);
 		let continuationSystemPrompt = "";
 
 		harness.setResponses([

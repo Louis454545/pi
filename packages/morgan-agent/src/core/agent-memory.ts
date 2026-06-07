@@ -1,36 +1,72 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { AgentMessage, ThinkingLevel as AgentThinkingLevel } from "@earendil-works/morgan-agent-core";
+import type {
+	Api,
+	Context,
+	ImageContent,
+	Message,
+	Model,
+	SimpleStreamOptions,
+	TextContent,
+	ThinkingLevel,
+	ToolCall,
+} from "@earendil-works/morgan-ai";
+import { completeSimple } from "@earendil-works/morgan-ai";
 import { getMorganHomeDir } from "../config.ts";
 
-const IDENTITY_FILE_NAMES = ["SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md"] as const;
-const MAX_IDENTITY_FILE_CHARS = 12000;
-const MAX_RETRIEVED_MEMORY_CHARS = 12000;
-const MAX_RETRIEVED_FILE_CHARS = 4000;
-const MAX_RETRIEVED_FILES = 3;
+const MEMORY_DIR_NAME = "memory";
+const SNAPSHOT_FILE_NAME = "snapshot.md";
+const RECENT_FILE_NAME = "recent.md";
+const EVENTS_DIR_NAME = "events";
+const CURATOR_ERRORS_FILE_NAME = "curator-errors.log";
+const MAX_MEMORY_PROMPT_CHARS = 18000;
+const MAX_RECENT_PROMPT_CHARS = 10000;
+const MAX_TRANSCRIPT_CHARS = 16000;
+const MAX_CURATOR_OUTPUT_CHARS = 40000;
 const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 
-type IdentityFileName = (typeof IDENTITY_FILE_NAMES)[number];
+const MEMORY_SECTION_HEADINGS = [
+	"# User Bio",
+	"# Recent Conversation Content",
+	"# User Interaction Metadata",
+	"# User Knowledge Memories",
+] as const;
 
 export interface AgentMemoryPromptContext {
 	morganHomeDir: string;
-	dailyMemoryPath: string;
-	identitySection: string;
-	retrievedSection?: string;
+	memoryDir: string;
+	snapshotPath: string;
+	recentPath: string;
+	promptSection: string;
 }
 
-interface MemoryFileRead {
-	name: IdentityFileName;
-	path: string;
-	content: string;
-	originalChars: number;
-	truncated: boolean;
+export interface MemoryStorePaths {
+	morganHomeDir: string;
+	memoryDir: string;
+	snapshotPath: string;
+	recentPath: string;
+	eventsDir: string;
+	curatorErrorsPath: string;
 }
 
-interface DailyMemoryCandidate {
-	path: string;
-	content: string;
-	score: number;
+export interface MemoryTurnRecord {
+	sessionId?: string;
+	timestamp: string;
+	transcript: string;
+}
+
+export interface CurateAgentMemoryOptions {
+	agentDir?: string;
+	model: Model<Api>;
+	apiKey?: string;
+	headers?: Record<string, string>;
+	thinkingLevel?: AgentThinkingLevel;
+	messages: AgentMessage[];
+	sessionId?: string;
+	now?: Date;
+	complete?: (context: Context, options: SimpleStreamOptions) => Promise<string>;
 }
 
 function formatLocalDate(date: Date): string {
@@ -38,10 +74,6 @@ function formatLocalDate(date: Date): string {
 	const month = String(date.getMonth() + 1).padStart(2, "0");
 	const day = String(date.getDate()).padStart(2, "0");
 	return `${year}-${month}-${day}`;
-}
-
-function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
-	return error instanceof Error && "code" in error;
 }
 
 function chmodPrivate(path: string, mode: number): void {
@@ -57,6 +89,10 @@ function ensurePrivateDir(path: string): void {
 	chmodPrivate(path, PRIVATE_DIR_MODE);
 }
 
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+	return error instanceof Error && "code" in error;
+}
+
 function ensureFile(path: string, content: string): void {
 	if (!existsSync(path)) {
 		try {
@@ -70,204 +106,99 @@ function ensureFile(path: string, content: string): void {
 	chmodPrivate(path, PRIVATE_FILE_MODE);
 }
 
-function truncateForPrompt(content: string, maxChars: number): { content: string; truncated: boolean } {
+function readTextFile(path: string): string {
+	try {
+		return readFileSync(path, "utf-8");
+	} catch {
+		return "";
+	}
+}
+
+function writePrivateFileAtomic(path: string, content: string): void {
+	const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+	writeFileSync(tempPath, content, { mode: PRIVATE_FILE_MODE });
+	chmodPrivate(tempPath, PRIVATE_FILE_MODE);
+	renameSync(tempPath, path);
+	chmodPrivate(path, PRIVATE_FILE_MODE);
+}
+
+function truncateForPrompt(content: string, maxChars: number): string {
 	if (content.length <= maxChars) {
-		return { content, truncated: false };
+		return content.trimEnd();
 	}
 
 	const clipped = content.slice(0, maxChars);
 	const lastNewline = clipped.lastIndexOf("\n");
 	const safeEnd = lastNewline > Math.floor(maxChars * 0.75) ? lastNewline : maxChars;
 	const truncatedChars = content.length - safeEnd;
-	return {
-		content: `${content.slice(0, safeEnd).trimEnd()}\n\n[Injected copy truncated by ${truncatedChars} characters. Read the full file from its path when needed.]`,
-		truncated: true,
-	};
+	return `${content.slice(0, safeEnd).trimEnd()}\n\n[Memory context truncated by ${truncatedChars} characters.]`;
 }
 
-function defaultIdentityFileContent(name: IdentityFileName): string {
-	switch (name) {
-		case "SOUL.md":
-			return "# SOUL.md\n\n";
-		case "IDENTITY.md":
-			return "# IDENTITY.md\n\n";
-		case "USER.md":
-			return "# USER.md\n\n";
-		case "MEMORY.md":
-			return "# MEMORY.md\n\n";
-	}
+function defaultSnapshotContent(now: Date): string {
+	return [
+		"# User Bio",
+		"",
+		"- (none)",
+		"",
+		"# Recent Conversation Content",
+		"",
+		"- (none)",
+		"",
+		"# User Interaction Metadata",
+		"",
+		`- Memory snapshot initialized at ${now.toISOString()}.`,
+		"",
+		"# User Knowledge Memories",
+		"",
+		"- (none)",
+		"",
+	].join("\n");
 }
 
-function ensureMemoryHome(morganHomeDir: string, now: Date): string {
+function defaultRecentContent(now: Date): string {
+	return [
+		"# Recent Conversation Content",
+		"",
+		`Memory curator initialized this recent-conversation scratchpad at ${now.toISOString()}.`,
+		"",
+	].join("\n");
+}
+
+function ensureMemoryStore(agentDir: string | undefined, now: Date): MemoryStorePaths {
+	const morganHomeDir = getMorganHomeDir(agentDir);
+	const memoryDir = join(morganHomeDir, MEMORY_DIR_NAME);
+	const eventsDir = join(memoryDir, EVENTS_DIR_NAME);
+	const snapshotPath = join(memoryDir, SNAPSHOT_FILE_NAME);
+	const recentPath = join(memoryDir, RECENT_FILE_NAME);
+	const curatorErrorsPath = join(memoryDir, CURATOR_ERRORS_FILE_NAME);
+
 	ensurePrivateDir(morganHomeDir);
-	ensurePrivateDir(join(morganHomeDir, "memories"));
-	ensurePrivateDir(join(morganHomeDir, "memories", "daily"));
-	ensurePrivateDir(join(morganHomeDir, "sessions"));
-	ensurePrivateDir(join(morganHomeDir, "memory-index"));
+	ensurePrivateDir(memoryDir);
+	ensurePrivateDir(eventsDir);
+	ensureFile(snapshotPath, defaultSnapshotContent(now));
+	ensureFile(recentPath, defaultRecentContent(now));
+	ensureFile(curatorErrorsPath, "");
 
-	for (const name of IDENTITY_FILE_NAMES) {
-		ensureFile(join(morganHomeDir, name), defaultIdentityFileContent(name));
-	}
-
-	const day = formatLocalDate(now);
-	const dailyMemoryPath = join(morganHomeDir, "memories", "daily", `${day}.md`);
-	ensureFile(
-		dailyMemoryPath,
-		[`# ${day}`, "", "## Notes", "", "## Observations", "", "## Open Loops", "", "## Memory Candidates", ""].join(
-			"\n",
-		),
-	);
-	return dailyMemoryPath;
+	return { morganHomeDir, memoryDir, snapshotPath, recentPath, eventsDir, curatorErrorsPath };
 }
 
-function readIdentityFiles(morganHomeDir: string): MemoryFileRead[] {
-	return IDENTITY_FILE_NAMES.map((name) => {
-		const path = join(morganHomeDir, name);
-		const raw = readFileSync(path, "utf-8");
-		const truncated = truncateForPrompt(raw, MAX_IDENTITY_FILE_CHARS);
-		return {
-			name,
-			path,
-			content: truncated.content,
-			originalChars: raw.length,
-			truncated: truncated.truncated,
-		};
-	});
-}
-
-function formatIdentitySection(files: MemoryFileRead[], morganHomeDir: string, dailyMemoryPath: string): string {
+function formatPromptSection(paths: MemoryStorePaths): string {
+	const snapshot = truncateForPrompt(readTextFile(paths.snapshotPath), MAX_MEMORY_PROMPT_CHARS);
+	const recent = truncateForPrompt(readTextFile(paths.recentPath), MAX_RECENT_PROMPT_CHARS);
 	const lines = [
-		"# Agent Identity Context",
+		"# Curated Memory Context",
 		"",
-		`Morgan global home: ${morganHomeDir}`,
-		`Current daily memory: ${dailyMemoryPath}`,
-		"The full files are available through normal file access at the paths shown below.",
+		`Morgan memory directory: ${paths.memoryDir}`,
+		`Curated memory snapshot: ${paths.snapshotPath}`,
+		`Recent conversation scratchpad: ${paths.recentPath}`,
 		"",
+		"Morgan's memory is maintained by a separate memory curator after conversations. Treat this context as read-only: use it when relevant, but do not decide what to save and do not edit memory files unless explicitly asked to inspect or repair the memory system itself.",
+		"",
+		snapshot,
 	];
-
-	for (const file of files) {
-		lines.push(`## ${file.name}`);
-		lines.push(`Path: ${file.path}`);
-		lines.push(
-			`Status: ${
-				file.truncated
-					? `truncated injected copy from ${file.originalChars} characters`
-					: `loaded ${file.originalChars} characters`
-			}`,
-		);
-		lines.push("");
-		lines.push(file.content.trimEnd());
-		lines.push("");
+	if (recent.trim().length > 0) {
+		lines.push("", "## Curator Recent Scratchpad", "", recent);
 	}
-
-	return lines.join("\n").trimEnd();
-}
-
-function tokenizeQuery(query: string | undefined): Set<string> {
-	if (!query) {
-		return new Set();
-	}
-	const stopWords = new Set([
-		"about",
-		"after",
-		"again",
-		"also",
-		"and",
-		"are",
-		"can",
-		"for",
-		"from",
-		"how",
-		"into",
-		"not",
-		"now",
-		"please",
-		"that",
-		"the",
-		"this",
-		"with",
-		"you",
-	]);
-	const tokens = query.toLowerCase().match(/[a-z0-9_-]{3,}/g) ?? [];
-	return new Set(tokens.filter((token) => !stopWords.has(token)));
-}
-
-function scoreContent(content: string, tokens: Set<string>): number {
-	if (tokens.size === 0) {
-		return 0;
-	}
-	const lowerContent = content.toLowerCase();
-	let score = 0;
-	for (const token of tokens) {
-		let index = lowerContent.indexOf(token);
-		while (index !== -1) {
-			score++;
-			index = lowerContent.indexOf(token, index + token.length);
-		}
-	}
-	return score;
-}
-
-function findDailyMemoryCandidates(morganHomeDir: string, query: string | undefined): DailyMemoryCandidate[] {
-	const tokens = tokenizeQuery(query);
-	if (tokens.size === 0) {
-		return [];
-	}
-
-	const dailyDir = join(morganHomeDir, "memories", "daily");
-	let fileNames: string[];
-	try {
-		fileNames = readdirSync(dailyDir)
-			.filter((name) => /^\d{4}-\d{2}-\d{2}\.md$/.test(name))
-			.sort()
-			.reverse();
-	} catch {
-		return [];
-	}
-
-	const candidates: DailyMemoryCandidate[] = [];
-	for (const fileName of fileNames.slice(0, 60)) {
-		const path = join(dailyDir, fileName);
-		let content: string;
-		try {
-			content = readFileSync(path, "utf-8");
-		} catch {
-			continue;
-		}
-		const score = scoreContent(content, tokens);
-		if (score > 0) {
-			candidates.push({ path, content, score });
-		}
-	}
-
-	return candidates.sort((a, b) => b.score - a.score || basename(b.path).localeCompare(basename(a.path)));
-}
-
-function formatRetrievedSection(candidates: DailyMemoryCandidate[]): string | undefined {
-	if (candidates.length === 0) {
-		return undefined;
-	}
-
-	const lines = [
-		"# Retrieved Memory Context",
-		"",
-		"Relevant excerpts selected from daily episodic memory. These are partial excerpts, not full files.",
-		"",
-	];
-	let remaining = MAX_RETRIEVED_MEMORY_CHARS;
-
-	for (const candidate of candidates.slice(0, MAX_RETRIEVED_FILES)) {
-		const header = `## ${candidate.path}\nScore: ${candidate.score}\n\n`;
-		const maxContentChars = Math.max(0, Math.min(MAX_RETRIEVED_FILE_CHARS, remaining - header.length));
-		if (maxContentChars <= 0) {
-			break;
-		}
-		const truncated = truncateForPrompt(candidate.content, maxContentChars);
-		const section = `${header}${truncated.content.trimEnd()}\n`;
-		lines.push(section);
-		remaining -= section.length;
-	}
-
 	return lines.join("\n").trimEnd();
 }
 
@@ -275,15 +206,283 @@ export function loadAgentMemoryPromptContext(
 	options: { agentDir?: string; query?: string; now?: Date } = {},
 ): AgentMemoryPromptContext {
 	const now = options.now ?? new Date();
-	const morganHomeDir = getMorganHomeDir(options.agentDir);
-	const dailyMemoryPath = ensureMemoryHome(morganHomeDir, now);
-	const identityFiles = readIdentityFiles(morganHomeDir);
-	const candidates = findDailyMemoryCandidates(morganHomeDir, options.query);
-
+	const paths = ensureMemoryStore(options.agentDir, now);
 	return {
-		morganHomeDir,
-		dailyMemoryPath,
-		identitySection: formatIdentitySection(identityFiles, morganHomeDir, dailyMemoryPath),
-		retrievedSection: formatRetrievedSection(candidates),
+		morganHomeDir: paths.morganHomeDir,
+		memoryDir: paths.memoryDir,
+		snapshotPath: paths.snapshotPath,
+		recentPath: paths.recentPath,
+		promptSection: formatPromptSection(paths),
 	};
+}
+
+function textContentFromParts(content: Message["content"]): string {
+	if (typeof content === "string") {
+		return content;
+	}
+
+	const text: string[] = [];
+	for (const part of content) {
+		if (part.type === "text") {
+			text.push((part as TextContent).text);
+		} else if (part.type === "image") {
+			const image = part as ImageContent;
+			text.push(`[image: ${image.mimeType}]`);
+		} else if (part.type === "thinking") {
+			text.push("[assistant thinking omitted]");
+		} else if (part.type === "toolCall") {
+			const toolCall = part as ToolCall;
+			text.push(`[tool call: ${toolCall.name} ${JSON.stringify(toolCall.arguments)}]`);
+		}
+	}
+	return text.join("\n").trim();
+}
+
+function roleLabel(message: AgentMessage): string | undefined {
+	switch (message.role) {
+		case "user":
+			return "User";
+		case "assistant":
+			return "Assistant";
+		case "toolResult":
+			return "Tool Result";
+		case "custom":
+			return `Custom ${message.customType}`;
+		case "bashExecution":
+			return "Bash Execution";
+		case "compactionSummary":
+			return "Compaction Summary";
+		case "branchSummary":
+			return "Branch Summary";
+	}
+}
+
+function textFromAgentMessage(message: AgentMessage): string {
+	if (message.role === "bashExecution") {
+		const status = message.cancelled ? "cancelled" : `exit ${message.exitCode}`;
+		return `$ ${message.command}\n[${status}]\n${message.output}`;
+	}
+	if (message.role === "compactionSummary" || message.role === "branchSummary") {
+		return message.summary;
+	}
+	return textContentFromParts(message.content);
+}
+
+export function formatMemoryTranscript(messages: AgentMessage[], maxChars = MAX_TRANSCRIPT_CHARS): string {
+	const relevantMessages = messages
+		.filter((message) => message.role !== "toolResult" || textFromAgentMessage(message).trim().length > 0)
+		.slice(-16);
+	const lines: string[] = [];
+
+	for (const message of relevantMessages) {
+		const label = roleLabel(message);
+		if (!label) {
+			continue;
+		}
+		const text = textFromAgentMessage(message).trim();
+		if (text.length === 0) {
+			continue;
+		}
+		lines.push(`${label}: ${text}`);
+	}
+
+	return truncateForPrompt(lines.join("\n\n"), maxChars);
+}
+
+function appendMemoryTurn(paths: MemoryStorePaths, record: MemoryTurnRecord, now: Date): void {
+	const eventPath = join(paths.eventsDir, `${formatLocalDate(now)}.jsonl`);
+	const line = JSON.stringify(record);
+	writeFileSync(eventPath, `${line}\n`, { flag: "a", mode: PRIVATE_FILE_MODE });
+	chmodPrivate(eventPath, PRIVATE_FILE_MODE);
+}
+
+function appendCuratorError(paths: MemoryStorePaths, error: unknown, now: Date): void {
+	const message = error instanceof Error ? error.stack || error.message : String(error);
+	writeFileSync(paths.curatorErrorsPath, `[${now.toISOString()}] ${message}\n`, {
+		flag: "a",
+		mode: PRIVATE_FILE_MODE,
+	});
+	chmodPrivate(paths.curatorErrorsPath, PRIVATE_FILE_MODE);
+}
+
+function normalizeCuratorMarkdown(content: string, now: Date): string {
+	const trimmed = content
+		.replace(/^```(?:markdown)?\s*/i, "")
+		.replace(/\s*```$/i, "")
+		.trim();
+	const candidate = trimmed.length > 0 ? trimmed : defaultSnapshotContent(now).trim();
+	const lines = candidate.split(/\r?\n/);
+	const firstHeadingIndex = lines.findIndex((line) => isMemorySectionHeading(line.trim()));
+	const normalized = firstHeadingIndex > 0 ? lines.slice(firstHeadingIndex).join("\n").trim() : candidate;
+
+	const normalizedHeadings = new Set(
+		normalized
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter(isMemorySectionHeading),
+	);
+	const missing = MEMORY_SECTION_HEADINGS.filter((heading) => !normalizedHeadings.has(heading));
+	if (missing.length === 0) {
+		return `${normalized.slice(0, MAX_CURATOR_OUTPUT_CHARS).trimEnd()}\n`;
+	}
+
+	return `${normalizeSnapshotSections(normalized).slice(0, MAX_CURATOR_OUTPUT_CHARS).trimEnd()}\n`;
+}
+
+function normalizeSnapshotSections(content: string): string {
+	const sectionTexts = new Map<string, string>();
+	const lines = content.split(/\r?\n/);
+	let currentHeading: string | undefined;
+	let currentLines: string[] = [];
+
+	for (const line of lines) {
+		const heading = MEMORY_SECTION_HEADINGS.find((candidate) => line.trim() === candidate);
+		if (heading) {
+			if (currentHeading) {
+				sectionTexts.set(currentHeading, currentLines.join("\n").trim());
+			}
+			currentHeading = heading;
+			currentLines = [];
+			continue;
+		}
+		if (currentHeading) {
+			currentLines.push(line);
+		}
+	}
+	if (currentHeading) {
+		sectionTexts.set(currentHeading, currentLines.join("\n").trim());
+	}
+
+	return MEMORY_SECTION_HEADINGS.map((heading) => {
+		const body = sectionTexts.get(heading);
+		return [heading, "", body && body.length > 0 ? body : "- (none)"].join("\n");
+	}).join("\n\n");
+}
+
+function isMemorySectionHeading(value: string): value is (typeof MEMORY_SECTION_HEADINGS)[number] {
+	return MEMORY_SECTION_HEADINGS.some((heading) => heading === value);
+}
+
+function formatCuratorSystemPrompt(now: Date): string {
+	return `You are Morgan's separate memory curator. You are not the main agent and you do not solve the user's task.
+
+Rewrite Morgan's memory from the previous snapshot and the latest transcript. Output one complete Markdown snapshot only.
+
+Memory goals:
+- Carry forward useful context about the user, their projects, preferences, constraints, relationships, recurring workflows, and durable goals.
+- Follow preferences and constraints by making them easy for the main agent to apply in future conversations.
+- Stay current over time: replace stale time-sensitive claims with dated history, remove expired plans, and preserve corrections over older claims.
+- Prefer specific, compact, declarative facts. Include dates for facts that can expire.
+- Do not save raw logs, temporary task progress, one-off debugging details, large code blocks, secrets, credentials, or instructions that belong in a skill.
+- The main agent must not decide what to save; you own memory synthesis.
+
+Use this exact section order:
+
+# User Bio
+
+# Recent Conversation Content
+
+# User Interaction Metadata
+
+# User Knowledge Memories
+
+Current timestamp: ${now.toISOString()}`;
+}
+
+function formatCuratorUserPrompt(previousSnapshot: string, previousRecent: string, transcript: string): string {
+	return [
+		"<previous-memory-snapshot>",
+		previousSnapshot.trim() || "(empty)",
+		"</previous-memory-snapshot>",
+		"",
+		"<previous-recent-conversation-content>",
+		previousRecent.trim() || "(empty)",
+		"</previous-recent-conversation-content>",
+		"",
+		"<latest-transcript>",
+		transcript.trim() || "(empty)",
+		"</latest-transcript>",
+		"",
+		"Return the full updated memory snapshot as Markdown. Do not include analysis, JSON, XML, or commentary.",
+	].join("\n");
+}
+
+function toProviderThinkingLevel(level: AgentThinkingLevel | undefined): ThinkingLevel | undefined {
+	return level === "off" ? undefined : level;
+}
+
+function extractRecentSection(snapshot: string): string {
+	const start = snapshot.indexOf("# Recent Conversation Content");
+	if (start === -1) {
+		return "";
+	}
+	const rest = snapshot.slice(start);
+	const nextHeading = rest.slice(1).search(/\n# /);
+	return nextHeading === -1 ? rest.trimEnd() : rest.slice(0, nextHeading + 1).trimEnd();
+}
+
+function shouldSkipCuratorForModel(model: Model<Api>): boolean {
+	if (/^(0|false|off|no)$/i.test(process.env.MORGAN_MEMORY_CURATOR ?? "")) {
+		return true;
+	}
+	return model.provider === "faux";
+}
+
+export async function curateAgentMemory(options: CurateAgentMemoryOptions): Promise<void> {
+	const now = options.now ?? new Date();
+	const paths = ensureMemoryStore(options.agentDir, now);
+	const transcript = formatMemoryTranscript(options.messages);
+	if (transcript.length === 0) {
+		return;
+	}
+
+	appendMemoryTurn(
+		paths,
+		{
+			sessionId: options.sessionId,
+			timestamp: now.toISOString(),
+			transcript,
+		},
+		now,
+	);
+
+	if (shouldSkipCuratorForModel(options.model) && !options.complete) {
+		return;
+	}
+
+	try {
+		const previousSnapshot = readTextFile(paths.snapshotPath);
+		const previousRecent = readTextFile(paths.recentPath);
+		const context: Context = {
+			systemPrompt: formatCuratorSystemPrompt(now),
+			messages: [
+				{
+					role: "user",
+					content: [{ type: "text", text: formatCuratorUserPrompt(previousSnapshot, previousRecent, transcript) }],
+					timestamp: now.getTime(),
+				},
+			],
+		};
+		const streamOptions: SimpleStreamOptions = {
+			apiKey: options.apiKey,
+			headers: options.headers,
+			reasoning: toProviderThinkingLevel(options.thinkingLevel),
+			maxTokens: 4096,
+		};
+		let output: string;
+		if (options.complete !== undefined) {
+			output = await options.complete(context, streamOptions);
+		} else {
+			const message = await completeSimple(options.model, context, streamOptions);
+			if (message.stopReason === "error" || message.stopReason === "aborted") {
+				throw new Error(message.errorMessage || `Memory curator stopped with reason: ${message.stopReason}`);
+			}
+			output = textContentFromParts(message.content);
+		}
+		const normalizedSnapshot = normalizeCuratorMarkdown(output, now);
+		writePrivateFileAtomic(paths.snapshotPath, normalizedSnapshot);
+		writePrivateFileAtomic(paths.recentPath, `${extractRecentSection(normalizedSnapshot)}\n`);
+	} catch (error) {
+		appendCuratorError(paths, error, now);
+	}
 }

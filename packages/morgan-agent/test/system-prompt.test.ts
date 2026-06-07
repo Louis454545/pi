@@ -4,23 +4,26 @@ import { buildSystemPrompt } from "../src/core/system-prompt.ts";
 describe("buildSystemPrompt", () => {
 	const memoryContext = {
 		morganHomeDir: "/tmp/morgan",
-		dailyMemoryPath: "/tmp/morgan/memories/daily/2026-06-01.md",
-		identitySection: [
-			"# Agent Identity Context",
+		memoryDir: "/tmp/morgan/memory",
+		snapshotPath: "/tmp/morgan/memory/snapshot.md",
+		recentPath: "/tmp/morgan/memory/recent.md",
+		promptSection: [
+			"# Curated Memory Context",
 			"",
-			"## SOUL.md",
-			"soul",
+			"Morgan memory directory: /tmp/morgan/memory",
 			"",
-			"## IDENTITY.md",
-			"identity",
+			"# User Bio",
+			"Preferred name: Louis",
 			"",
-			"## USER.md",
-			"user",
+			"# Recent Conversation Content",
+			"recent note",
 			"",
-			"## MEMORY.md",
+			"# User Interaction Metadata",
+			"metadata",
+			"",
+			"# User Knowledge Memories",
 			"memory",
 		].join("\n"),
-		retrievedSection: "# Retrieved Memory Context\n\nretrieved daily note",
 	};
 
 	describe("empty tools", () => {
@@ -70,9 +73,8 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("If a skill is relevant or even partially relevant");
 			expect(prompt).toContain("Err on the side of loading a skill");
 			expect(prompt).toContain("update it before finishing the task");
-			expect(prompt).toContain(
-				"Store stable user facts, preferences, relationships, and long-term context in memory",
-			);
+			expect(prompt).toContain("Stable user facts, preferences, relationships, and long-term context");
+			expect(prompt).toContain("separate memory curator after conversations");
 			expect(prompt).toContain("Store procedures, workflows, checklists, command sequences");
 			expect(prompt).toContain("Do not put procedural instructions in memory when they should become a skill");
 			expect(prompt).toContain("When authoring a skill, make it operational, not vague");
@@ -233,7 +235,7 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("persistent memory", () => {
-		test("injects memory sections in stable order before working context", () => {
+		test("injects curated memory sections in stable order before working context", () => {
 			const prompt = buildSystemPrompt({
 				cwd: process.cwd(),
 				contextFiles: [{ path: "/repo/AGENTS.md", content: "Working-context instructions" }],
@@ -242,24 +244,23 @@ describe("buildSystemPrompt", () => {
 			});
 
 			const coreIndex = prompt.indexOf("You are Morgan: a proactive universal computer agent");
-			const policyIndex = prompt.indexOf("# Persistent Identity and Memory");
-			const identityIndex = prompt.indexOf("# Agent Identity Context");
-			const soulIndex = prompt.indexOf("## SOUL.md");
-			const agentIdentityIndex = prompt.indexOf("## IDENTITY.md");
-			const userIndex = prompt.indexOf("## USER.md");
-			const memoryIndex = prompt.indexOf("## MEMORY.md");
-			const retrievedIndex = prompt.indexOf("# Retrieved Memory Context");
+			const policyIndex = prompt.indexOf("# Memory");
+			const curatedIndex = prompt.indexOf("# Curated Memory Context");
+			const userBioIndex = prompt.indexOf("# User Bio");
+			const recentIndex = prompt.indexOf("# Recent Conversation Content");
+			const metadataIndex = prompt.indexOf("# User Interaction Metadata");
+			const memoryIndex = prompt.indexOf("# User Knowledge Memories");
 			const workingContextIndex = prompt.indexOf("<working_context>");
 
 			expect(coreIndex).toBeGreaterThanOrEqual(0);
 			expect(policyIndex).toBeGreaterThan(coreIndex);
-			expect(identityIndex).toBeGreaterThan(policyIndex);
-			expect(soulIndex).toBeGreaterThan(identityIndex);
-			expect(agentIdentityIndex).toBeGreaterThan(soulIndex);
-			expect(userIndex).toBeGreaterThan(agentIdentityIndex);
-			expect(memoryIndex).toBeGreaterThan(userIndex);
-			expect(retrievedIndex).toBeGreaterThan(memoryIndex);
-			expect(workingContextIndex).toBeGreaterThan(retrievedIndex);
+			expect(curatedIndex).toBeGreaterThan(policyIndex);
+			expect(userBioIndex).toBeGreaterThan(curatedIndex);
+			expect(recentIndex).toBeGreaterThan(userBioIndex);
+			expect(metadataIndex).toBeGreaterThan(recentIndex);
+			expect(memoryIndex).toBeGreaterThan(metadataIndex);
+			expect(workingContextIndex).toBeGreaterThan(memoryIndex);
+			expect(prompt).toContain("do not decide what to save during the main agent turn");
 			expect(prompt).toContain("Current working context:");
 			expect(prompt).not.toContain("<project_context>");
 		});

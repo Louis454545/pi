@@ -483,7 +483,7 @@ Use this EXACT format:
 - [Or "(none)" if not applicable]
 
 ## Durable Memory Candidates
-- [Compact declarative facts that may belong in USER.md or MEMORY.md]
+- [Compact declarative facts that may belong in the curated memory snapshot]
 - [Or "(none)" if no durable memory should be promoted]
 
 Keep each section concise. Preserve exact file paths, function names, and error messages. Durable memory candidates must exclude temporary task progress, raw logs, large code blocks, transient debugging details, one-off plans, and facts likely to become stale quickly.`;
@@ -529,7 +529,7 @@ Use this EXACT format:
 - [Preserve useful existing candidates, add new durable facts, remove stale or temporary items]
 - [Or "(none)" if no durable memory should be promoted]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages. Durable memory candidates must be compact declarative facts, not imperative commands, and must exclude temporary task progress, raw logs, large code blocks, transient debugging details, one-off plans, and facts likely to become stale quickly.`;
+Keep each section concise. Preserve exact file paths, function names, and error messages. Durable memory candidates must be compact declarative facts for the separate memory curator, not imperative commands, and must exclude temporary task progress, raw logs, large code blocks, transient debugging details, one-off plans, and facts likely to become stale quickly.`;
 
 function createSummarizationOptions(
 	model: Model<any>,

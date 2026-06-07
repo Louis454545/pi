@@ -25,7 +25,7 @@ import {
 	type AgentTool,
 	type ThinkingLevel,
 } from "@earendil-works/morgan-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/morgan-ai";
+import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/morgan-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -40,7 +40,7 @@ import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
-import { loadAgentMemoryPromptContext } from "./agent-memory.ts";
+import { curateAgentMemory, loadAgentMemoryPromptContext } from "./agent-memory.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import {
 	BackgroundTaskManager,
@@ -1191,14 +1191,41 @@ export class AgentSession {
 	// =========================================================================
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+		let completed = false;
 		try {
 			await this.agent.prompt(messages);
 			while (await this._handlePostAgentRun()) {
 				await this.agent.continue();
 			}
+			completed = true;
 		} finally {
 			this._flushPendingBashMessages();
+			if (completed) {
+				await this._curateMemoryAfterRun();
+			}
 		}
+	}
+
+	private async _curateMemoryAfterRun(): Promise<void> {
+		const model = this.model;
+		if (!model) {
+			return;
+		}
+
+		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok) {
+			return;
+		}
+
+		await curateAgentMemory({
+			agentDir: this._agentDir,
+			model: model as Model<Api>,
+			apiKey: auth.apiKey,
+			headers: auth.headers,
+			thinkingLevel: this.thinkingLevel,
+			messages: this.agent.state.messages,
+			sessionId: this.sessionId,
+		});
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {

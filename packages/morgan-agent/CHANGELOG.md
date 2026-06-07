@@ -7,10 +7,11 @@
 - Renamed the package and CLI from Pi to Morgan: `@earendil-works/pi-coding-agent` is now `@earendil-works/morgan-agent`, and `pi` is now `morgan`.
 - Renamed config, state, and environment surfaces from Pi to Morgan: `.pi` is now `.morgan`, `~/.pi/agent` is now `~/.morgan/agent`, and `PI_*` variables are now `MORGAN_*`.
 - Renamed the SDK tool factory from `createCodingTools` to `createMorganTools` and removed the old extension import aliases.
+- Replaced the old prompt-managed memory files (`SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, daily notes, and `memory-index`) with curated memory under `~/.morgan/memory/`.
 
 ### Added
 
-- Added global persistent identity and memory files under `~/.morgan/`, including daily episodic memory initialization and prompt injection.
+- Added curated global memory under `~/.morgan/memory/`, with `snapshot.md`, `recent.md`, raw evidence events, and a separate memory curator that rewrites the snapshot after completed agent runs.
 - Added bundled browser-harness as a default `browser` skill.
 - Added a built-in `reload` tool so the agent can reload runtime resources after modifying agent-affecting files.
 - Added background Bash tasks with completion notifications and a `task_stop` tool for stopping running background commands.

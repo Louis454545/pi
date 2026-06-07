@@ -95,7 +95,7 @@ Morgan loads `AGENTS.md` or `CLAUDE.md` from:
 
 - `~/.morgan/agent/AGENTS.md` for global instructions
 
-Persistent identity and memory are loaded from global, instance-level files under `~/.morgan/`: `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, daily notes in `memories/daily/`, raw sessions in `sessions/`, and search/index data in `memory-index/`.
+Curated memory is loaded from global, instance-level files under `~/.morgan/memory/`: `snapshot.md` contains the synthesized user memory, `recent.md` contains the curator-maintained recent conversation scratchpad, `events/` stores raw memory-curator evidence, and `curator-errors.log` records curator failures. Raw sessions are stored separately under `~/.morgan/sessions/`.
 - parent directories, walking up from the explicit working context
 - the explicit working context directory
 
