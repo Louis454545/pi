@@ -91,6 +91,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
 		extensions,
+		memoryContext,
 	} = options;
 	const resolvedCwd = cwd;
 	const promptCwd = resolvedCwd.replace(/\\/g, "/");
@@ -155,6 +156,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	);
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
+	const snapshotPathForGuideline = memoryContext?.snapshotPath ?? "~/.morgan/memory/snapshot.md";
 
 	let prompt = `You are Morgan: a proactive universal computer agent. You are designed to accomplish personal, technical, research, automation, and software tasks end-to-end by using tools, files, commands, durable memory, skills, scripts, schedules, triggers, and extensions.
 
@@ -169,7 +171,7 @@ Create skills proactively. After completing a complex task, fixing a tricky erro
 
 Use skills aggressively when they are available. Before starting work, scan the available skill summaries. If a skill is relevant or even partially relevant, load its full instructions and follow them before choosing a generic approach. Err on the side of loading a skill: skills may contain project conventions, user preferences, API details, exact commands, quality standards, pitfalls, and proven workflows that general reasoning or terminal exploration can miss. If you load a skill and find it outdated, incomplete, misleading, or missing a pitfall you discovered, update it before finishing the task.
 
-Keep durable knowledge in the right place. Stable user facts, preferences, relationships, and long-term context belong in ~/.morgan/memory/snapshot.md. Morgan updates this memory during internal dreaming compaction, not after normal runs. Store procedures, workflows, checklists, command sequences, troubleshooting playbooks, extension operating guides, and repeatable task knowledge in skills. Do not put procedural instructions in memory when they should become a skill.
+Keep durable knowledge in the right place. Stable user facts, preferences, relationships, and long-term context belong in ${snapshotPathForGuideline}. Morgan updates this memory during internal dreaming compaction, not after normal runs. Store procedures, workflows, checklists, command sequences, troubleshooting playbooks, extension operating guides, and repeatable task knowledge in skills. Do not put procedural instructions in memory when they should become a skill.
 
 When authoring a skill, make it operational, not vague. Include a specific trigger-focused description, when-to-use guidance, concrete steps or commands, common pitfalls, verification checks, and references/scripts/templates when useful. Prefer compact SKILL.md instructions with larger details split into references, scripts, templates, or assets.
 

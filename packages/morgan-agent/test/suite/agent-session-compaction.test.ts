@@ -250,14 +250,50 @@ describe("AgentSession compaction characterization", () => {
 		expect(nextSystemPrompt).toContain("compact implementation notes");
 	});
 
-	it("fails clearly when active tools do not include write or edit", async () => {
+	it("compacts when active tools are read-only by injecting write/edit for the dream turn only", async () => {
 		const harness = await createHarness({ initialActiveToolNames: ["read"] });
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		const activeToolsBefore = harness.session.agent.state.tools.map((tool) => tool.name);
+		harness.setResponses(dreamWriteResponses("summary from read-only session"));
+
+		const result = await harness.session.compact();
+
+		expect(result.summary).toBe("summary from read-only session");
+		expect(harness.session.agent.state.tools.map((tool) => tool.name)).toEqual(activeToolsBefore);
+	});
+
+	it("fails clearly when builtin write/edit tools are not registered", async () => {
+		const harness = await createHarness({
+			initialActiveToolNames: ["read"],
+			excludedToolNames: ["write", "edit"],
+		});
 		harnesses.push(harness);
 		seedCompactableSession(harness);
 
 		await expect(harness.session.compact()).rejects.toThrow(
-			"Cannot dream-compact: active tools do not include write/edit",
+			"Cannot dream-compact: builtin write/edit tools are not registered.",
 		);
+	});
+
+	it("recovers from overflow when active tools are read-only", async () => {
+		const harness = await createHarness({ initialActiveToolNames: ["read"] });
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		harness.setResponses(dreamWriteResponses("overflow recovery summary"));
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+		const compactionErrors: string[] = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "compaction_end" && event.errorMessage) {
+				compactionErrors.push(event.errorMessage);
+			}
+		});
+
+		const willRetry = await sessionInternals._runAutoCompaction("overflow", true);
+
+		expect(willRetry).toBe(true);
+		expect(compactionErrors).toHaveLength(0);
+		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
 	});
 
 	it("fails clearly when the context is already too large for dreaming", async () => {

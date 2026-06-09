@@ -257,6 +257,10 @@ describe("buildSystemPrompt", () => {
 			expect(workingContextIndex).toBeGreaterThan(memoryIndex);
 			expect(prompt).toContain("Normal turns should not proactively edit memory");
 			expect(prompt).toContain("/tmp/morgan/memory/snapshot.md");
+			expect(prompt).toContain(
+				"Stable user facts, preferences, relationships, and long-term context belong in /tmp/morgan/memory/snapshot.md.",
+			);
+			expect(prompt).not.toContain("belong in ~/.morgan/memory/snapshot.md");
 			expect(prompt).not.toContain("recent.md");
 			expect(prompt).not.toContain("separate memory curator");
 			expect(prompt).toContain("Current working context:");

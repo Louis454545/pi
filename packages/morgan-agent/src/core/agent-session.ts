@@ -1914,12 +1914,45 @@ export class AgentSession {
 		return outputPath;
 	}
 
-	private _hasActiveDreamWriteTool(): boolean {
+	private _getDreamCompactionTools(): AgentTool[] | undefined {
 		const activeToolNames = new Set(this.agent.state.tools.map((tool) => tool.name));
-		return ["write", "edit"].some((toolName) => {
+		const dreamReadOnlyTools = ["grep", "find", "ls"];
+		const dreamWriteTools = ["write", "edit"];
+		const tools: AgentTool[] = [];
+		const seen = new Set<string>();
+
+		const addBuiltinTool = (toolName: string): boolean => {
+			if (seen.has(toolName)) {
+				return false;
+			}
 			const toolDefinition = this._toolDefinitions.get(toolName);
-			return activeToolNames.has(toolName) && toolDefinition?.sourceInfo.source === "builtin";
-		});
+			if (toolDefinition?.sourceInfo.source !== "builtin") {
+				return false;
+			}
+			const tool = this._toolRegistry.get(toolName);
+			if (!tool) {
+				return false;
+			}
+			tools.push(tool);
+			seen.add(toolName);
+			return true;
+		};
+
+		addBuiltinTool("read");
+		for (const toolName of dreamReadOnlyTools) {
+			if (activeToolNames.has(toolName)) {
+				addBuiltinTool(toolName);
+			}
+		}
+
+		let hasWriteCapability = false;
+		for (const toolName of dreamWriteTools) {
+			if (addBuiltinTool(toolName)) {
+				hasWriteCapability = true;
+			}
+		}
+
+		return hasWriteCapability ? tools : undefined;
 	}
 
 	private _resolveToolPath(path: string): string {
@@ -1995,10 +2028,9 @@ export class AgentSession {
 			throw new Error("Nothing to compact (session too small)");
 		}
 
-		if (!this._hasActiveDreamWriteTool()) {
-			throw new Error(
-				"Cannot dream-compact: active tools do not include write/edit, so Morgan cannot write the compaction summary file.",
-			);
+		const dreamTools = this._getDreamCompactionTools();
+		if (!dreamTools) {
+			throw new Error("Cannot dream-compact: builtin write/edit tools are not registered.");
 		}
 
 		this._refreshBaseSystemPrompt(this._lastMemoryQuery);
@@ -2051,6 +2083,7 @@ export class AgentSession {
 			{
 				signal: abortController.signal,
 				maxTokens: fit.outputBudget,
+				tools: dreamTools,
 				beforeToolCall: this._createDreamToolGuard(summaryOutputPath, memoryContext.snapshotPath),
 			},
 		);
