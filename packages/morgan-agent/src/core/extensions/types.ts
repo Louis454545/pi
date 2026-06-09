@@ -571,20 +571,28 @@ export interface SessionBeforeForkEvent {
 	position: "before" | "at";
 }
 
-/** Fired before context compaction (can be cancelled or customized) */
-export interface SessionBeforeCompactEvent {
-	type: "session_before_compact";
+export type DreamCompactionReason = "manual" | "threshold" | "overflow";
+
+/** Fired before internal dreaming compaction starts (can be cancelled or guided). */
+export interface SessionBeforeDreamEvent {
+	type: "session_before_dream";
+	reason: DreamCompactionReason;
 	preparation: CompactionPreparation;
 	branchEntries: SessionEntry[];
+	snapshotPath: string;
+	summaryOutputPath: string;
 	customInstructions?: string;
 	signal: AbortSignal;
 }
 
-/** Fired after context compaction */
-export interface SessionCompactEvent {
-	type: "session_compact";
+/** Fired after internal dreaming compaction saves the compaction entry. */
+export interface SessionDreamEvent {
+	type: "session_dream";
+	reason: DreamCompactionReason;
+	summary: string;
+	summaryOutputPath: string;
+	snapshotPath: string;
 	compactionEntry: CompactionEntry;
-	fromExtension: boolean;
 }
 
 /** Fired before an extension runtime is torn down due to quit, reload, or session replacement. */
@@ -630,8 +638,8 @@ export type SessionEvent =
 	| SessionStartEvent
 	| SessionBeforeSwitchEvent
 	| SessionBeforeForkEvent
-	| SessionBeforeCompactEvent
-	| SessionCompactEvent
+	| SessionBeforeDreamEvent
+	| SessionDreamEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent;
@@ -1062,9 +1070,9 @@ export interface SessionBeforeForkResult {
 	skipConversationRestore?: boolean;
 }
 
-export interface SessionBeforeCompactResult {
+export interface SessionBeforeDreamResult {
 	cancel?: boolean;
-	compaction?: CompactionResult;
+	additionalInstructions?: string;
 }
 
 export interface SessionBeforeTreeResult {
@@ -1141,10 +1149,10 @@ export interface ExtensionAPI {
 	): void;
 	on(event: "session_before_fork", handler: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>): void;
 	on(
-		event: "session_before_compact",
-		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
+		event: "session_before_dream",
+		handler: ExtensionHandler<SessionBeforeDreamEvent, SessionBeforeDreamResult>,
 	): void;
-	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
+	on(event: "session_dream", handler: ExtensionHandler<SessionDreamEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;

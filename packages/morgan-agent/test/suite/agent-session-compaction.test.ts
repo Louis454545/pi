@@ -1,7 +1,10 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	fauxAssistantMessage,
+	fauxToolCall,
 	type Model,
 } from "@earendil-works/morgan-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -48,15 +51,25 @@ function createAssistant(
 
 function useSummaryStreamFn(harness: Harness, summary: string): () => number {
 	let callCount = 0;
-	harness.session.agent.streamFn = (model) => {
+	harness.session.agent.streamFn = (_model, context) => {
 		callCount++;
 		const stream = createAssistantMessageEventStream();
 		queueMicrotask(() => {
+			const response =
+				callCount === 1
+					? fauxAssistantMessage(
+							fauxToolCall("write", {
+								path: extractDreamPath(getLastUserText(context.messages), "Compaction summary output file"),
+								content: summary,
+							}),
+							{ stopReason: "toolUse" },
+						)
+					: fauxAssistantMessage("dream complete");
 			const message: AssistantMessage = {
-				...fauxAssistantMessage(summary),
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
+				...response,
+				api: harness.getModel().api,
+				provider: harness.getModel().provider,
+				model: harness.getModel().id,
 				usage: createUsage(10),
 			};
 			stream.push({ type: "done", reason: "stop", message });
@@ -64,6 +77,54 @@ function useSummaryStreamFn(harness: Harness, summary: string): () => number {
 		return stream;
 	};
 	return () => callCount;
+}
+
+function getLastUserText(messages: Array<{ role: string; content: unknown }>): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role !== "user") continue;
+		if (typeof message.content === "string") return message.content;
+		if (Array.isArray(message.content)) {
+			return message.content
+				.filter((part): part is { type: "text"; text: string } => part?.type === "text")
+				.map((part) => part.text)
+				.join("\n");
+		}
+	}
+	return "";
+}
+
+function extractDreamPath(prompt: string, label: string): string {
+	const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const match = prompt.match(new RegExp(`${escaped}: (.+)`));
+	if (!match) {
+		throw new Error(`Missing ${label} in dream prompt`);
+	}
+	return match[1]!.trim();
+}
+
+function dreamWriteResponses(summary: string, snapshot?: string) {
+	return [
+		(context: { messages: Array<{ role: string; content: unknown }> }) => {
+			const dreamPrompt = getLastUserText(context.messages);
+			const toolCalls = [
+				fauxToolCall("write", {
+					path: extractDreamPath(dreamPrompt, "Compaction summary output file"),
+					content: summary,
+				}),
+			];
+			if (snapshot) {
+				toolCalls.push(
+					fauxToolCall("write", {
+						path: extractDreamPath(dreamPrompt, "Durable memory snapshot file"),
+						content: snapshot,
+					}),
+				);
+			}
+			return fauxAssistantMessage(toolCalls, { stopReason: "toolUse" });
+		},
+		fauxAssistantMessage("dream complete"),
+	];
 }
 
 function seedCompactableSession(harness: Harness): void {
@@ -94,22 +155,26 @@ describe("AgentSession compaction characterization", () => {
 		}
 	});
 
-	it("manually compacts using an extension-provided summary", async () => {
+	it("manually compacts using the summary file written by the dream", async () => {
+		const dreamEvents: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
 				(morgan) => {
-					morgan.on("session_before_compact", async (event) => ({
-						compaction: {
-							summary: "summary from extension",
-							firstKeptEntryId: event.preparation.firstKeptEntryId,
-							tokensBefore: event.preparation.tokensBefore,
-							details: { source: "extension" },
-						},
-					}));
+					morgan.on("session_before_dream", async (event) => {
+						dreamEvents.push(`${event.type}:${event.reason}`);
+					});
+					morgan.on("session_dream", async (event) => {
+						dreamEvents.push(`${event.type}:${event.reason}`);
+					});
 				},
 			],
 		});
 		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("one"),
+			fauxAssistantMessage("two"),
+			...dreamWriteResponses("summary from dream file"),
+		]);
 
 		await harness.session.prompt("one");
 		await harness.session.prompt("two");
@@ -117,9 +182,122 @@ describe("AgentSession compaction characterization", () => {
 		const result = await harness.session.compact();
 		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction");
 
-		expect(result.summary).toBe("summary from extension");
+		expect(result.summary).toBe("summary from dream file");
 		expect(compactionEntries).toHaveLength(1);
 		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
+		expect(dreamEvents).toEqual(["session_before_dream:manual", "session_dream:manual"]);
+	});
+
+	it("does not persist internal dream messages or tool results", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("one"),
+			fauxAssistantMessage("two"),
+			...dreamWriteResponses("summary from internal dream"),
+		]);
+
+		await harness.session.prompt("one");
+		await harness.session.prompt("two");
+		await harness.session.compact();
+
+		const entries = harness.sessionManager.getEntries();
+		expect(entries.filter((entry) => entry.type === "compaction")).toHaveLength(1);
+		expect(harness.session.messages.some((message) => message.role === "toolResult")).toBe(false);
+		expect(
+			harness.session.messages.some(
+				(message) => message.role === "user" && getLastUserText([message]).includes("internal dreaming"),
+			),
+		).toBe(false);
+	});
+
+	it("lets the dream update snapshot memory for the next provider request", async () => {
+		const snapshot = [
+			"# User Bio",
+			"",
+			"- The user prefers compact implementation notes.",
+			"",
+			"# User Interaction Metadata",
+			"",
+			"- (none)",
+			"",
+			"# User Knowledge Memories",
+			"",
+			"- Preference: compact implementation notes.",
+			"",
+		].join("\n");
+		const harness = await createHarness();
+		harnesses.push(harness);
+		let nextSystemPrompt = "";
+		harness.setResponses([
+			fauxAssistantMessage("one"),
+			fauxAssistantMessage("two"),
+			...dreamWriteResponses("summary with memory update", snapshot),
+			(context) => {
+				nextSystemPrompt = context.systemPrompt ?? "";
+				return fauxAssistantMessage("after memory");
+			},
+		]);
+
+		await harness.session.prompt("one");
+		await harness.session.prompt("two");
+		await harness.session.compact();
+		await harness.session.prompt("after compact");
+
+		expect(readFileSync(join(harness.tempDir, "memory", "snapshot.md"), "utf-8")).toContain(
+			"compact implementation notes",
+		);
+		expect(nextSystemPrompt).toContain("compact implementation notes");
+	});
+
+	it("fails clearly when active tools do not include write or edit", async () => {
+		const harness = await createHarness({ initialActiveToolNames: ["read"] });
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		await expect(harness.session.compact()).rejects.toThrow(
+			"Cannot dream-compact: active tools do not include write/edit",
+		);
+	});
+
+	it("fails clearly when the context is already too large for dreaming", async () => {
+		const harness = await createHarness({ models: [{ id: "tiny-context", contextWindow: 50 }] });
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		await expect(harness.session.compact()).rejects.toThrow(
+			"Cannot dream-compact: context is already too large for an internal compaction turn.",
+		);
+	});
+
+	it("does not let dreaming mutate arbitrary workspace files", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		const forbiddenPath = join(harness.tempDir, "forbidden.txt");
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("write", { path: forbiddenPath, content: "bad write" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+
+		await expect(harness.session.compact()).rejects.toThrow("summary output file is empty");
+
+		expect(existsSync(forbiddenPath)).toBe(false);
+		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
+	});
+
+	it("leaves queued follow-up messages queued during dreaming", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		harness.setResponses(dreamWriteResponses("summary while queued"));
+
+		await harness.session.followUp("queued follow-up");
+		await harness.session.compact();
+
+		expect(harness.session.getFollowUpMessages()).toEqual(["queued follow-up"]);
 	});
 
 	it("throws when compacting without a model", async () => {
@@ -146,7 +324,7 @@ describe("AgentSession compaction characterization", () => {
 		const result = await harness.session.compact();
 
 		expect(result.summary).toBe("summary from custom stream");
-		expect(getStreamCallCount()).toBe(1);
+		expect(getStreamCallCount()).toBe(2);
 	});
 
 	it("auto-compacts with a custom streamFn when registry auth is absent", async () => {
@@ -160,14 +338,14 @@ describe("AgentSession compaction characterization", () => {
 
 		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction");
 		expect(compactionEntries).toHaveLength(1);
-		expect(getStreamCallCount()).toBe(1);
+		expect(getStreamCallCount()).toBe(2);
 	});
 
 	it("cancels in-progress manual compaction when abortCompaction is called", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
 				(morgan) => {
-					morgan.on("session_before_compact", async (event) => {
+					morgan.on("session_before_dream", async (event) => {
 						return await new Promise<{ cancel: true }>((resolve) => {
 							event.signal.addEventListener("abort", () => resolve({ cancel: true }), { once: true });
 						});
@@ -191,21 +369,13 @@ describe("AgentSession compaction characterization", () => {
 		vi.useFakeTimers();
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
-			extensionFactories: [
-				(morgan) => {
-					morgan.on("session_before_compact", async (event) => ({
-						compaction: {
-							summary: "auto compacted",
-							firstKeptEntryId: event.preparation.firstKeptEntryId,
-							tokensBefore: event.preparation.tokensBefore,
-							details: {},
-						},
-					}));
-				},
-			],
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+		harness.setResponses([
+			fauxAssistantMessage("one"),
+			fauxAssistantMessage("two"),
+			...dreamWriteResponses("auto compacted"),
+		]);
 		await harness.session.prompt("first");
 		await harness.session.prompt("second");
 

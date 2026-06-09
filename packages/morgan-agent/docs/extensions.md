@@ -338,8 +338,8 @@ advanced compatibility fork/clone APIs
   └─► resources_discover { reason: "startup" }
 
 /compact or auto-compaction
-  ├─► session_before_compact (can cancel or customize)
-  └─► session_compact
+  ├─► session_before_dream (can cancel or guide)
+  └─► session_dream
 
 /tree navigation
   ├─► session_before_tree (can cancel or customize)
@@ -428,30 +428,26 @@ morgan.on("session_before_fork", async (event, ctx) => {
 After a successful advanced fork or clone, morgan emits `session_shutdown` for the old extension instance, reloads and rebinds extensions, then emits `session_start` with `reason: "fork"` and `previousSessionFile`.
 Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `session_start`.
 
-#### session_before_compact / session_compact
+#### session_before_dream / session_dream
 
 Fired on compaction. See [compaction.md](compaction.md) for details.
 
 ```typescript
-morgan.on("session_before_compact", async (event, ctx) => {
+morgan.on("session_before_dream", async (event, ctx) => {
   const { preparation, branchEntries, customInstructions, signal } = event;
 
   // Cancel:
   return { cancel: true };
 
-  // Custom summary:
+  // Guide the internal dreaming prompt:
   return {
-    compaction: {
-      summary: "...",
-      firstKeptEntryId: preparation.firstKeptEntryId,
-      tokensBefore: preparation.tokensBefore,
-    }
+    additionalInstructions: "Preserve exact deployment commands in the checkpoint.",
   };
 });
 
-morgan.on("session_compact", async (event, ctx) => {
-  // event.compactionEntry - the saved compaction
-  // event.fromExtension - whether extension provided it
+morgan.on("session_dream", async (event, ctx) => {
+  // event.summary - saved compaction summary
+  // event.compactionEntry - the saved compaction entry
 });
 ```
 
@@ -2629,7 +2625,6 @@ All examples in [examples/extensions/](../examples/extensions/).
 | `prompt-customizer.ts` | Add context-aware tool guidance using `systemPromptOptions` | `on("before_agent_start")`, `BuildSystemPromptOptions` |
 | `file-trigger.ts` | File watcher triggers messages | `sendMessage` |
 | **Compaction & Sessions** |||
-| `custom-compaction.ts` | Custom compaction summary | `on("session_before_compact")` |
 | `trigger-compact.ts` | Trigger compaction manually | `compact()` |
 | `git-checkpoint.ts` | Git stash on turns | `on("turn_start")`, `on("session_before_fork")`, `exec` |
 | `git-merge-and-resolve.ts` | Fetch, merge, and resolve conflicts | `on("agent_end")`, `exec`, `sendUserMessage` |

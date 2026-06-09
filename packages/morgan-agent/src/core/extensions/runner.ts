@@ -47,7 +47,7 @@ import type {
 	ResolvedCommand,
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
-	SessionBeforeCompactResult,
+	SessionBeforeDreamResult,
 	SessionBeforeForkResult,
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeResult,
@@ -135,21 +135,21 @@ type RunnerEmitEvent = Exclude<
 
 type SessionBeforeEvent = Extract<
 	RunnerEmitEvent,
-	{ type: "session_before_switch" | "session_before_fork" | "session_before_compact" | "session_before_tree" }
+	{ type: "session_before_switch" | "session_before_fork" | "session_before_dream" | "session_before_tree" }
 >;
 
 type SessionBeforeEventResult =
 	| SessionBeforeSwitchResult
 	| SessionBeforeForkResult
-	| SessionBeforeCompactResult
+	| SessionBeforeDreamResult
 	| SessionBeforeTreeResult;
 
 type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "session_before_switch" }
 	? SessionBeforeSwitchResult | undefined
 	: TEvent extends { type: "session_before_fork" }
 		? SessionBeforeForkResult | undefined
-		: TEvent extends { type: "session_before_compact" }
-			? SessionBeforeCompactResult | undefined
+		: TEvent extends { type: "session_before_dream" }
+			? SessionBeforeDreamResult | undefined
 			: TEvent extends { type: "session_before_tree" }
 				? SessionBeforeTreeResult | undefined
 				: undefined;
@@ -893,7 +893,7 @@ export class ExtensionRunner {
 		return (
 			event.type === "session_before_switch" ||
 			event.type === "session_before_fork" ||
-			event.type === "session_before_compact" ||
+			event.type === "session_before_dream" ||
 			event.type === "session_before_tree"
 		);
 	}

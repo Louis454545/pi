@@ -42,10 +42,9 @@ function formatMemoryManagementInstructions(memoryContext: AgentMemoryPromptCont
 Morgan has global, instance-level memory under ${memoryContext.memoryDir}. These files are not workspace-specific.
 
 - ${memoryContext.morganHomeDir}/sessions stores raw session history.
-- ${memoryContext.snapshotPath} is the synthesized memory snapshot.
-- ${memoryContext.recentPath} is the curator-maintained recent conversation scratchpad.
+- ${memoryContext.snapshotPath} is the sole durable memory snapshot.
 
-Use curated memory when it is relevant to the user's request. A separate memory curator updates this state after conversations; do not decide what to save during the main agent turn.`;
+Use durable memory when it is relevant to the user's request. Normal turns should not proactively edit memory unless the user explicitly asks to work on memory or Morgan is running internal dreaming compaction. During internal dreaming compaction, Morgan may update snapshot.md directly for stable user facts, preferences, corrections, relationships, recurring workflows, or long-term project context.`;
 }
 
 function appendMemorySections(prompt: string, memoryContext: AgentMemoryPromptContext | undefined): string {
@@ -170,7 +169,7 @@ Create skills proactively. After completing a complex task, fixing a tricky erro
 
 Use skills aggressively when they are available. Before starting work, scan the available skill summaries. If a skill is relevant or even partially relevant, load its full instructions and follow them before choosing a generic approach. Err on the side of loading a skill: skills may contain project conventions, user preferences, API details, exact commands, quality standards, pitfalls, and proven workflows that general reasoning or terminal exploration can miss. If you load a skill and find it outdated, incomplete, misleading, or missing a pitfall you discovered, update it before finishing the task.
 
-Keep durable knowledge in the right place. Stable user facts, preferences, relationships, and long-term context belong in curated memory, which is synthesized by the separate memory curator after conversations. Store procedures, workflows, checklists, command sequences, troubleshooting playbooks, extension operating guides, and repeatable task knowledge in skills. Do not put procedural instructions in memory when they should become a skill.
+Keep durable knowledge in the right place. Stable user facts, preferences, relationships, and long-term context belong in ~/.morgan/memory/snapshot.md. Morgan updates this memory during internal dreaming compaction, not after normal runs. Store procedures, workflows, checklists, command sequences, troubleshooting playbooks, extension operating guides, and repeatable task knowledge in skills. Do not put procedural instructions in memory when they should become a skill.
 
 When authoring a skill, make it operational, not vague. Include a specific trigger-focused description, when-to-use guidance, concrete steps or commands, common pitfalls, verification checks, and references/scripts/templates when useful. Prefer compact SKILL.md instructions with larger details split into references, scripts, templates, or assets.
 

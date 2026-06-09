@@ -142,7 +142,7 @@ export function createCustomMessage(
  *
  * This is used by:
  * - Agent's transormToLlm option (for prompt calls and queued messages)
- * - Compaction's generateSummary (for summarization)
+ * - Internal dreaming compaction context
  * - Custom extensions and tools
  */
 export function convertToLlm(messages: AgentMessage[]): Message[] {

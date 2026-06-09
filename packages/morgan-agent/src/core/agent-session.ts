@@ -14,8 +14,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve as resolveFsPath } from "node:path";
 import {
 	Agent,
 	type AgentEvent,
@@ -23,9 +23,11 @@ import {
 	type AgentMessage,
 	type AgentState,
 	type AgentTool,
+	type BeforeToolCallContext,
+	type BeforeToolCallResult,
 	type ThinkingLevel,
 } from "@earendil-works/morgan-agent-core";
-import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/morgan-ai";
+import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/morgan-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -40,7 +42,7 @@ import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
-import { curateAgentMemory, loadAgentMemoryPromptContext } from "./agent-memory.ts";
+import { loadAgentMemoryPromptContext } from "./agent-memory.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import {
 	BackgroundTaskManager,
@@ -57,8 +59,10 @@ import {
 	type CompactionResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
-	compact,
+	createDreamCompactionPrompt,
 	estimateContextTokens,
+	estimateDreamCompactionFit,
+	finalizeDreamCompaction,
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
@@ -78,7 +82,7 @@ import {
 	type MessageUpdateEvent,
 	type ProactiveTriggerEvent,
 	type ReplacedSessionContext,
-	type SessionBeforeCompactResult,
+	type SessionBeforeDreamResult,
 	type SessionBeforeTreeResult,
 	type SessionStartEvent,
 	type ShutdownHandler,
@@ -328,6 +332,12 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 const PROACTIVE_TRIGGER_DEDUPE_TTL_MS = 60 * 60 * 1000;
 const PROACTIVE_TRIGGER_DEDUPE_MAX = 1024;
 const PROACTIVE_TRIGGER_PENDING_MAX = 32;
+const DREAMING_DIR_NAME = "dreaming";
+const DREAM_SUMMARY_PLACEHOLDER = "<!-- Morgan dreaming compaction summary placeholder -->\n";
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
+const DREAM_RESTRICTED_TOOL_MESSAGE =
+	"Dreaming is restricted to reading context and writing only the compaction summary file or memory snapshot.";
 
 const notifyUserSchema = Type.Object({
 	title: Type.String({ description: "Concise notification title." }),
@@ -1191,41 +1201,14 @@ export class AgentSession {
 	// =========================================================================
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
-		let completed = false;
 		try {
 			await this.agent.prompt(messages);
 			while (await this._handlePostAgentRun()) {
 				await this.agent.continue();
 			}
-			completed = true;
 		} finally {
 			this._flushPendingBashMessages();
-			if (completed) {
-				await this._curateMemoryAfterRun();
-			}
 		}
-	}
-
-	private async _curateMemoryAfterRun(): Promise<void> {
-		const model = this.model;
-		if (!model) {
-			return;
-		}
-
-		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok) {
-			return;
-		}
-
-		await curateAgentMemory({
-			agentDir: this._agentDir,
-			model: model as Model<Api>,
-			apiKey: auth.apiKey,
-			headers: auth.headers,
-			thinkingLevel: this.thinkingLevel,
-			messages: this.agent.state.messages,
-			sessionId: this.sessionId,
-		});
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
@@ -1913,6 +1896,198 @@ export class AgentSession {
 	// Compaction
 	// =========================================================================
 
+	private _chmodPrivate(path: string, mode: number): void {
+		try {
+			chmodSync(path, mode);
+		} catch {
+			// Ignore platforms or filesystems that do not support POSIX modes.
+		}
+	}
+
+	private _createDreamSummaryOutputPath(memoryDir: string): string {
+		const dreamingDir = join(memoryDir, DREAMING_DIR_NAME);
+		mkdirSync(dreamingDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+		this._chmodPrivate(dreamingDir, PRIVATE_DIR_MODE);
+		const outputPath = join(dreamingDir, `${Date.now()}-${randomUUID()}.md`);
+		writeFileSync(outputPath, DREAM_SUMMARY_PLACEHOLDER, { flag: "wx", mode: PRIVATE_FILE_MODE });
+		this._chmodPrivate(outputPath, PRIVATE_FILE_MODE);
+		return outputPath;
+	}
+
+	private _hasActiveDreamWriteTool(): boolean {
+		const activeToolNames = new Set(this.agent.state.tools.map((tool) => tool.name));
+		return ["write", "edit"].some((toolName) => {
+			const toolDefinition = this._toolDefinitions.get(toolName);
+			return activeToolNames.has(toolName) && toolDefinition?.sourceInfo.source === "builtin";
+		});
+	}
+
+	private _resolveToolPath(path: string): string {
+		const absolutePath = isAbsolute(path) ? resolveFsPath(path) : resolveFsPath(this._cwd, path);
+		try {
+			return realpathSync(absolutePath);
+		} catch {
+			const parent = dirname(absolutePath);
+			try {
+				return join(realpathSync(parent), basename(absolutePath));
+			} catch {
+				return absolutePath;
+			}
+		}
+	}
+
+	private _createDreamToolGuard(
+		summaryOutputPath: string,
+		snapshotPath: string,
+	): (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined> {
+		const originalBeforeToolCall = this.agent.beforeToolCall;
+		const allowedWritePaths = new Set([
+			this._resolveToolPath(summaryOutputPath),
+			this._resolveToolPath(snapshotPath),
+		]);
+		const readOnlyTools = new Set(["read", "grep", "find", "ls"]);
+
+		return async (context, signal) => {
+			const toolName = context.toolCall.name;
+			if (readOnlyTools.has(toolName)) {
+				return await originalBeforeToolCall?.(context, signal);
+			}
+			if (toolName === "write" || toolName === "edit") {
+				const args = context.args as { path?: unknown };
+				if (typeof args.path === "string" && allowedWritePaths.has(this._resolveToolPath(args.path))) {
+					return await originalBeforeToolCall?.(context, signal);
+				}
+			}
+			return { block: true, reason: DREAM_RESTRICTED_TOOL_MESSAGE };
+		};
+	}
+
+	private _readDreamSummaryOutput(summaryOutputPath: string): string {
+		if (!existsSync(summaryOutputPath)) {
+			throw new Error("Dream compaction failed: summary output file was not created.");
+		}
+		const summary = readFileSync(summaryOutputPath, "utf-8").trim();
+		if (summary.length === 0 || summary === DREAM_SUMMARY_PLACEHOLDER.trim()) {
+			throw new Error("Dream compaction failed: summary output file is empty.");
+		}
+		return summary;
+	}
+
+	private async _performDreamCompaction(
+		reason: "manual" | "threshold" | "overflow",
+		abortController: AbortController,
+		customInstructions?: string,
+	): Promise<CompactionResult> {
+		if (!this.model) {
+			throw new Error(formatNoModelSelectedMessage());
+		}
+
+		await this._getCompactionRequestAuth(this.model);
+
+		const pathEntries = this.sessionManager.getBranch();
+		const settings = this.settingsManager.getCompactionSettings();
+		const preparation = prepareCompaction(pathEntries, settings);
+		if (!preparation) {
+			const lastEntry = pathEntries[pathEntries.length - 1];
+			if (lastEntry?.type === "compaction") {
+				throw new Error("Already compacted");
+			}
+			throw new Error("Nothing to compact (session too small)");
+		}
+
+		if (!this._hasActiveDreamWriteTool()) {
+			throw new Error(
+				"Cannot dream-compact: active tools do not include write/edit, so Morgan cannot write the compaction summary file.",
+			);
+		}
+
+		this._refreshBaseSystemPrompt(this._lastMemoryQuery);
+		const memoryContext = loadAgentMemoryPromptContext({ agentDir: this._agentDir });
+		const summaryOutputPath = this._createDreamSummaryOutputPath(memoryContext.memoryDir);
+
+		let additionalInstructions: string | undefined;
+		if (this._extensionRunner.hasHandlers("session_before_dream")) {
+			const result = (await this._extensionRunner.emit({
+				type: "session_before_dream",
+				reason,
+				preparation,
+				branchEntries: pathEntries,
+				snapshotPath: memoryContext.snapshotPath,
+				summaryOutputPath,
+				customInstructions,
+				signal: abortController.signal,
+			})) as SessionBeforeDreamResult | undefined;
+
+			if (result?.cancel) {
+				throw new Error("Compaction cancelled");
+			}
+			additionalInstructions = result?.additionalInstructions;
+		}
+
+		const dreamPrompt = createDreamCompactionPrompt(preparation, {
+			reason,
+			summaryOutputPath,
+			snapshotPath: memoryContext.snapshotPath,
+			customInstructions,
+			additionalInstructions,
+		});
+		const fit = estimateDreamCompactionFit(
+			this.agent.state.messages,
+			this.agent.state.systemPrompt,
+			dreamPrompt,
+			this.model,
+			settings,
+		);
+		if (!fit.fits) {
+			throw new Error("Cannot dream-compact: context is already too large for an internal compaction turn.");
+		}
+
+		await this.agent.runInternalPrompt(
+			{
+				role: "user",
+				content: [{ type: "text", text: dreamPrompt }],
+				timestamp: Date.now(),
+			},
+			{
+				signal: abortController.signal,
+				maxTokens: fit.outputBudget,
+				beforeToolCall: this._createDreamToolGuard(summaryOutputPath, memoryContext.snapshotPath),
+			},
+		);
+
+		if (abortController.signal.aborted) {
+			throw new Error("Compaction cancelled");
+		}
+
+		const summaryMarkdown = this._readDreamSummaryOutput(summaryOutputPath);
+		const result = finalizeDreamCompaction(preparation, summaryMarkdown);
+		const compactionEntryId = this.sessionManager.appendCompaction(
+			result.summary,
+			result.firstKeptEntryId,
+			result.tokensBefore,
+			result.details,
+			false,
+		);
+
+		const sessionContext = this.sessionManager.buildSessionContext();
+		this.agent.state.messages = sessionContext.messages;
+		this._refreshBaseSystemPrompt(this._lastMemoryQuery);
+
+		const compactionEntry = this.sessionManager.getEntry(compactionEntryId) as CompactionEntry | undefined;
+		if (compactionEntry) {
+			await this._extensionRunner.emit({
+				type: "session_dream",
+				reason,
+				summary: result.summary,
+				summaryOutputPath,
+				snapshotPath: memoryContext.snapshotPath,
+				compactionEntry,
+			});
+		}
+
+		return result;
+	}
+
 	/**
 	 * Manually compact the session context.
 	 * Aborts current agent operation first.
@@ -1925,104 +2100,11 @@ export class AgentSession {
 		this._emit({ type: "compaction_start", reason: "manual" });
 
 		try {
-			if (!this.model) {
-				throw new Error(formatNoModelSelectedMessage());
-			}
-
-			const { apiKey, headers } = await this._getCompactionRequestAuth(this.model);
-
-			const pathEntries = this.sessionManager.getBranch();
-			const settings = this.settingsManager.getCompactionSettings();
-
-			const preparation = prepareCompaction(pathEntries, settings);
-			if (!preparation) {
-				// Check why we can't compact
-				const lastEntry = pathEntries[pathEntries.length - 1];
-				if (lastEntry?.type === "compaction") {
-					throw new Error("Already compacted");
-				}
-				throw new Error("Nothing to compact (session too small)");
-			}
-
-			let extensionCompaction: CompactionResult | undefined;
-			let fromExtension = false;
-
-			if (this._extensionRunner.hasHandlers("session_before_compact")) {
-				const result = (await this._extensionRunner.emit({
-					type: "session_before_compact",
-					preparation,
-					branchEntries: pathEntries,
-					customInstructions,
-					signal: this._compactionAbortController.signal,
-				})) as SessionBeforeCompactResult | undefined;
-
-				if (result?.cancel) {
-					throw new Error("Compaction cancelled");
-				}
-
-				if (result?.compaction) {
-					extensionCompaction = result.compaction;
-					fromExtension = true;
-				}
-			}
-
-			let summary: string;
-			let firstKeptEntryId: string;
-			let tokensBefore: number;
-			let details: unknown;
-
-			if (extensionCompaction) {
-				// Extension provided compaction content
-				summary = extensionCompaction.summary;
-				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
-				tokensBefore = extensionCompaction.tokensBefore;
-				details = extensionCompaction.details;
-			} else {
-				// Generate compaction result
-				const result = await compact(
-					preparation,
-					this.model,
-					apiKey,
-					headers,
-					customInstructions,
-					this._compactionAbortController.signal,
-					this.thinkingLevel,
-					this.agent.streamFn,
-				);
-				summary = result.summary;
-				firstKeptEntryId = result.firstKeptEntryId;
-				tokensBefore = result.tokensBefore;
-				details = result.details;
-			}
-
-			if (this._compactionAbortController.signal.aborted) {
-				throw new Error("Compaction cancelled");
-			}
-
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
-			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
-
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
-
-			if (this._extensionRunner && savedCompactionEntry) {
-				await this._extensionRunner.emit({
-					type: "session_compact",
-					compactionEntry: savedCompactionEntry,
-					fromExtension,
-				});
-			}
-
-			const compactionResult = {
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				details,
-			};
+			const compactionResult = await this._performDreamCompaction(
+				"manual",
+				this._compactionAbortController,
+				customInstructions,
+			);
 			this._emit({
 				type: "compaction_end",
 				reason: "manual",
@@ -2159,8 +2241,6 @@ export class AgentSession {
 	 * Internal: Run auto-compaction with events.
 	 */
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
-		const settings = this.settingsManager.getCompactionSettings();
-
 		this._emit({ type: "compaction_start", reason });
 		this._autoCompactionAbortController = new AbortController();
 
@@ -2176,98 +2256,7 @@ export class AgentSession {
 				return false;
 			}
 
-			let apiKey: string | undefined;
-			let headers: Record<string, string> | undefined;
-			if (this.agent.streamFn === streamSimple) {
-				const authResult = await this._modelRegistry.getApiKeyAndHeaders(this.model);
-				if (!authResult.ok || !authResult.apiKey) {
-					this._emit({
-						type: "compaction_end",
-						reason,
-						result: undefined,
-						aborted: false,
-						willRetry: false,
-					});
-					return false;
-				}
-				apiKey = authResult.apiKey;
-				headers = authResult.headers;
-			} else {
-				({ apiKey, headers } = await this._getCompactionRequestAuth(this.model));
-			}
-
-			const pathEntries = this.sessionManager.getBranch();
-
-			const preparation = prepareCompaction(pathEntries, settings);
-			if (!preparation) {
-				this._emit({
-					type: "compaction_end",
-					reason,
-					result: undefined,
-					aborted: false,
-					willRetry: false,
-				});
-				return false;
-			}
-
-			let extensionCompaction: CompactionResult | undefined;
-			let fromExtension = false;
-
-			if (this._extensionRunner.hasHandlers("session_before_compact")) {
-				const extensionResult = (await this._extensionRunner.emit({
-					type: "session_before_compact",
-					preparation,
-					branchEntries: pathEntries,
-					customInstructions: undefined,
-					signal: this._autoCompactionAbortController.signal,
-				})) as SessionBeforeCompactResult | undefined;
-
-				if (extensionResult?.cancel) {
-					this._emit({
-						type: "compaction_end",
-						reason,
-						result: undefined,
-						aborted: true,
-						willRetry: false,
-					});
-					return false;
-				}
-
-				if (extensionResult?.compaction) {
-					extensionCompaction = extensionResult.compaction;
-					fromExtension = true;
-				}
-			}
-
-			let summary: string;
-			let firstKeptEntryId: string;
-			let tokensBefore: number;
-			let details: unknown;
-
-			if (extensionCompaction) {
-				// Extension provided compaction content
-				summary = extensionCompaction.summary;
-				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
-				tokensBefore = extensionCompaction.tokensBefore;
-				details = extensionCompaction.details;
-			} else {
-				// Generate compaction result
-				const compactResult = await compact(
-					preparation,
-					this.model,
-					apiKey,
-					headers,
-					undefined,
-					this._autoCompactionAbortController.signal,
-					this.thinkingLevel,
-					this.agent.streamFn,
-				);
-				summary = compactResult.summary;
-				firstKeptEntryId = compactResult.firstKeptEntryId;
-				tokensBefore = compactResult.tokensBefore;
-				details = compactResult.details;
-			}
-
+			const result = await this._performDreamCompaction(reason, this._autoCompactionAbortController);
 			if (this._autoCompactionAbortController.signal.aborted) {
 				this._emit({
 					type: "compaction_end",
@@ -2279,30 +2268,6 @@ export class AgentSession {
 				return false;
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
-			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
-
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
-
-			if (this._extensionRunner && savedCompactionEntry) {
-				await this._extensionRunner.emit({
-					type: "session_compact",
-					compactionEntry: savedCompactionEntry,
-					fromExtension,
-				});
-			}
-
-			const result: CompactionResult = {
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				details,
-			};
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {

@@ -5,15 +5,9 @@
  * and after compaction the session is reloaded.
  */
 
-import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/morgan-agent-core";
-import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@earendil-works/morgan-ai";
-import { completeSimple } from "@earendil-works/morgan-ai";
-import {
-	convertToLlm,
-	createBranchSummaryMessage,
-	createCompactionSummaryMessage,
-	createCustomMessage,
-} from "../messages.ts";
+import type { AgentMessage } from "@earendil-works/morgan-agent-core";
+import type { AssistantMessage, Model, Usage } from "@earendil-works/morgan-ai";
+import { createBranchSummaryMessage, createCompactionSummaryMessage, createCustomMessage } from "../messages.ts";
 import { buildSessionContext, type CompactionEntry, type SessionEntry } from "../session-manager.ts";
 import {
 	computeFileLists,
@@ -21,8 +15,6 @@ import {
 	extractFileOpsFromMessage,
 	type FileOperations,
 	formatFileOperations,
-	SUMMARIZATION_SYSTEM_PROMPT,
-	serializeConversation,
 } from "./utils.ts";
 
 // ============================================================================
@@ -448,183 +440,110 @@ export function findCutPoint(
 }
 
 // ============================================================================
-// Summarization
+// Dreaming Compaction
 // ============================================================================
 
-const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+export const DREAM_COMPACTION_OUTPUT_TOKEN_BUDGET = 4096;
 
-Use this EXACT format:
-
-## Goal
-[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
-
-## Constraints & Preferences
-- [Any constraints, preferences, or requirements mentioned by user]
-- [Or "(none)" if none were mentioned]
-
-## Progress
-### Done
-- [x] [Completed tasks/changes]
-
-### In Progress
-- [ ] [Current work]
-
-### Blocked
-- [Issues preventing progress, if any]
-
-## Key Decisions
-- **[Decision]**: [Brief rationale]
-
-## Next Steps
-1. [Ordered list of what should happen next]
-
-## Critical Context
-- [Any data, examples, or references needed to continue]
-- [Or "(none)" if not applicable]
-
-## Durable Memory Candidates
-- [Compact declarative facts that may belong in the curated memory snapshot]
-- [Or "(none)" if no durable memory should be promoted]
-
-Keep each section concise. Preserve exact file paths, function names, and error messages. Durable memory candidates must exclude temporary task progress, raw logs, large code blocks, transient debugging details, one-off plans, and facts likely to become stale quickly.`;
-
-const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
-
-Update the existing structured summary with new information. RULES:
-- PRESERVE all existing information from the previous summary
-- ADD new progress, decisions, and context from the new messages
-- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
-- UPDATE "Next Steps" based on what was accomplished
-- PRESERVE exact file paths, function names, and error messages
-- If something is no longer relevant, you may remove it
-
-Use this EXACT format:
-
-## Goal
-[Preserve existing goals, add new ones if the task expanded]
-
-## Constraints & Preferences
-- [Preserve existing, add new ones discovered]
-
-## Progress
-### Done
-- [x] [Include previously done items AND newly completed items]
-
-### In Progress
-- [ ] [Current work - update based on progress]
-
-### Blocked
-- [Current blockers - remove if resolved]
-
-## Key Decisions
-- **[Decision]**: [Brief rationale] (preserve all previous, add new)
-
-## Next Steps
-1. [Update based on current state]
-
-## Critical Context
-- [Preserve important context, add new if needed]
-
-## Durable Memory Candidates
-- [Preserve useful existing candidates, add new durable facts, remove stale or temporary items]
-- [Or "(none)" if no durable memory should be promoted]
-
-Keep each section concise. Preserve exact file paths, function names, and error messages. Durable memory candidates must be compact declarative facts for the separate memory curator, not imperative commands, and must exclude temporary task progress, raw logs, large code blocks, transient debugging details, one-off plans, and facts likely to become stale quickly.`;
-
-function createSummarizationOptions(
-	model: Model<any>,
-	maxTokens: number,
-	apiKey: string | undefined,
-	headers: Record<string, string> | undefined,
-	signal: AbortSignal | undefined,
-	thinkingLevel: ThinkingLevel | undefined,
-): SimpleStreamOptions {
-	const options: SimpleStreamOptions = { maxTokens, signal, apiKey, headers };
-	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
-		options.reasoning = thinkingLevel;
-	}
-	return options;
+export interface DreamCompactionPromptOptions {
+	reason: "manual" | "threshold" | "overflow";
+	summaryOutputPath: string;
+	snapshotPath: string;
+	customInstructions?: string;
+	additionalInstructions?: string;
 }
 
-async function completeSummarization(
-	model: Model<any>,
-	context: Context,
-	options: SimpleStreamOptions,
-	streamFn?: StreamFn,
-): Promise<AssistantMessage> {
-	if (!streamFn) {
-		return completeSimple(model, context, options);
-	}
-	const stream = await streamFn(model, context, options);
-	return stream.result();
+export interface DreamCompactionFit {
+	fits: boolean;
+	estimatedTokens: number;
+	availableTokens: number;
+	outputBudget: number;
 }
 
-/**
- * Generate a summary of the conversation using the LLM.
- * If previousSummary is provided, uses the update prompt to merge.
- */
-export async function generateSummary(
-	currentMessages: AgentMessage[],
-	model: Model<any>,
-	reserveTokens: number,
-	apiKey: string | undefined,
-	headers?: Record<string, string>,
-	signal?: AbortSignal,
-	customInstructions?: string,
-	previousSummary?: string,
-	thinkingLevel?: ThinkingLevel,
-	streamFn?: StreamFn,
-): Promise<string> {
-	const maxTokens = Math.min(
-		Math.floor(0.8 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	);
+export function getDreamCompactionOutputBudget(model: Model<any>, settings: CompactionSettings): number {
+	const reserveBudget = Math.max(1, Math.floor(settings.reserveTokens * 0.5));
+	const modelBudget = model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY;
+	return Math.min(DREAM_COMPACTION_OUTPUT_TOKEN_BUDGET, reserveBudget, modelBudget);
+}
 
-	// Use update prompt if we have a previous summary, otherwise initial prompt
-	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
-	if (customInstructions) {
-		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
-	}
-
-	// Serialize conversation to text so model doesn't try to continue it
-	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
-	const llmMessages = convertToLlm(currentMessages);
-	const conversationText = serializeConversation(llmMessages);
-
-	// Build the prompt with conversation wrapped in tags
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
-	if (previousSummary) {
-		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
-	}
-	promptText += basePrompt;
-
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
+export function createDreamCompactionPrompt(
+	preparation: CompactionPreparation,
+	options: DreamCompactionPromptOptions,
+): string {
+	const lines = [
+		"You are running Morgan's internal dreaming compaction turn.",
+		"",
+		"This turn is internal. Do not answer the user's task, do not continue the conversation, and do not modify workspace files.",
+		"Use the visible conversation context directly; do not ask for transcript text.",
+		"",
+		`Reason: ${options.reason}`,
+		`Compaction summary output file: ${options.summaryOutputPath}`,
+		`Durable memory snapshot file: ${options.snapshotPath}`,
+		"",
+		"Required actions:",
+		"1. Write a Markdown compaction checkpoint to the exact summary output file path.",
+		"2. Update the durable memory snapshot only when the conversation contains stable user facts, preferences, corrections, relationships, recurring workflows, or long-term project context.",
+		"3. Leave the durable memory snapshot unchanged when there is nothing durable to save.",
+		"4. Do not edit any file except the summary output file and the durable memory snapshot file.",
+		"",
+		"The compaction checkpoint must use this structure:",
+		"",
+		"## Goal",
+		"## Constraints & Preferences",
+		"## Progress",
+		"### Done",
+		"### In Progress",
+		"### Blocked",
+		"## Key Decisions",
+		"## Next Steps",
+		"## Critical Context",
+		"",
+		"Keep the checkpoint concise but preserve exact paths, function names, command names, errors, current status, and next steps needed to resume the session.",
+		"Exclude temporary raw logs, large code blocks, irrelevant details, and facts likely to become stale quickly from durable memory.",
 	];
 
-	const completionOptions = createSummarizationOptions(model, maxTokens, apiKey, headers, signal, thinkingLevel);
-
-	const response = await completeSummarization(
-		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		completionOptions,
-		streamFn,
-	);
-
-	if (response.stopReason === "error") {
-		throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
+	if (preparation.previousSummary) {
+		lines.push("", "Previous compaction summary to preserve/update:", "", preparation.previousSummary);
+	}
+	if (preparation.isSplitTurn) {
+		lines.push(
+			"",
+			"The cut point splits an active turn. Preserve enough context about the omitted prefix for the retained suffix to remain understandable.",
+		);
+	}
+	if (options.customInstructions) {
+		lines.push("", "User compaction focus:", "", options.customInstructions);
+	}
+	if (options.additionalInstructions) {
+		lines.push("", "Extension-provided dream instructions:", "", options.additionalInstructions);
 	}
 
-	const textContent = response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
-		.join("\n");
+	return lines.join("\n");
+}
 
-	return textContent;
+export function estimateDreamCompactionFit(
+	currentMessages: AgentMessage[],
+	systemPrompt: string,
+	dreamPrompt: string,
+	model: Model<any>,
+	settings: CompactionSettings,
+): DreamCompactionFit {
+	const outputBudget = getDreamCompactionOutputBudget(model, settings);
+	const contextEstimate = estimateContextTokens(currentMessages).tokens;
+	const promptEstimate = estimateTokens({
+		role: "user",
+		content: [{ type: "text", text: dreamPrompt }],
+		timestamp: Date.now(),
+	});
+	const systemPromptEstimate = Math.ceil(systemPrompt.length / 4);
+	const estimatedTokens = contextEstimate + promptEstimate + systemPromptEstimate + outputBudget;
+	const availableTokens = model.contextWindow;
+	return {
+		fits: availableTokens <= 0 || estimatedTokens <= availableTokens,
+		estimatedTokens,
+		availableTokens,
+		outputBudget,
+	};
 }
 
 // ============================================================================
@@ -727,104 +646,13 @@ export function prepareCompaction(
 }
 
 // ============================================================================
-// Main compaction function
+// Main compaction finalization
 // ============================================================================
 
-const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
-
-Summarize the prefix to provide context for the retained suffix:
-
-## Original Request
-[What did the user ask for in this turn?]
-
-## Early Progress
-- [Key decisions and work done in the prefix]
-
-## Context for Suffix
-- [Information needed to understand the retained recent work]
-
-Be concise. Focus on what's needed to understand the kept suffix.`;
-
-/**
- * Generate summaries for compaction using prepared data.
- * Returns CompactionResult - SessionManager adds uuid/parentUuid when saving.
- *
- * @param preparation - Pre-calculated preparation from prepareCompaction()
- * @param customInstructions - Optional custom focus for the summary
- */
-export async function compact(
-	preparation: CompactionPreparation,
-	model: Model<any>,
-	apiKey: string | undefined,
-	headers?: Record<string, string>,
-	customInstructions?: string,
-	signal?: AbortSignal,
-	thinkingLevel?: ThinkingLevel,
-	streamFn?: StreamFn,
-): Promise<CompactionResult> {
-	const {
-		firstKeptEntryId,
-		messagesToSummarize,
-		turnPrefixMessages,
-		isSplitTurn,
-		tokensBefore,
-		previousSummary,
-		fileOps,
-		settings,
-	} = preparation;
-
-	// Generate summaries (can be parallel if both needed) and merge into one
-	let summary: string;
-
-	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		// Generate both summaries in parallel
-		const [historyResult, turnPrefixResult] = await Promise.all([
-			messagesToSummarize.length > 0
-				? generateSummary(
-						messagesToSummarize,
-						model,
-						settings.reserveTokens,
-						apiKey,
-						headers,
-						signal,
-						customInstructions,
-						previousSummary,
-						thinkingLevel,
-						streamFn,
-					)
-				: Promise.resolve("No prior history."),
-			generateTurnPrefixSummary(
-				turnPrefixMessages,
-				model,
-				settings.reserveTokens,
-				apiKey,
-				headers,
-				signal,
-				thinkingLevel,
-				streamFn,
-			),
-		]);
-		// Merge into single summary
-		summary = `${historyResult}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult}`;
-	} else {
-		// Just generate history summary
-		summary = await generateSummary(
-			messagesToSummarize,
-			model,
-			settings.reserveTokens,
-			apiKey,
-			headers,
-			signal,
-			customInstructions,
-			previousSummary,
-			thinkingLevel,
-			streamFn,
-		);
-	}
-
-	// Compute file lists and append to summary
+export function finalizeDreamCompaction(preparation: CompactionPreparation, summaryMarkdown: string): CompactionResult {
+	const { firstKeptEntryId, tokensBefore, fileOps } = preparation;
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
-	summary += formatFileOperations(readFiles, modifiedFiles);
+	const summary = `${summaryMarkdown.trimEnd()}${formatFileOperations(readFiles, modifiedFiles)}`;
 
 	if (!firstKeptEntryId) {
 		throw new Error("First kept entry has no UUID - session may need migration");
@@ -836,49 +664,4 @@ export async function compact(
 		tokensBefore,
 		details: { readFiles, modifiedFiles } as CompactionDetails,
 	};
-}
-
-/**
- * Generate a summary for a turn prefix (when splitting a turn).
- */
-async function generateTurnPrefixSummary(
-	messages: AgentMessage[],
-	model: Model<any>,
-	reserveTokens: number,
-	apiKey: string | undefined,
-	headers?: Record<string, string>,
-	signal?: AbortSignal,
-	thinkingLevel?: ThinkingLevel,
-	streamFn?: StreamFn,
-): Promise<string> {
-	const maxTokens = Math.min(
-		Math.floor(0.5 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	); // Smaller budget for turn prefix
-	const llmMessages = convertToLlm(messages);
-	const conversationText = serializeConversation(llmMessages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const response = await completeSummarization(
-		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		createSummarizationOptions(model, maxTokens, apiKey, headers, signal, thinkingLevel),
-		streamFn,
-	);
-
-	if (response.stopReason === "error") {
-		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
-	}
-
-	return response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
-		.join("\n");
 }

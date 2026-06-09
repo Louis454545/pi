@@ -11,7 +11,7 @@
 
 ### Added
 
-- Added curated global memory under `~/.morgan/memory/`, with `snapshot.md`, `recent.md`, raw evidence events, and a separate memory curator that rewrites the snapshot after completed agent runs.
+- Added global memory at `~/.morgan/memory/snapshot.md`, updated during internal dreaming compaction.
 - Added bundled browser-harness as a default `browser` skill.
 - Added a built-in `reload` tool so the agent can reload runtime resources after modifying agent-affecting files.
 - Added background Bash tasks with completion notifications and a `task_stop` tool for stopping running background commands.
@@ -22,6 +22,7 @@
 ### Changed
 
 - Moved the default session storage root from `~/.morgan/agent/sessions/` to `~/.morgan/sessions/`.
+- Replaced the separate compaction summarizer and post-run memory curator with internal dreaming compaction.
 - Strengthened reload tool prompt guidance so agents call it autonomously after changing slash commands, extensions, skills, themes, keybindings, prompts, or loaded project instructions.
 - Rendered built-in task, monitor, and subagent notifications in structured TUI cards instead of raw XML.
 

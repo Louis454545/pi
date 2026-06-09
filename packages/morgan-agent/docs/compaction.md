@@ -140,9 +140,9 @@ interface CompactionDetails {
 }
 ```
 
-Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations, but custom extension implementations can use their own structure.
+Morgan stores file operation details in `details`.
 
-See [`prepareCompaction()`](https://github.com/earendil-works/morgan-mono/blob/main/packages/morgan-agent/src/core/compaction/compaction.ts) and [`compact()`](https://github.com/earendil-works/morgan-mono/blob/main/packages/morgan-agent/src/core/compaction/compaction.ts) for the implementation.
+See [`prepareCompaction()`](https://github.com/earendil-works/morgan-mono/blob/main/packages/morgan-agent/src/core/compaction/compaction.ts) and [`finalizeDreamCompaction()`](https://github.com/earendil-works/morgan-mono/blob/main/packages/morgan-agent/src/core/compaction/compaction.ts) for the implementation.
 
 ## Branch Summarization
 
@@ -266,16 +266,16 @@ This prevents the model from treating it as a conversation to continue.
 
 Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated. This keeps summarization requests within reasonable token budgets, since tool results (especially from `read` and `bash`) are typically the largest contributors to context size.
 
-## Custom Summarization via Extensions
+## Dream Events
 
-Extensions can intercept and customize both compaction and branch summarization. See [`extensions/types.ts`](https://github.com/earendil-works/morgan-mono/blob/main/packages/morgan-agent/src/core/extensions/types.ts) for event type definitions.
+Extensions can cancel or guide dreaming compaction, but cannot provide a custom summary. The summary source of truth is the Markdown file written by the internal dream turn. See [`extensions/types.ts`](https://github.com/earendil-works/morgan-mono/blob/main/packages/morgan-agent/src/core/extensions/types.ts) for event type definitions.
 
-### session_before_compact
+### session_before_dream
 
-Fired before auto-compaction or `/compact`. Can cancel or provide custom summary. See `SessionBeforeCompactEvent` and `CompactionPreparation` in the types file.
+Fired before auto-compaction or `/compact`. Can cancel or add prompt guidance. See `SessionBeforeDreamEvent` and `CompactionPreparation` in the types file.
 
 ```typescript
-morgan.on("session_before_compact", async (event, ctx) => {
+morgan.on("session_before_dream", async (event, ctx) => {
   const { preparation, branchEntries, customInstructions, signal } = event;
 
   // preparation.messagesToSummarize - messages to summarize
@@ -286,60 +286,19 @@ morgan.on("session_before_compact", async (event, ctx) => {
   // preparation.firstKeptEntryId - where kept messages start
   // preparation.settings - compaction settings
 
-  // branchEntries - all entries on current branch (for custom state)
-  // signal - AbortSignal (pass to LLM calls)
+  // branchEntries - all entries on current branch
+  // summaryOutputPath - exact file the dream must write
+  // snapshotPath - durable memory snapshot path
+  // signal - AbortSignal for the dream
 
   // Cancel:
   return { cancel: true };
 
-  // Custom summary:
+  // Guide the dream:
   return {
-    compaction: {
-      summary: "Your summary...",
-      firstKeptEntryId: preparation.firstKeptEntryId,
-      tokensBefore: preparation.tokensBefore,
-      details: { /* custom data */ },
-    }
+    additionalInstructions: "Preserve exact deployment commands in the checkpoint.",
   };
 });
-```
-
-#### Converting Messages to Text
-
-To generate a summary with your own model, convert messages to text using `serializeConversation`:
-
-```typescript
-import { convertToLlm, serializeConversation } from "@earendil-works/morgan-agent";
-
-morgan.on("session_before_compact", async (event, ctx) => {
-  const { preparation } = event;
-  
-  // Convert AgentMessage[] to Message[], then serialize to text
-  const conversationText = serializeConversation(
-    convertToLlm(preparation.messagesToSummarize)
-  );
-  // Returns:
-  // [User]: message text
-  // [Assistant thinking]: thinking content
-  // [Assistant]: response text
-  // [Assistant tool calls]: read(path="..."); bash(command="...")
-  // [Tool result]: output text
-
-  // Now send to your model for summarization
-  const summary = await myModel.summarize(conversationText);
-  
-  return {
-    compaction: {
-      summary,
-      firstKeptEntryId: preparation.firstKeptEntryId,
-      tokensBefore: preparation.tokensBefore,
-    }
-  };
-});
-```
-
-See [custom-compaction.ts](../examples/extensions/custom-compaction.ts) for a complete example using a different model.
-
 ### session_before_tree
 
 Fired before `/tree` navigation. Always fires regardless of whether user chose to summarize. Can cancel navigation or provide custom summary.

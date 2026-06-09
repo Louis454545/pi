@@ -1,10 +1,17 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentMessage } from "@earendil-works/morgan-agent-core";
-import type { Api, Context, Model, SimpleStreamOptions } from "@earendil-works/morgan-ai";
 import { afterEach, describe, expect, it } from "vitest";
-import { curateAgentMemory, loadAgentMemoryPromptContext } from "../src/core/agent-memory.ts";
+import { loadAgentMemoryPromptContext } from "../src/core/agent-memory.ts";
 
 describe("agent memory prompt context", () => {
 	const tempDirs: string[] = [];
@@ -29,20 +36,7 @@ describe("agent memory prompt context", () => {
 		return statSync(path).mode & 0o777;
 	}
 
-	const model: Model<Api> = {
-		id: "faux-memory",
-		name: "Faux Memory",
-		api: "faux",
-		provider: "faux",
-		baseUrl: "https://faux.local",
-		reasoning: false,
-		input: ["text"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 128000,
-		maxTokens: 4096,
-	};
-
-	it("creates the curated memory store under the Morgan home", () => {
+	it("creates only the durable snapshot under the Morgan memory directory", () => {
 		const morganHomeDir = createTempDir();
 		const context = loadAgentMemoryPromptContext({
 			agentDir: join(morganHomeDir, "agent"),
@@ -51,89 +45,47 @@ describe("agent memory prompt context", () => {
 
 		expect(context.morganHomeDir).toBe(morganHomeDir);
 		expect(context.memoryDir).toBe(join(morganHomeDir, "memory"));
-		expect(existsSync(join(morganHomeDir, "memory", "snapshot.md"))).toBe(true);
-		expect(existsSync(join(morganHomeDir, "memory", "recent.md"))).toBe(true);
-		expect(existsSync(join(morganHomeDir, "memory", "events"))).toBe(true);
-		expect(existsSync(join(morganHomeDir, "memory", "curator-errors.log"))).toBe(true);
-		expect(existsSync(join(morganHomeDir, "SOUL.md"))).toBe(false);
-		expect(existsSync(join(morganHomeDir, "MEMORY.md"))).toBe(false);
-		expect(existsSync(join(morganHomeDir, "memory-index"))).toBe(false);
+		expect(context.snapshotPath).toBe(join(morganHomeDir, "memory", "snapshot.md"));
+		expect(readdirSync(context.memoryDir).sort()).toEqual(["snapshot.md"]);
+		expect(existsSync(join(morganHomeDir, "memory", "recent.md"))).toBe(false);
+		expect(existsSync(join(morganHomeDir, "memory", "events"))).toBe(false);
+		expect(existsSync(join(morganHomeDir, "memory", "curator-errors.log"))).toBe(false);
 		expect(modeOf(morganHomeDir)).toBe(0o700);
-		expect(modeOf(join(morganHomeDir, "memory"))).toBe(0o700);
-		expect(modeOf(join(morganHomeDir, "memory", "events"))).toBe(0o700);
-		expect(modeOf(join(morganHomeDir, "memory", "snapshot.md"))).toBe(0o600);
+		expect(modeOf(context.memoryDir)).toBe(0o700);
+		expect(modeOf(context.snapshotPath)).toBe(0o600);
 		expect(context.promptSection).toContain("# Curated Memory Context");
 		expect(context.promptSection).toContain("# User Bio");
+		expect(context.promptSection).toContain("# User Interaction Metadata");
 		expect(context.promptSection).toContain("# User Knowledge Memories");
+		expect(context.promptSection).not.toContain("Recent Conversation Content");
 	});
 
-	it("lets the separate curator rewrite the snapshot from recent transcript", async () => {
+	it("loads snapshot content into the prompt section", () => {
 		const morganHomeDir = createTempDir();
-		const messages: AgentMessage[] = [
-			{
-				role: "user",
-				content: [{ type: "text", text: "Remember that I prefer concise technical English." }],
-				timestamp: new Date(2026, 5, 1, 10).getTime(),
-			},
-			{
-				role: "assistant",
-				content: [{ type: "text", text: "Noted." }],
-				api: "faux",
-				provider: "faux",
-				model: "faux-memory",
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "stop",
-				timestamp: new Date(2026, 5, 1, 10, 1).getTime(),
-			},
-		];
-		let curatorContext: Context | undefined;
-		const complete = async (context: Context, _options: SimpleStreamOptions): Promise<string> => {
-			curatorContext = context;
-			return [
-				"# User Bio",
-				"",
-				"- The user prefers concise technical English.",
-				"",
-				"# Recent Conversation Content",
-				"",
-				"- 2026-06-01: The user asked Morgan to remember a concise technical English preference.",
-				"",
-				"# User Interaction Metadata",
-				"",
-				"- Preferred response style: concise technical English.",
-				"",
-				"# User Knowledge Memories",
-				"",
-				"- The user prefers concise technical English.",
-				"",
-			].join("\n");
-		};
+		const memoryDir = join(morganHomeDir, "memory");
+		mkdirSync(memoryDir, { recursive: true });
+		const snapshotPath = join(memoryDir, "snapshot.md");
+		writeFileSync(
+			snapshotPath,
+			"# User Bio\n\n- The user prefers concise technical English.\n\n# User Interaction Metadata\n\n- (none)\n\n# User Knowledge Memories\n\n- Preference: concise technical English.\n",
+		);
 
-		await curateAgentMemory({
-			agentDir: join(morganHomeDir, "agent"),
-			model,
-			messages,
-			sessionId: "session-test",
-			now: new Date(2026, 5, 1, 10, 2),
-			complete,
-		});
+		const context = loadAgentMemoryPromptContext({ agentDir: join(morganHomeDir, "agent") });
 
-		const snapshot = readFileSync(join(morganHomeDir, "memory", "snapshot.md"), "utf-8");
-		const recent = readFileSync(join(morganHomeDir, "memory", "recent.md"), "utf-8");
-		const events = readFileSync(join(morganHomeDir, "memory", "events", "2026-06-01.jsonl"), "utf-8");
-		expect(curatorContext?.systemPrompt).toContain("separate memory curator");
-		expect(curatorContext?.messages[0].role).toBe("user");
-		expect(snapshot).toContain("concise technical English");
-		expect(recent).toContain("# Recent Conversation Content");
-		expect(recent).toContain("2026-06-01");
-		expect(events).toContain("session-test");
-		expect(events).toContain("Remember that I prefer concise technical English.");
+		expect(readFileSync(context.snapshotPath, "utf-8")).toContain("concise technical English");
+		expect(context.promptSection).toContain("concise technical English");
+	});
+
+	it("rejects a memory snapshot symlink", () => {
+		const morganHomeDir = createTempDir();
+		const memoryDir = join(morganHomeDir, "memory");
+		mkdirSync(memoryDir, { recursive: true });
+		const outsidePath = join(morganHomeDir, "outside.md");
+		writeFileSync(outsidePath, "# Outside\n");
+		symlinkSync(outsidePath, join(memoryDir, "snapshot.md"));
+
+		expect(() => loadAgentMemoryPromptContext({ agentDir: join(morganHomeDir, "agent") })).toThrow(
+			"snapshot.md must be a regular file",
+		);
 	});
 });

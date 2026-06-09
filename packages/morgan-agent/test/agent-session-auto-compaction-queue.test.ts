@@ -2,56 +2,56 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@earendil-works/morgan-agent-core";
-import { type AssistantMessage, getModel } from "@earendil-works/morgan-ai";
+import {
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	fauxAssistantMessage,
+	fauxToolCall,
+	getModel,
+} from "@earendil-works/morgan-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { createMorganTools } from "../src/index.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
-vi.mock("../src/core/compaction/index.js", () => ({
-	calculateContextTokens: (usage: {
-		input: number;
-		output: number;
-		cacheRead: number;
-		cacheWrite: number;
-		totalTokens?: number;
-	}) => usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
-	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
-	compact: async () => ({
-		summary: "compacted",
-		firstKeptEntryId: "entry-1",
-		tokensBefore: 100,
-		details: {},
-	}),
-	estimateContextTokens: (
-		messages: Array<{
-			role: string;
-			usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens?: number };
-			stopReason?: string;
-		}>,
-	) => {
-		// Walk backwards to find last non-error, non-aborted assistant with usage
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const msg = messages[i];
-			if (msg.role === "assistant" && msg.stopReason !== "error" && msg.stopReason !== "aborted" && msg.usage) {
-				const tokens =
-					msg.usage.totalTokens ?? msg.usage.input + msg.usage.output + msg.usage.cacheRead + msg.usage.cacheWrite;
-				return { tokens, usageTokens: tokens, trailingTokens: 0, lastUsageIndex: i };
-			}
+function getLastUserText(messages: Array<{ role: string; content: unknown }>): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role !== "user") continue;
+		if (typeof message.content === "string") return message.content;
+		if (Array.isArray(message.content)) {
+			return message.content
+				.filter((part): part is { type: "text"; text: string } => part?.type === "text")
+				.map((part) => part.text)
+				.join("\n");
 		}
-		return { tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null };
-	},
-	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
-	prepareCompaction: () => ({ dummy: true }),
-	shouldCompact: (
-		contextTokens: number,
-		contextWindow: number,
-		settings: { enabled: boolean; reserveTokens: number },
-	) => settings.enabled && contextTokens > contextWindow - settings.reserveTokens,
-}));
+	}
+	return "";
+}
+
+function extractDreamPath(prompt: string, label: string): string {
+	const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const match = prompt.match(new RegExp(`${escaped}: (.+)`));
+	if (!match) {
+		throw new Error(`Missing ${label} in dream prompt`);
+	}
+	return match[1]!.trim();
+}
+
+function createUsage(totalTokens: number) {
+	return {
+		input: totalTokens,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
 
 describe("AgentSession auto-compaction queue resume", () => {
 	let session: AgentSession;
@@ -98,6 +98,57 @@ describe("AgentSession auto-compaction queue resume", () => {
 	});
 
 	it("should resume after threshold compaction when only agent-level queued messages exist", async () => {
+		session.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
+		session.agent.state.tools = createMorganTools(tempDir);
+		let dreamCallCount = 0;
+		session.agent.streamFn = (_model, context) => {
+			dreamCallCount++;
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				const response =
+					dreamCallCount === 1
+						? fauxAssistantMessage(
+								fauxToolCall("write", {
+									path: extractDreamPath(getLastUserText(context.messages), "Compaction summary output file"),
+									content: "## Goal\nCompact queue resume test\n\n## Next Steps\nContinue queued work.",
+								}),
+								{ stopReason: "toolUse" },
+							)
+						: fauxAssistantMessage("dream complete");
+				const message: AssistantMessage = {
+					...response,
+					api: session.model!.api,
+					provider: session.model!.provider,
+					model: session.model!.id,
+					usage: createUsage(10),
+				};
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			return stream;
+		};
+
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "message to compact" }],
+			timestamp: Date.now() - 2000,
+		});
+		sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "old answer" }],
+			api: session.model!.api,
+			provider: session.model!.provider,
+			model: session.model!.id,
+			usage: createUsage(100),
+			stopReason: "stop",
+			timestamp: Date.now() - 1000,
+		});
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "recent message" }],
+			timestamp: Date.now(),
+		});
+		session.agent.state.messages = sessionManager.buildSessionContext().messages;
+
 		session.agent.followUp({
 			role: "custom",
 			customType: "test",
@@ -120,6 +171,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		await expect(runAutoCompaction("threshold", false)).resolves.toBe(true);
 
 		expect(continueSpy).not.toHaveBeenCalled();
+		expect(dreamCallCount).toBe(2);
 	});
 
 	it("should not compact repeatedly after overflow recovery already attempted", async () => {

@@ -6,7 +6,6 @@ describe("buildSystemPrompt", () => {
 		morganHomeDir: "/tmp/morgan",
 		memoryDir: "/tmp/morgan/memory",
 		snapshotPath: "/tmp/morgan/memory/snapshot.md",
-		recentPath: "/tmp/morgan/memory/recent.md",
 		promptSection: [
 			"# Curated Memory Context",
 			"",
@@ -14,9 +13,6 @@ describe("buildSystemPrompt", () => {
 			"",
 			"# User Bio",
 			"Preferred name: Louis",
-			"",
-			"# Recent Conversation Content",
-			"recent note",
 			"",
 			"# User Interaction Metadata",
 			"metadata",
@@ -74,7 +70,8 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("Err on the side of loading a skill");
 			expect(prompt).toContain("update it before finishing the task");
 			expect(prompt).toContain("Stable user facts, preferences, relationships, and long-term context");
-			expect(prompt).toContain("separate memory curator after conversations");
+			expect(prompt).toContain("~/.morgan/memory/snapshot.md");
+			expect(prompt).toContain("internal dreaming compaction");
 			expect(prompt).toContain("Store procedures, workflows, checklists, command sequences");
 			expect(prompt).toContain("Do not put procedural instructions in memory when they should become a skill");
 			expect(prompt).toContain("When authoring a skill, make it operational, not vague");
@@ -247,7 +244,6 @@ describe("buildSystemPrompt", () => {
 			const policyIndex = prompt.indexOf("# Memory");
 			const curatedIndex = prompt.indexOf("# Curated Memory Context");
 			const userBioIndex = prompt.indexOf("# User Bio");
-			const recentIndex = prompt.indexOf("# Recent Conversation Content");
 			const metadataIndex = prompt.indexOf("# User Interaction Metadata");
 			const memoryIndex = prompt.indexOf("# User Knowledge Memories");
 			const workingContextIndex = prompt.indexOf("<working_context>");
@@ -256,11 +252,13 @@ describe("buildSystemPrompt", () => {
 			expect(policyIndex).toBeGreaterThan(coreIndex);
 			expect(curatedIndex).toBeGreaterThan(policyIndex);
 			expect(userBioIndex).toBeGreaterThan(curatedIndex);
-			expect(recentIndex).toBeGreaterThan(userBioIndex);
-			expect(metadataIndex).toBeGreaterThan(recentIndex);
+			expect(metadataIndex).toBeGreaterThan(userBioIndex);
 			expect(memoryIndex).toBeGreaterThan(metadataIndex);
 			expect(workingContextIndex).toBeGreaterThan(memoryIndex);
-			expect(prompt).toContain("do not decide what to save during the main agent turn");
+			expect(prompt).toContain("Normal turns should not proactively edit memory");
+			expect(prompt).toContain("/tmp/morgan/memory/snapshot.md");
+			expect(prompt).not.toContain("recent.md");
+			expect(prompt).not.toContain("separate memory curator");
 			expect(prompt).toContain("Current working context:");
 			expect(prompt).not.toContain("<project_context>");
 		});
