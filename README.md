@@ -56,6 +56,16 @@ I regularly publish my own `morgan-mono` work sessions here:
 
 For Slack/chat automation and workflows see [earendil-works/morgan-chat](https://github.com/earendil-works/morgan-chat).
 
+## Permissions & Containerization
+
+Pi does not include a built-in permission system for restricting filesystem, process, network, or credential access. By default, it runs with the permissions of the user and process that launched it.
+
+If you need stronger boundaries, containerize or sandbox Pi. See [packages/morgan-agent/docs/containerization.md](packages/morgan-agent/docs/containerization.md) for three patterns:
+
+- **OpenShell**: run the whole `morgan` process in a policy-controlled sandbox.
+- **Gondolin extension**: keep `morgan` and provider auth on the host while routing built-in tools and `!` commands into a local Linux micro-VM.
+- **Plain Docker**: run the whole `morgan` process in a local container for simple isolation.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.md](AGENTS.md) for project-specific rules (for both humans and agents).

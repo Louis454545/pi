@@ -1,7 +1,7 @@
 import type { ChildProcess, ChildProcessByStdio } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 
 function getEnv(): NodeJS.ProcessEnv {
 	if (process.platform !== "linux" || Object.keys(process.env).length > 0) {
@@ -27,6 +27,7 @@ import type { Readable } from "node:stream";
 import { globSync } from "glob";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
+import { maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
 import { CONFIG_DIR_NAME, getBundledBrowserHarnessDir, getBundledSkillsDir } from "../config.ts";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
@@ -42,6 +43,14 @@ function isOfflineModeEnabled(): boolean {
 	const value = process.env.MORGAN_OFFLINE;
 	if (!value) return false;
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
+function isExactNpmVersion(version: string | undefined): boolean {
+	return valid(version ?? "") !== null;
+}
+
+function getNpmVersionRange(version: string | undefined): string | undefined {
+	return version ? (validRange(version) ?? undefined) : undefined;
 }
 
 export interface PathMetadata {
@@ -120,6 +129,8 @@ type NpmSource = {
 	type: "npm";
 	spec: string;
 	name: string;
+	version?: string;
+	range?: string;
 	pinned: boolean;
 };
 
@@ -207,6 +218,13 @@ function toPosixPath(p: string): string {
 
 function getHomeDir(): string {
 	return process.env.HOME || homedir();
+}
+
+export function getExtensionTempFolder(agentDir: string): string {
+	const tempFolder = join(agentDir, "tmp", "extensions");
+	mkdirSync(tempFolder, { recursive: true, mode: 0o700 });
+	chmodSync(tempFolder, 0o700);
+	return tempFolder;
 }
 
 function prefixIgnorePattern(line: string, prefix: string): string | null {
@@ -328,7 +346,14 @@ function collectFiles(
 	return files;
 }
 
-function collectSkillEntries(dir: string, ignoreMatcher?: IgnoreMatcher, rootDir?: string): string[] {
+type SkillDiscoveryMode = "morgan" | "agents";
+
+function collectSkillEntries(
+	dir: string,
+	mode: SkillDiscoveryMode,
+	ignoreMatcher?: IgnoreMatcher,
+	rootDir?: string,
+): string[] {
 	const entries: string[] = [];
 	if (!existsSync(dir)) return entries;
 
@@ -380,7 +405,7 @@ function collectSkillEntries(dir: string, ignoreMatcher?: IgnoreMatcher, rootDir
 			}
 
 			const relPath = toPosixPath(relative(root, fullPath));
-			if (dir === root && isFile && entry.name.endsWith(".md") && !ig.ignores(relPath)) {
+			if (mode === "morgan" && dir === root && isFile && entry.name.endsWith(".md") && !ig.ignores(relPath)) {
 				entries.push(fullPath);
 				continue;
 			}
@@ -388,7 +413,7 @@ function collectSkillEntries(dir: string, ignoreMatcher?: IgnoreMatcher, rootDir
 			if (!isDir) continue;
 			if (ig.ignores(`${relPath}/`)) continue;
 
-			entries.push(...collectSkillEntries(fullPath, ig, root));
+			entries.push(...collectSkillEntries(fullPath, mode, ig, root));
 		}
 	} catch {
 		// Ignore errors
@@ -397,8 +422,43 @@ function collectSkillEntries(dir: string, ignoreMatcher?: IgnoreMatcher, rootDir
 	return entries;
 }
 
-function collectAutoSkillEntries(dir: string): string[] {
-	return collectSkillEntries(dir);
+function collectAutoSkillEntries(dir: string, mode: SkillDiscoveryMode): string[] {
+	return collectSkillEntries(dir, mode);
+}
+
+function findGitRepoRoot(startDir: string): string | null {
+	let dir = resolve(startDir);
+	while (true) {
+		if (existsSync(join(dir, ".git"))) {
+			return dir;
+		}
+		const parent = dirname(dir);
+		if (parent === dir) {
+			return null;
+		}
+		dir = parent;
+	}
+}
+
+function collectAncestorAgentsSkillDirs(startDir: string): string[] {
+	const skillDirs: string[] = [];
+	const resolvedStartDir = resolve(startDir);
+	const gitRepoRoot = findGitRepoRoot(resolvedStartDir);
+
+	let dir = resolvedStartDir;
+	while (true) {
+		skillDirs.push(join(dir, ".agents", "skills"));
+		if (gitRepoRoot && dir === gitRepoRoot) {
+			break;
+		}
+		const parent = dirname(dir);
+		if (parent === dir) {
+			break;
+		}
+		dir = parent;
+	}
+
+	return skillDirs;
 }
 
 function collectAutoPromptEntries(dir: string): string[] {
@@ -622,7 +682,7 @@ function collectAutoExtensionEntries(dir: string): string[] {
  */
 function collectResourceFiles(dir: string, resourceType: ResourceType): string[] {
 	if (resourceType === "skills") {
-		return collectSkillEntries(dir);
+		return collectSkillEntries(dir, "morgan");
 	}
 	if (resourceType === "extensions") {
 		return collectAutoExtensionEntries(dir);
@@ -967,6 +1027,7 @@ export class DefaultPackageManager implements PackageManager {
 	async install(source: string, options?: { local?: boolean }): Promise<void> {
 		const parsed = this.parseSource(source);
 		const scope: SourceScope = options?.local ? "project" : "user";
+		this.assertProjectTrustedForScope(scope);
 		await this.withProgress("install", source, `Installing ${source}...`, async () => {
 			if (parsed.type === "npm") {
 				await this.installNpm(parsed, scope, false);
@@ -995,6 +1056,7 @@ export class DefaultPackageManager implements PackageManager {
 	async remove(source: string, options?: { local?: boolean }): Promise<void> {
 		const parsed = this.parseSource(source);
 		const scope: SourceScope = options?.local ? "project" : "user";
+		this.assertProjectTrustedForScope(scope);
 		await this.withProgress("remove", source, `Removing ${source}...`, async () => {
 			if (parsed.type === "npm") {
 				await this.uninstallNpm(parsed, scope);
@@ -1115,8 +1177,8 @@ export class DefaultPackageManager implements PackageManager {
 		}
 
 		try {
-			const latestVersion = await this.getLatestNpmVersion(source.name);
-			return latestVersion !== installedVersion;
+			const targetVersion = await this.getLatestNpmVersion(source.version ? source.spec : source.name, source.range);
+			return targetVersion !== installedVersion;
 		} catch {
 			// Preserve existing update behavior when version lookup fails.
 			return true;
@@ -1130,7 +1192,7 @@ export class DefaultPackageManager implements PackageManager {
 
 		const sourceLabel = sources.length === 1 ? sources[0].source : `${scope} npm packages`;
 		const message = sources.length === 1 ? `Updating ${sources[0].source}...` : `Updating ${scope} npm packages...`;
-		const specs = sources.map((entry) => `${entry.parsed.name}@latest`);
+		const specs = sources.map((entry) => (entry.parsed.version ? entry.parsed.spec : `${entry.parsed.name}@latest`));
 
 		await this.withProgress("update", sourceLabel, message, async () => {
 			await this.installNpmBatch(specs, scope);
@@ -1243,8 +1305,7 @@ export class DefaultPackageManager implements PackageManager {
 			if (parsed.type === "npm") {
 				let installedPath = this.getNpmInstallPath(parsed, scope);
 				const needsInstall =
-					!existsSync(installedPath) ||
-					(parsed.pinned && !(await this.installedNpmMatchesPinnedVersion(parsed, installedPath)));
+					!existsSync(installedPath) || !(await this.installedNpmMatchesConfiguredVersion(parsed, installedPath));
 				if (needsInstall) {
 					const installed = await installMissing();
 					if (!installed) continue;
@@ -1396,7 +1457,9 @@ export class DefaultPackageManager implements PackageManager {
 				type: "npm",
 				spec,
 				name,
-				pinned: Boolean(version),
+				version,
+				range: getNpmVersionRange(version),
+				pinned: isExactNpmVersion(version),
 			};
 		}
 
@@ -1413,18 +1476,12 @@ export class DefaultPackageManager implements PackageManager {
 		return { type: "local", path: source };
 	}
 
-	private async installedNpmMatchesPinnedVersion(source: NpmSource, installedPath: string): Promise<boolean> {
+	private async installedNpmMatchesConfiguredVersion(source: NpmSource, installedPath: string): Promise<boolean> {
 		const installedVersion = this.getInstalledNpmVersion(installedPath);
 		if (!installedVersion) {
 			return false;
 		}
-
-		const { version: pinnedVersion } = this.parseNpmSpec(source.spec);
-		if (!pinnedVersion) {
-			return true;
-		}
-
-		return installedVersion === pinnedVersion;
+		return source.range ? satisfies(installedVersion, source.range) : true;
 	}
 
 	private async npmHasAvailableUpdate(source: NpmSource, installedPath: string): Promise<boolean> {
@@ -1438,8 +1495,8 @@ export class DefaultPackageManager implements PackageManager {
 		}
 
 		try {
-			const latestVersion = await this.getLatestNpmVersion(source.name);
-			return latestVersion !== installedVersion;
+			const targetVersion = await this.getLatestNpmVersion(source.version ? source.spec : source.name, source.range);
+			return targetVersion !== installedVersion;
 		} catch {
 			return false;
 		}
@@ -1457,16 +1514,25 @@ export class DefaultPackageManager implements PackageManager {
 		}
 	}
 
-	private async getLatestNpmVersion(packageName: string): Promise<string> {
+	private async getLatestNpmVersion(packageSpec: string, range?: string): Promise<string> {
 		const npmCommand = this.getNpmCommand();
 		const stdout = await this.runCommandCapture(
 			npmCommand.command,
-			[...npmCommand.args, "view", packageName, "version", "--json"],
+			[...npmCommand.args, "view", packageSpec, "version", "--json"],
 			{ cwd: this.cwd, timeoutMs: NETWORK_TIMEOUT_MS },
 		);
 		const raw = stdout.trim();
 		if (!raw) throw new Error("Empty response from npm view");
-		return JSON.parse(raw);
+		const parsed = JSON.parse(raw) as unknown;
+		if (typeof parsed === "string") {
+			return parsed;
+		}
+		if (Array.isArray(parsed)) {
+			const versions = parsed.filter((value): value is string => typeof value === "string" && value.length > 0);
+			const latest = range ? maxSatisfying(versions, range) : [...versions].sort(rcompare)[0];
+			if (latest) return latest;
+		}
+		throw new Error("Unexpected response from npm view");
 	}
 
 	private async gitHasAvailableUpdate(installedPath: string): Promise<boolean> {
@@ -1675,6 +1741,12 @@ export class DefaultPackageManager implements PackageManager {
 		const name = match[1] ?? spec;
 		const version = match[2];
 		return { name, version };
+	}
+
+	private assertProjectTrustedForScope(scope: SourceScope): void {
+		if (scope === "project" && !this.settingsManager.isProjectTrusted()) {
+			throw new Error("Project is not trusted; refusing to access project package storage");
+		}
 	}
 
 	private getNpmCommand(): { command: string; args: string[] } {
@@ -1897,6 +1969,7 @@ export class DefaultPackageManager implements PackageManager {
 			return this.getTemporaryDir("npm");
 		}
 		if (scope === "project") {
+			this.assertProjectTrustedForScope(scope);
 			return join(this.cwd, CONFIG_DIR_NAME, "npm");
 		}
 		return join(this.agentDir, "npm");
@@ -1937,6 +2010,7 @@ export class DefaultPackageManager implements PackageManager {
 			return join(this.getTemporaryDir("npm"), "node_modules", source.name);
 		}
 		if (scope === "project") {
+			this.assertProjectTrustedForScope(scope);
 			return join(this.cwd, CONFIG_DIR_NAME, "npm", "node_modules", source.name);
 		}
 		return join(this.agentDir, "npm", "node_modules", source.name);
@@ -1963,10 +2037,11 @@ export class DefaultPackageManager implements PackageManager {
 		if (scope === "temporary") {
 			return this.getTemporaryDir(`git-${source.host}`, source.path);
 		}
-		if (scope === "project") {
-			return join(this.cwd, CONFIG_DIR_NAME, "git", source.host, source.path);
+		const installRoot = this.getGitInstallRoot(scope);
+		if (!installRoot) {
+			throw new Error("Missing git install root");
 		}
-		return join(this.agentDir, "git", source.host, source.path);
+		return this.resolveManagedPath(installRoot, source.host, source.path);
 	}
 
 	private getGitInstallRoot(scope: SourceScope): string | undefined {
@@ -1974,21 +2049,33 @@ export class DefaultPackageManager implements PackageManager {
 			return undefined;
 		}
 		if (scope === "project") {
+			this.assertProjectTrustedForScope(scope);
 			return join(this.cwd, CONFIG_DIR_NAME, "git");
 		}
 		return join(this.agentDir, "git");
 	}
 
 	private getTemporaryDir(prefix: string, suffix?: string): string {
+		const root = this.resolveManagedPath(getExtensionTempFolder(this.agentDir), prefix);
 		const hash = createHash("sha256")
 			.update(`${prefix}-${suffix ?? ""}`)
 			.digest("hex")
 			.slice(0, 8);
-		return join(tmpdir(), "morgan-extensions", prefix, hash, suffix ?? "");
+		return this.resolveManagedPath(root, hash, suffix ?? "");
+	}
+
+	private resolveManagedPath(root: string, ...parts: string[]): string {
+		const resolvedRoot = resolve(root);
+		const resolvedPath = resolve(resolvedRoot, ...parts);
+		if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(`${resolvedRoot}${sep}`)) {
+			throw new Error(`Refusing to use path outside package install root: ${resolvedPath}`);
+		}
+		return resolvedPath;
 	}
 
 	private getBaseDirForScope(scope: SourceScope): string {
 		if (scope === "project") {
+			this.assertProjectTrustedForScope(scope);
 			return join(this.cwd, CONFIG_DIR_NAME);
 		}
 		if (scope === "user") {
@@ -2249,6 +2336,12 @@ export class DefaultPackageManager implements PackageManager {
 			prompts: join(projectBaseDir, "prompts"),
 			themes: join(projectBaseDir, "themes"),
 		};
+		const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
+		const includeTrustedProjectResources = this.includeProjectResources && this.settingsManager.isProjectTrusted();
+		const projectAgentsSkillDirs = includeTrustedProjectResources
+			? collectAncestorAgentsSkillDirs(this.cwd).filter((dir) => resolve(dir) !== resolve(userAgentsSkillsDir))
+			: [];
+
 		const addResources = (
 			resourceType: ResourceType,
 			paths: string[],
@@ -2263,7 +2356,7 @@ export class DefaultPackageManager implements PackageManager {
 			}
 		};
 
-		if (this.includeProjectResources) {
+		if (includeTrustedProjectResources) {
 			// Project extensions from .morgan/
 			addResources(
 				"extensions",
@@ -2276,7 +2369,7 @@ export class DefaultPackageManager implements PackageManager {
 			// Project skills from .morgan/
 			addResources(
 				"skills",
-				collectAutoSkillEntries(projectDirs.skills),
+				collectAutoSkillEntries(projectDirs.skills, "morgan"),
 				projectMetadata,
 				projectOverrides.skills,
 				projectBaseDir,
@@ -2298,6 +2391,22 @@ export class DefaultPackageManager implements PackageManager {
 			);
 		}
 
+		// Project skills from .agents/ (each with its own baseDir)
+		for (const agentsSkillsDir of projectAgentsSkillDirs) {
+			const agentsBaseDir = dirname(agentsSkillsDir); // the .agents directory
+			const agentsMetadata: PathMetadata = {
+				...projectMetadata,
+				baseDir: agentsBaseDir,
+			};
+			addResources(
+				"skills",
+				collectAutoSkillEntries(agentsSkillsDir, "agents"),
+				agentsMetadata,
+				projectOverrides.skills,
+				agentsBaseDir,
+			);
+		}
+
 		// User extensions from ~/.morgan/agent/
 		addResources(
 			"extensions",
@@ -2310,10 +2419,24 @@ export class DefaultPackageManager implements PackageManager {
 		// User skills from ~/.morgan/agent/
 		addResources(
 			"skills",
-			collectAutoSkillEntries(userDirs.skills),
+			collectAutoSkillEntries(userDirs.skills, "morgan"),
 			userMetadata,
 			userOverrides.skills,
 			globalBaseDir,
+		);
+
+		// User skills from ~/.agents/ (with its own baseDir)
+		const userAgentsBaseDir = dirname(userAgentsSkillsDir);
+		const userAgentsMetadata: PathMetadata = {
+			...userMetadata,
+			baseDir: userAgentsBaseDir,
+		};
+		addResources(
+			"skills",
+			collectAutoSkillEntries(userAgentsSkillsDir, "agents"),
+			userAgentsMetadata,
+			userOverrides.skills,
+			userAgentsBaseDir,
 		);
 
 		addResources(
@@ -2349,7 +2472,7 @@ export class DefaultPackageManager implements PackageManager {
 			baseDir: bundledSkillsDir,
 		};
 
-		for (const skill of collectAutoSkillEntries(bundledSkillsDir)) {
+		for (const skill of collectAutoSkillEntries(bundledSkillsDir, "morgan")) {
 			const skillName = basename(dirname(skill));
 			const disabledByName = overrides.some((pattern) => pattern === `-${skillName}` || pattern === `!${skillName}`);
 			const enabled = !disabledByName && isEnabledByOverrides(skill, overrides, bundledSkillsDir);

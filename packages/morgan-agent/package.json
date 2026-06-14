@@ -1,6 +1,6 @@
 {
 	"name": "@earendil-works/morgan-agent",
-	"version": "0.78.0",
+	"version": "0.79.3",
 	"description": "Universal agent CLI with read, bash, edit, write tools and session management",
 	"type": "module",
 	"morganConfig": {
@@ -29,6 +29,7 @@
 		"dist",
 		"docs",
 		"examples",
+		"containerization.md",
 		"CHANGELOG.md",
 		"npm-shrinkwrap.json"
 	],
@@ -43,9 +44,9 @@
 		"prepublishOnly": "npm run clean && npm run build && npm run shrinkwrap"
 	},
 	"dependencies": {
-		"@earendil-works/morgan-agent-core": "^0.78.0",
-		"@earendil-works/morgan-ai": "^0.78.0",
-		"@earendil-works/morgan-tui": "^0.78.0",
+		"@earendil-works/morgan-agent-core": "^0.79.3",
+		"@earendil-works/morgan-ai": "^0.79.3",
+		"@earendil-works/morgan-tui": "^0.79.3",
 		"@silvia-odwyer/photon-node": "0.3.4",
 		"chalk": "5.6.2",
 		"cron-parser": "5.5.0",
@@ -58,6 +59,7 @@
 		"jiti": "2.7.0",
 		"minimatch": "10.2.5",
 		"proper-lockfile": "4.1.2",
+		"semver": "7.8.0",
 		"typebox": "1.1.38",
 		"undici": "8.3.0",
 		"yaml": "2.9.0"
@@ -78,6 +80,7 @@
 		"@types/ms": "2.1.0",
 		"@types/node": "24.12.4",
 		"@types/proper-lockfile": "4.1.4",
+		"@types/semver": "7.7.1",
 		"shx": "0.4.0",
 		"typescript": "5.9.3",
 		"vitest": "3.2.4"

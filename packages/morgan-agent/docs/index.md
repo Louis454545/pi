@@ -44,6 +44,8 @@ For the full first-run flow, see [Quickstart](quickstart.md).
 - [Quickstart](quickstart.md) - install, authenticate, and run a first session.
 - [Using Morgan](usage.md) - interactive mode, slash commands, context files, and CLI reference.
 - [Providers](providers.md) - subscription and API-key setup for built-in providers.
+- [Security](security.md) - project trust, sandbox boundaries, and vulnerability reporting.
+- [Containerization](containerization.md) - sandbox pi with OpenShell, Gondolin, or Docker.
 - [Settings](settings.md) - global and project settings.
 - [Keybindings](keybindings.md) - default shortcuts and custom keybindings.
 - [Global Conversation](sessions.md) - global conversation storage, reset/import, and tree navigation.

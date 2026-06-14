@@ -22,5 +22,5 @@
 		}
 	},
 	"include": ["packages/*/src/**/*", "packages/*/test/**/*", "packages/morgan-agent/examples/**/*"],
-	"exclude": ["**/dist/**"]
+	"exclude": ["**/dist/**", "packages/morgan-agent/examples/extensions/gondolin/**"]
 }

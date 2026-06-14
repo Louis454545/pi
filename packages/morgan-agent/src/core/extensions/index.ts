@@ -66,6 +66,7 @@ export type {
 	ExtensionFactory,
 	ExtensionFlag,
 	ExtensionHandler,
+	ExtensionMode,
 	// Runtime
 	ExtensionRuntime,
 	ExtensionShortcut,
@@ -98,6 +99,11 @@ export type {
 	ModelSelectEvent,
 	ModelSelectSource,
 	ProactiveTriggerEvent,
+	ProjectTrustContext,
+	ProjectTrustEvent,
+	ProjectTrustEventDecision,
+	ProjectTrustEventResult,
+	ProjectTrustHandler,
 	// Provider Registration
 	ProviderConfig,
 	ProviderModelConfig,
