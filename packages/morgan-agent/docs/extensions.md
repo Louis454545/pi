@@ -1338,12 +1338,16 @@ morgan.registerTool({
 
 ### morgan.registerTrigger(definition)
 
-Register a proactive trigger. A trigger is extension-owned watcher code that starts after `session_start` and emits structured events into the active agent runtime.
+Register a proactive trigger. A trigger is extension-owned code that emits structured events into the active agent runtime. A trigger has exactly one event source:
+
+- **Event-based** — provide `start(ctx, emit)`. It runs after `session_start`, sets up a watcher/poller, and calls `emit()` when something happens.
+- **Time-based** — provide `schedule` (cron or interval) plus `run(ctx, emit)`. The runtime owns the timer and calls `run` on each tick.
 
 ```typescript
 import type { ExtensionAPI } from "@earendil-works/morgan-agent";
 
 export default function (morgan: ExtensionAPI) {
+  // Event-based
   morgan.registerTrigger({
     name: "ci-watch",
     description: "Watch CI state and tell the agent when a job changes",
@@ -1351,31 +1355,33 @@ export default function (morgan: ExtensionAPI) {
       const stop = startYourWatcher({
         signal: ctx.signal,
         onChange(change) {
-          emit({
-            eventId: change.id,
-            summary: `CI job ${change.status}`,
-            payload: change,
-            createdAt: change.timestamp,
-          });
+          emit({ summary: `CI job ${change.status}`, payload: change });
         },
       });
-
       return async () => {
         await stop();
       };
+    },
+  });
+
+  // Time-based (cron). Use { intervalMs } for a fixed interval instead.
+  morgan.registerTrigger({
+    name: "daily-standup",
+    description: "Remind about standup every weekday at 9am",
+    schedule: { cron: "0 9 * * 1-5", timezone: "Europe/Paris" },
+    async run(ctx, emit) {
+      const { stdout } = await ctx.exec("git", ["log", "--since=yesterday", "--oneline"]);
+      emit({ summary: "Standup time", payload: { commits: stdout } });
     },
   });
 }
 ```
 
 Behavior:
-- `start(ctx, emit)` runs after `session_start`; it can return sync or async cleanup.
-- `ctx.signal` aborts before cleanup during reload, shutdown, or session replacement.
-- `emit({ eventId, summary, payload, createdAt })` creates a hidden `proactive_trigger_event` custom message.
-- If the agent is idle, Morgan starts a proactive model turn. If the agent is busy, Morgan queues the trigger event until the current work finishes.
-- Duplicate `{ triggerName, eventId }` events are ignored for a bounded TTL window. Pending trigger events are capped; overflow drops the newest event and emits a `proactive_trigger_overflow` session event.
+- `start(ctx, emit)` runs after `session_start` and can return sync or async cleanup. `schedule` + `run(ctx, emit)` is driven by the runtime's timer; for cron, the next run is computed and re-armed automatically, and a tick is skipped if the previous `run` is still in progress.
+- `ctx.signal` aborts before cleanup during reload, shutdown, or session replacement. `ctx.exec(command, args, options?)` runs a workspace command with output truncation and abort wiring.
+- `emit({ summary, payload?, eventId?, createdAt? })` delivers a `proactive_trigger_event` notification to the agent, handled like other runtime notifications (task/monitor/subagent). If the agent is idle, Morgan reacts on the next turn; if busy, the event is queued. There is no separate `notify_user` step — if the user should be informed, the model simply responds.
 - Stale `emit()` functions captured before reload, shutdown, or session replacement are ignored.
-- During proactive trigger turns only, the model receives a scoped `notify_user` tool. Calling it creates a visible `proactive_notification`; not calling it means no user notification.
 
 Triggers are normal trusted extension code. Morgan core does not include provider-specific watchers such as Gmail, IMAP, calendar, OAuth, or inbox polling; put those integrations in generated extensions or packages.
 

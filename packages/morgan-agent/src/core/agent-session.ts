@@ -37,7 +37,6 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/morgan-ai";
-import { type Static, Type } from "typebox";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -102,13 +101,6 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import {
-	formatScheduleNotificationXml,
-	type ScheduleNotification,
-	type ScheduleNotificationDeliveryOptions,
-	SchedulerManager,
-	type ScheduleStatus,
-} from "./schedules/index.ts";
 import type { BranchSummaryEntry, CompactionEntry } from "./session-manager.ts";
 import {
 	CURRENT_SESSION_VERSION,
@@ -122,7 +114,6 @@ import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
-import type { ReloadScope } from "./tools/reload.ts";
 import {
 	normalizeSubagentAction,
 	type SubagentInfo,
@@ -153,18 +144,6 @@ export interface SubagentNotification {
 	status: "started" | "message" | "completed" | "failed" | "stopped";
 	summary: string;
 	message: string | undefined;
-}
-
-export type ProactiveNotificationSeverity = "info" | "warning" | "error";
-
-export interface ProactiveNotification {
-	title: string;
-	message: string;
-	severity: ProactiveNotificationSeverity;
-	source: string | undefined;
-	triggerName: string;
-	eventId: string;
-	createdAt: string;
 }
 
 /**
@@ -201,10 +180,7 @@ export type AgentSessionEvent =
 	| { type: "task_notification"; notification: BackgroundTaskNotification; xml: string }
 	| { type: "monitor_event"; notification: MonitorEventNotification; xml: string }
 	| { type: "subagent_notification"; notification: SubagentNotification; xml: string }
-	| { type: "schedule_notification"; notification: ScheduleNotification; xml: string }
 	| { type: "proactive_trigger_event"; notification: ProactiveTriggerEvent; xml: string }
-	| { type: "proactive_notification"; notification: ProactiveNotification; xml: string }
-	| { type: "proactive_trigger_overflow"; dropped: ProactiveTriggerEvent; limit: number }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -245,8 +221,6 @@ export interface AgentSessionConfig {
 	allowedToolNames?: string[];
 	/** Optional denylist of tool names. When provided, these tool names are not exposed. */
 	excludedToolNames?: string[];
-	/** Enable trusted project-local schedules for this session. */
-	enableSchedules?: boolean;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -331,28 +305,12 @@ interface ToolDefinitionEntry {
 
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
-const PROACTIVE_TRIGGER_DEDUPE_TTL_MS = 60 * 60 * 1000;
-const PROACTIVE_TRIGGER_DEDUPE_MAX = 1024;
-const PROACTIVE_TRIGGER_PENDING_MAX = 32;
 const DREAMING_DIR_NAME = "dreaming";
 const DREAM_SUMMARY_PLACEHOLDER = "<!-- Morgan dreaming compaction summary placeholder -->\n";
 const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const DREAM_RESTRICTED_TOOL_MESSAGE =
 	"Dreaming is restricted to reading context and writing only the compaction summary file or memory snapshot.";
-
-const notifyUserSchema = Type.Object({
-	title: Type.String({ description: "Concise notification title." }),
-	message: Type.String({ description: "Concise notification body shown to the user." }),
-	severity: Type.Optional(
-		Type.Union([Type.Literal("info"), Type.Literal("warning"), Type.Literal("error")], {
-			description: "Notification severity. Defaults to info.",
-		}),
-	),
-	source: Type.Optional(Type.String({ description: "Optional human-readable source label." })),
-});
-
-type NotifyUserToolInput = Static<typeof notifyUserSchema>;
 
 function escapeXml(value: string): string {
 	return value
@@ -403,27 +361,7 @@ function formatProactiveTriggerEventXml(event: ProactiveTriggerEvent): string {
 	if (payload) {
 		lines.push(`<payload>${escapeXml(payload)}</payload>`);
 	}
-	lines.push(
-		"<instruction>Decide whether this event requires notifying the user. Call notify_user only when a visible user notification is warranted.</instruction>",
-		"</proactive-trigger-event>",
-	);
-	return lines.join("\n");
-}
-
-function formatProactiveNotificationXml(notification: ProactiveNotification): string {
-	const lines = [
-		"<proactive-notification>",
-		`<trigger-name>${escapeXml(notification.triggerName)}</trigger-name>`,
-		`<event-id>${escapeXml(notification.eventId)}</event-id>`,
-		`<created-at>${escapeXml(notification.createdAt)}</created-at>`,
-		`<severity>${notification.severity}</severity>`,
-		`<title>${escapeXml(notification.title)}</title>`,
-		`<message>${escapeXml(notification.message)}</message>`,
-	];
-	if (notification.source) {
-		lines.push(`<source>${escapeXml(notification.source)}</source>`);
-	}
-	lines.push("</proactive-notification>");
+	lines.push("</proactive-trigger-event>");
 	return lines.join("\n");
 }
 
@@ -466,16 +404,8 @@ export class AgentSession {
 	private _pendingBashMessages: BashExecutionMessage[] = [];
 	private _backgroundTaskManager: BackgroundTaskManager;
 	private _subagentManager: SubagentManager;
-	private _schedulerManager: SchedulerManager;
-	private _schedulesReady: Promise<void> = Promise.resolve();
 	private _subagentParent: SubagentParentBridge | undefined;
 	private _taskNotificationContinuation: Promise<void> = Promise.resolve();
-	private _proactiveTriggerDedupe: Map<string, number> = new Map();
-	private _pendingProactiveTriggerMessages: Array<{
-		event: ProactiveTriggerEvent;
-		message: Pick<CustomMessage<ProactiveTriggerEvent>, "customType" | "content" | "display" | "details">;
-	}> = [];
-	private _proactiveTriggerDrainRunning = false;
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -509,8 +439,7 @@ export class AgentSession {
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
-	private _reloadAfterToolTurn: ReloadScope | undefined;
-	private _lastMemoryQuery: string | undefined;
+	private _reloadAfterToolTurn = false;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -538,11 +467,6 @@ export class AgentSession {
 			(notification) => this._handleMonitorEvent(notification),
 		);
 		this._subagentManager = new SubagentManager(this);
-		this._schedulerManager = new SchedulerManager({
-			cwd: this._cwd,
-			enabled: config.enableSchedules ?? false,
-			onNotification: (notification, options) => this._handleScheduleNotification(notification, options),
-		});
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -554,7 +478,6 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
-		this._schedulesReady = this._schedulerManager.reload();
 	}
 
 	/** Model registry for API key resolution and model discovery */
@@ -661,17 +584,15 @@ export class AgentSession {
 	private _installAgentPrepareNextTurn(): void {
 		const previousPrepareNextTurn = this.agent.prepareNextTurn;
 		this.agent.prepareNextTurn = async (signal?: AbortSignal): Promise<AgentLoopTurnUpdate | undefined> => {
-			this._refreshBaseSystemPrompt(this._lastMemoryQuery);
+			this._refreshBaseSystemPrompt();
 			const previousUpdate = await previousPrepareNextTurn?.(signal);
 
-			const reloadScope = this._reloadAfterToolTurn;
-			this._reloadAfterToolTurn = undefined;
+			const shouldReload = this._reloadAfterToolTurn;
+			this._reloadAfterToolTurn = false;
 
-			if (reloadScope && !signal?.aborted) {
-				await this.reload({ scope: reloadScope });
-				if (reloadScope !== "schedules") {
-					this._refreshBaseSystemPrompt(this._lastMemoryQuery);
-				}
+			if (shouldReload && !signal?.aborted) {
+				await this.reload();
+				this._refreshBaseSystemPrompt();
 			}
 			const previousContext = previousUpdate?.context;
 			return {
@@ -687,13 +608,8 @@ export class AgentSession {
 		};
 	}
 
-	private _scheduleReloadAfterToolTurn(scope: ReloadScope = "all"): void {
-		const current = this._reloadAfterToolTurn;
-		if (!current || current === scope) {
-			this._reloadAfterToolTurn = scope;
-			return;
-		}
-		this._reloadAfterToolTurn = "all";
+	private _scheduleReloadAfterToolTurn(): void {
+		this._reloadAfterToolTurn = true;
 	}
 
 	// =========================================================================
@@ -968,7 +884,6 @@ export class AgentSession {
 			this.abortBash();
 			this._backgroundTaskManager.dispose();
 			this._subagentManager.dispose();
-			this._schedulerManager.dispose();
 			this.agent.abort();
 		} catch {
 			// Dispose must succeed even if an abort hook throws.
@@ -1037,14 +952,6 @@ export class AgentSession {
 		}));
 	}
 
-	getScheduleStatuses(): ScheduleStatus[] {
-		return this._schedulerManager.getStatuses();
-	}
-
-	async waitForSchedulesReady(): Promise<void> {
-		await this._schedulesReady;
-	}
-
 	getToolDefinition(name: string): ToolDefinition | undefined {
 		return this._toolDefinitions.get(name)?.definition;
 	}
@@ -1068,7 +975,7 @@ export class AgentSession {
 		this.agent.state.tools = tools;
 
 		// Rebuild base system prompt with new tool set
-		this._refreshBaseSystemPrompt(this._lastMemoryQuery, validToolNames);
+		this._refreshBaseSystemPrompt(validToolNames);
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -1149,7 +1056,7 @@ export class AgentSession {
 		return Array.from(unique);
 	}
 
-	private _rebuildSystemPrompt(toolNames: string[], memoryQuery?: string): string {
+	private _rebuildSystemPrompt(toolNames: string[]): string {
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
 		const toolSnippets: Record<string, string> = {};
 		const promptGuidelines: string[] = [];
@@ -1173,7 +1080,6 @@ export class AgentSession {
 		const loadedExtensions = this._resourceLoader.getExtensions();
 		const memoryContext = loadAgentMemoryPromptContext({
 			agentDir: this._agentDir,
-			query: memoryQuery,
 		});
 
 		this._baseSystemPromptOptions = {
@@ -1193,9 +1099,8 @@ export class AgentSession {
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}
 
-	private _refreshBaseSystemPrompt(memoryQuery?: string, toolNames: string[] = this.getActiveToolNames()): void {
-		this._lastMemoryQuery = memoryQuery;
-		this._baseSystemPrompt = this._rebuildSystemPrompt(toolNames, memoryQuery);
+	private _refreshBaseSystemPrompt(toolNames: string[] = this.getActiveToolNames()): void {
+		this._baseSystemPrompt = this._rebuildSystemPrompt(toolNames);
 		this.agent.state.systemPrompt = this._baseSystemPrompt;
 	}
 
@@ -1296,7 +1201,8 @@ export class AgentSession {
 				expandedText = this._expandSkillCommand(expandedText);
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 			}
-			this._refreshBaseSystemPrompt(expandedText);
+			// Refresh the base prompt so the memory snapshot is re-read before this provider request.
+			this._refreshBaseSystemPrompt();
 
 			// If streaming, queue via steer() or followUp() based on option
 			if (this.isStreaming) {
@@ -2041,7 +1947,7 @@ export class AgentSession {
 			throw new Error("Cannot dream-compact: builtin write/edit tools are not registered.");
 		}
 
-		this._refreshBaseSystemPrompt(this._lastMemoryQuery);
+		this._refreshBaseSystemPrompt();
 		const memoryContext = loadAgentMemoryPromptContext({ agentDir: this._agentDir });
 		const summaryOutputPath = this._createDreamSummaryOutputPath(memoryContext.memoryDir);
 
@@ -2112,7 +2018,7 @@ export class AgentSession {
 
 		const sessionContext = this.sessionManager.buildSessionContext();
 		this.agent.state.messages = sessionContext.messages;
-		this._refreshBaseSystemPrompt(this._lastMemoryQuery);
+		this._refreshBaseSystemPrompt();
 
 		const compactionEntry = this.sessionManager.getEntry(compactionEntryId) as CompactionEntry | undefined;
 		if (compactionEntry) {
@@ -2402,7 +2308,7 @@ export class AgentSession {
 		};
 
 		this._resourceLoader.extendResources(extensionPaths);
-		this._refreshBaseSystemPrompt(this._lastMemoryQuery);
+		this._refreshBaseSystemPrompt();
 	}
 
 	private buildExtensionResourcePaths(entries: Array<{ path: string; extensionPath: string }>): Array<{
@@ -2697,7 +2603,7 @@ export class AgentSession {
 								shellPath,
 							}),
 					},
-					reload: { scheduleReload: (scope) => this._scheduleReloadAfterToolTurn(scope) },
+					reload: { scheduleReload: () => this._scheduleReloadAfterToolTurn() },
 					taskStop: { stopTask: async (taskId) => await this.stopTask(taskId) },
 					monitor: {
 						commandPrefix: shellCommandPrefix,
@@ -2751,14 +2657,7 @@ export class AgentSession {
 		});
 	}
 
-	async reload(options?: { emitEvent?: boolean; scope?: ReloadScope }): Promise<void> {
-		const scope = options?.scope ?? "all";
-		if (scope === "schedules") {
-			this._schedulesReady = this._schedulerManager.reload();
-			await this._schedulesReady;
-			return;
-		}
-
+	async reload(options?: { emitEvent?: boolean }): Promise<void> {
 		const previousFlagValues = this._extensionRunner.getFlagValues();
 		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
 		await this.settingsManager.reload();
@@ -2775,10 +2674,6 @@ export class AgentSession {
 			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
 			await this.extendResourcesFromExtensions("reload");
 			await this._extensionRunner.startTriggers((event) => this.handleProactiveTriggerEvent(event));
-		}
-		if (scope === "all") {
-			this._schedulesReady = this._schedulerManager.reload();
-			await this._schedulesReady;
 		}
 		if (options?.emitEvent !== false) {
 			this._emit({ type: "session_reloaded" });
@@ -2970,7 +2865,6 @@ export class AgentSession {
 			modelRegistry: this._modelRegistry,
 			extensionRunnerRef,
 			sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile: parentSessionFile },
-			enableSchedules: false,
 			subagentParent: {
 				name,
 				taskId,
@@ -3054,218 +2948,10 @@ export class AgentSession {
 		this._queueNotificationMessage("subagent_notification", xml, notification);
 	}
 
-	private _handleScheduleNotification(
-		notification: ScheduleNotification,
-		options: ScheduleNotificationDeliveryOptions,
-	): Promise<void> {
-		const xml = formatScheduleNotificationXml(notification);
-		this._emit({ type: "schedule_notification", notification, xml });
-		return this._deliverScheduleNotification(xml, notification, options);
-	}
-
-	private async _deliverScheduleNotification(
-		xml: string,
-		notification: ScheduleNotification,
-		options: ScheduleNotificationDeliveryOptions,
-	): Promise<void> {
-		const message = {
-			customType: "schedule_notification",
-			content: xml,
-			display: false,
-			details: notification,
-		};
-
-		if (this.isStreaming) {
-			await this.sendCustomMessage(message, { deliverAs: options.deliverAs ?? "followUp" });
-			return;
-		}
-
-		if (!options.triggerTurn) {
-			if (options.deliverAs === "nextTurn") {
-				await this.sendCustomMessage(message, { deliverAs: "nextTurn" });
-				return;
-			}
-			await this.sendCustomMessage(message, { triggerTurn: false });
-			return;
-		}
-
-		if (!this.model || !this._modelRegistry.hasConfiguredAuth(this.model)) {
-			await this.sendCustomMessage(message, { triggerTurn: false });
-			return;
-		}
-
-		this._taskNotificationContinuation = this._taskNotificationContinuation
-			.then(async () => {
-				if (this.isStreaming) {
-					await this.sendCustomMessage(message, { deliverAs: options.deliverAs ?? "followUp" });
-					return;
-				}
-				if (!this.model || !this._modelRegistry.hasConfiguredAuth(this.model)) {
-					await this.sendCustomMessage(message, { triggerTurn: false });
-					return;
-				}
-				await this.sendCustomMessage(message, { triggerTurn: true });
-			})
-			.catch(async () => {
-				await this.sendCustomMessage(message, { triggerTurn: false });
-			});
-		await this._taskNotificationContinuation;
-	}
-
-	async handleProactiveTriggerEvent(event: ProactiveTriggerEvent): Promise<void> {
-		if (!this._rememberProactiveTriggerEvent(event)) {
-			return;
-		}
-
+	handleProactiveTriggerEvent(event: ProactiveTriggerEvent): void {
 		const xml = formatProactiveTriggerEventXml(event);
 		this._emit({ type: "proactive_trigger_event", notification: event, xml });
-
-		if (this._pendingProactiveTriggerMessages.length >= PROACTIVE_TRIGGER_PENDING_MAX) {
-			this._emit({ type: "proactive_trigger_overflow", dropped: event, limit: PROACTIVE_TRIGGER_PENDING_MAX });
-			return;
-		}
-
-		this._pendingProactiveTriggerMessages.push({
-			event,
-			message: {
-				customType: "proactive_trigger_event",
-				content: xml,
-				display: false,
-				details: event,
-			},
-		});
-		this._drainProactiveTriggerQueue();
-	}
-
-	private _rememberProactiveTriggerEvent(event: ProactiveTriggerEvent): boolean {
-		const now = Date.now();
-		for (const [key, expiresAt] of this._proactiveTriggerDedupe) {
-			if (expiresAt <= now) {
-				this._proactiveTriggerDedupe.delete(key);
-			}
-		}
-
-		const key = `${event.triggerName}\0${event.eventId}`;
-		const expiresAt = this._proactiveTriggerDedupe.get(key);
-		if (expiresAt !== undefined && expiresAt > now) {
-			return false;
-		}
-
-		this._proactiveTriggerDedupe.set(key, now + PROACTIVE_TRIGGER_DEDUPE_TTL_MS);
-		while (this._proactiveTriggerDedupe.size > PROACTIVE_TRIGGER_DEDUPE_MAX) {
-			const oldestKey = this._proactiveTriggerDedupe.keys().next().value;
-			if (oldestKey === undefined) {
-				break;
-			}
-			this._proactiveTriggerDedupe.delete(oldestKey);
-		}
-		return true;
-	}
-
-	private _drainProactiveTriggerQueue(): void {
-		if (this._proactiveTriggerDrainRunning) {
-			return;
-		}
-		this._proactiveTriggerDrainRunning = true;
-
-		void (async () => {
-			while (this._pendingProactiveTriggerMessages.length > 0) {
-				if (this.isStreaming) {
-					await this.agent.waitForIdle();
-					continue;
-				}
-
-				const pending = this._pendingProactiveTriggerMessages.shift();
-				if (!pending) {
-					continue;
-				}
-
-				if (!this.model || !this._modelRegistry.hasConfiguredAuth(this.model)) {
-					await this.sendCustomMessage(pending.message, { triggerTurn: false });
-					continue;
-				}
-
-				await this._runProactiveTriggerTurn(pending.message, pending.event);
-			}
-		})()
-			.catch(async () => {
-				for (const pending of this._pendingProactiveTriggerMessages.splice(0)) {
-					await this.sendCustomMessage(pending.message, { triggerTurn: false });
-				}
-			})
-			.finally(() => {
-				this._proactiveTriggerDrainRunning = false;
-				if (this._pendingProactiveTriggerMessages.length > 0) {
-					this._drainProactiveTriggerQueue();
-				}
-			});
-	}
-
-	private async _runProactiveTriggerTurn(
-		message: Pick<CustomMessage<ProactiveTriggerEvent>, "customType" | "content" | "display" | "details">,
-		event: ProactiveTriggerEvent,
-	): Promise<void> {
-		const appMessage = {
-			role: "custom" as const,
-			customType: message.customType,
-			content: message.content,
-			display: message.display,
-			details: message.details,
-			timestamp: Date.now(),
-		} satisfies CustomMessage<ProactiveTriggerEvent>;
-		const previousTools = this.agent.state.tools;
-		this.agent.state.tools = [
-			...previousTools.filter((tool) => tool.name !== "notify_user"),
-			this._createNotifyUserTool(event),
-		];
-		try {
-			await this._runAgentPrompt(appMessage);
-		} finally {
-			this.agent.state.tools = previousTools;
-		}
-	}
-
-	private _createNotifyUserTool(
-		event: ProactiveTriggerEvent,
-	): AgentTool<typeof notifyUserSchema, ProactiveNotification> {
-		return {
-			name: "notify_user",
-			label: "Notify User",
-			description:
-				"Send a visible notification to the user for the current proactive trigger event. Only call this when the user should be interrupted or informed.",
-			parameters: notifyUserSchema,
-			executionMode: "sequential",
-			execute: async (_toolCallId: string, params: NotifyUserToolInput) => {
-				const notification: ProactiveNotification = {
-					title: params.title.trim(),
-					message: params.message.trim(),
-					severity: params.severity ?? "info",
-					source: params.source?.trim() || undefined,
-					triggerName: event.triggerName,
-					eventId: event.eventId,
-					createdAt: new Date().toISOString(),
-				};
-				this._handleProactiveNotification(notification);
-				return {
-					content: [{ type: "text", text: "Notification sent to the user." }],
-					details: notification,
-				};
-			},
-		};
-	}
-
-	private _handleProactiveNotification(notification: ProactiveNotification): void {
-		const xml = formatProactiveNotificationXml(notification);
-		this.agent.state.messages.push({
-			role: "custom",
-			customType: "proactive_notification",
-			content: xml,
-			display: true,
-			details: notification,
-			timestamp: Date.now(),
-		});
-		this.sessionManager.appendCustomMessageEntry("proactive_notification", xml, true, notification);
-		this._emit({ type: "proactive_notification", notification, xml });
+		this._queueNotificationMessage("proactive_trigger_event", xml, event);
 	}
 
 	private _queueNotificationMessage<TDetails>(customType: string, xml: string, details: TDetails): void {

@@ -160,6 +160,9 @@ export type {
 	TriggerDefinition,
 	TriggerEmit,
 	TriggerEventInput,
+	TriggerExecOptions,
+	TriggerExecResult,
+	TriggerSchedule,
 	TurnEndEvent,
 	TurnStartEvent,
 	// Events - User Bash

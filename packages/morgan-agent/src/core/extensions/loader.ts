@@ -23,7 +23,6 @@ import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.ts";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 // avoiding a circular dependency. Extensions can import from @earendil-works/morgan-agent.
 import * as _bundledMorganAgent from "../../index.ts";
-import * as _bundledMorganAgentSchedules from "../../schedules.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
@@ -55,7 +54,6 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@earendil-works/morgan-ai": _bundledMorganAi,
 	"@earendil-works/morgan-ai/oauth": _bundledMorganAiOauth,
 	"@earendil-works/morgan-agent": _bundledMorganAgent,
-	"@earendil-works/morgan-agent/schedules": _bundledMorganAgentSchedules,
 };
 
 const require = createRequire(import.meta.url);
@@ -79,7 +77,6 @@ function getAliases(): Record<string, string> {
 		return path.join(packageRoot, `${name}.js`);
 	};
 	const packageIndex = resolveLocalPackageEntry("index");
-	const packageSchedules = resolveLocalPackageEntry("schedules");
 
 	const typeboxEntry = require.resolve("typebox");
 	const typeboxCompileEntry = require.resolve("typebox/compile");
@@ -102,7 +99,6 @@ function getAliases(): Record<string, string> {
 
 	_aliases = {
 		"@earendil-works/morgan-agent": morganAgentEntry,
-		"@earendil-works/morgan-agent/schedules": packageSchedules,
 		"@earendil-works/morgan-agent-core": morganAgentCoreEntry,
 		"@earendil-works/morgan-tui": morganTuiEntry,
 		"@earendil-works/morgan-ai": morganAiEntry,

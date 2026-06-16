@@ -8,10 +8,12 @@ import type { ImageContent, Model } from "@earendil-works/morgan-ai";
 import type { KeyId } from "@earendil-works/morgan-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
+import { execCommand } from "../exec.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import { startScheduleTimer, validateTriggerSchedule } from "./trigger-cron.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
@@ -61,9 +63,12 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 	ToolResultEventResult,
+	TriggerCleanup,
 	TriggerContext,
 	TriggerEmit,
 	TriggerEventInput,
+	TriggerExecOptions,
+	TriggerExecResult,
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
@@ -161,6 +166,19 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 				: undefined;
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
+
+const TRIGGER_EXEC_TIMEOUT_MS = 60_000;
+const MAX_TRIGGER_EXEC_OUTPUT_CHARS = 65_536;
+
+function truncateExecOutput(value: string): { value: string; truncated: boolean } {
+	if (value.length <= MAX_TRIGGER_EXEC_OUTPUT_CHARS) {
+		return { value, truncated: false };
+	}
+	return {
+		value: `${value.slice(0, MAX_TRIGGER_EXEC_OUTPUT_CHARS)}\n[output truncated at ${MAX_TRIGGER_EXEC_OUTPUT_CHARS} characters]`,
+		truncated: true,
+	};
+}
 
 export type TriggerEventListener = (event: ProactiveTriggerEvent) => void | Promise<void>;
 
@@ -644,9 +662,12 @@ export class ExtensionRunner {
 					);
 					continue;
 				}
-				if (typeof trigger.definition.start !== "function") {
+				const hasStart = typeof trigger.definition.start === "function";
+				const hasSchedule = trigger.definition.schedule !== undefined;
+				const hasRun = typeof trigger.definition.run === "function";
+				if (!hasStart && !(hasSchedule && hasRun)) {
 					addDiagnostic(
-						`Extension trigger '${trigger.definition.name}' from ${trigger.extensionPath} does not define start(). Skipping.`,
+						`Extension trigger '${trigger.definition.name}' from ${trigger.extensionPath} must define start() or schedule + run(). Skipping.`,
 						trigger.extensionPath,
 					);
 					continue;
@@ -685,10 +706,37 @@ export class ExtensionRunner {
 			this.activeTriggers.set(trigger.definition.name, started);
 
 			try {
-				const cleanup = await trigger.definition.start(
-					this.createTriggerContext(trigger.definition.name, controller.signal),
-					this.createTriggerEmit(started, onEvent),
-				);
+				const definition = trigger.definition;
+				const context = this.createTriggerContext(definition.name, controller.signal);
+				const emit = this.createTriggerEmit(started, onEvent);
+				let cleanup: TriggerCleanup;
+				if (definition.schedule) {
+					if (typeof definition.run !== "function") {
+						throw new Error(`Trigger '${definition.name}' has a schedule but no run() function`);
+					}
+					validateTriggerSchedule(definition.schedule);
+					const run = definition.run.bind(definition);
+					cleanup = startScheduleTimer(
+						definition.schedule,
+						async () => {
+							try {
+								await run(context, emit);
+							} catch (err) {
+								this.emitError({
+									extensionPath: started.extensionPath,
+									event: "trigger_run",
+									error: err instanceof Error ? err.message : String(err),
+									stack: err instanceof Error ? err.stack : undefined,
+								});
+							}
+						},
+						{ signal: controller.signal },
+					);
+				} else if (typeof definition.start === "function") {
+					cleanup = await definition.start(context, emit);
+				} else {
+					throw new Error(`Trigger '${definition.name}' must define start() or schedule + run()`);
+				}
 				if (this.activeTriggers.get(trigger.definition.name) !== started) {
 					if (typeof cleanup === "function") {
 						await this.runTriggerCleanup(started, cleanup);
@@ -745,7 +793,34 @@ export class ExtensionRunner {
 			enumerable: true,
 			get: () => signal,
 		});
+		Object.defineProperty(context, "exec", {
+			enumerable: true,
+			value: this.createTriggerExec(signal),
+		});
 		return context;
+	}
+
+	private createTriggerExec(
+		signal: AbortSignal,
+	): (command: string, args: string[], options?: TriggerExecOptions) => Promise<TriggerExecResult> {
+		const cwd = this.cwd;
+		return async (command, args, options) => {
+			const result = await execCommand(command, args, cwd, {
+				timeout: options?.timeout ?? TRIGGER_EXEC_TIMEOUT_MS,
+				signal,
+			});
+			const stdout = truncateExecOutput(result.stdout);
+			const stderr = truncateExecOutput(result.stderr);
+			return {
+				stdout: stdout.value,
+				stderr: stderr.value,
+				code: result.code,
+				killed: result.killed,
+				truncated: stdout.truncated || stderr.truncated,
+				stdoutTruncated: stdout.truncated,
+				stderrTruncated: stderr.truncated,
+			};
+		};
 	}
 
 	private createTriggerEmit(started: StartedTrigger, onEvent: TriggerEventListener): TriggerEmit {

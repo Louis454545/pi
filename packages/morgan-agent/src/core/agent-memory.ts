@@ -120,7 +120,7 @@ function formatPromptSection(paths: MemoryStorePaths): string {
 }
 
 export function loadAgentMemoryPromptContext(
-	options: { agentDir?: string; query?: string; now?: Date } = {},
+	options: { agentDir?: string; now?: Date } = {},
 ): AgentMemoryPromptContext {
 	const paths = ensureMemoryStore(options.agentDir, options.now ?? new Date());
 	return {

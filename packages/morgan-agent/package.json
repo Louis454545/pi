@@ -19,10 +19,6 @@
 		"./hooks": {
 			"types": "./dist/core/hooks/index.d.ts",
 			"import": "./dist/core/hooks/index.js"
-		},
-		"./schedules": {
-			"types": "./dist/schedules.d.ts",
-			"import": "./dist/schedules.js"
 		}
 	},
 	"files": [

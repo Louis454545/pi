@@ -64,7 +64,6 @@ export interface CreateAgentSessionFromServicesOptions {
 	excludeTools?: CreateAgentSessionOptions["excludeTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
-	enableSchedules?: boolean;
 }
 
 /**
@@ -211,6 +210,5 @@ export async function createAgentSessionFromServices(
 		noTools: options.noTools,
 		customTools: options.customTools,
 		sessionStartEvent: options.sessionStartEvent,
-		enableSchedules: options.enableSchedules ?? options.services.includeProjectResources,
 	});
 }

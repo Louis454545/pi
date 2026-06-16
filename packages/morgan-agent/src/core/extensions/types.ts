@@ -358,17 +358,47 @@ export interface ProactiveTriggerEvent {
 export type TriggerEmit = (event: TriggerEventInput) => void;
 export type TriggerCleanup = void | (() => void | Promise<void>);
 
+/** Declarative time source for a trigger. Provide exactly one of cron or intervalMs. */
+export type TriggerSchedule =
+	| { cron: string; timezone?: string; intervalMs?: never }
+	| { intervalMs: number; cron?: never; timezone?: never };
+
+export interface TriggerExecOptions {
+	/** Timeout in milliseconds. Defaults to a safe value. */
+	timeout?: number;
+}
+
+export interface TriggerExecResult {
+	stdout: string;
+	stderr: string;
+	code: number;
+	killed: boolean;
+	truncated: boolean;
+	stdoutTruncated: boolean;
+	stderrTruncated: boolean;
+}
+
 export interface TriggerContext extends ExtensionContext {
 	/** The registered trigger name. */
 	triggerName: string;
 	/** Abort signal that fires when the trigger is stopped due to reload, shutdown, or session replacement. */
 	signal: AbortSignal;
+	/** Run a command in the workspace, with output truncation and abort wiring. */
+	exec(command: string, args: string[], options?: TriggerExecOptions): Promise<TriggerExecResult>;
 }
 
 export interface TriggerDefinition {
 	name: string;
 	description?: string;
-	start(ctx: TriggerContext, emit: TriggerEmit): TriggerCleanup | Promise<TriggerCleanup>;
+	/**
+	 * Imperative event source: set up a watcher/poller and call emit() on events.
+	 * Provide either this, or `schedule` + `run`.
+	 */
+	start?(ctx: TriggerContext, emit: TriggerEmit): TriggerCleanup | Promise<TriggerCleanup>;
+	/** Declarative time source. The runtime owns the timer and calls `run` on each tick. */
+	schedule?: TriggerSchedule;
+	/** Called on each `schedule` tick; do work and emit() a notification. Required when `schedule` is set. */
+	run?(ctx: TriggerContext, emit: TriggerEmit): void | Promise<void>;
 }
 
 /**

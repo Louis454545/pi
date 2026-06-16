@@ -1,7 +1,0 @@
-interface:
-  display_name: "Scheduled Tasks"
-  short_description: "Plan and audit cron-style automations"
-  default_prompt: "Use $scheduled-tasks to create or review a recurring automation safely."
-
-policy:
-  allow_implicit_invocation: true

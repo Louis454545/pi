@@ -17,7 +17,7 @@
 
 ---
 
-Morgan is a minimal terminal computer-agent harness. Adapt morgan to your workflows, not the other way around, without having to fork and modify morgan internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), [Schedules](#schedules), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Morgan Packages](#morgan-packages) and share them with others via npm or git.
+Morgan is a minimal terminal computer-agent harness. Adapt morgan to your workflows, not the other way around, without having to fork and modify morgan internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Morgan Packages](#morgan-packages) and share them with others via npm or git.
 
 Morgan ships with powerful defaults but skips features like sub agents and plan mode. Instead, you can ask morgan to build what you want or install a third party morgan package that matches your workflow.
 
@@ -57,7 +57,6 @@ I regularly publish my own `morgan-mono` work sessions here:
   - [Prompt Templates](#prompt-templates)
   - [Skills](#skills)
   - [Extensions](#extensions)
-  - [Schedules](#schedules)
   - [Themes](#themes)
   - [Morgan Packages](#morgan-packages)
 - [Programmatic Usage](#programmatic-usage)
@@ -187,7 +186,6 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/import <file>` | Import a JSONL file into the global conversation |
 | `/name <name>` | Set conversation display name |
 | `/session` | Show conversation info (file, ID, messages, tokens, cost) |
-| `/schedule` | Show project-local schedule status |
 | `/tree` | Jump to any point in the conversation tree and continue from there |
 | `/compact [prompt]` | Manually compact context, optional custom instructions |
 | `/copy` | Copy last assistant message to clipboard |
@@ -373,10 +371,6 @@ The default export can also be `async`. morgan waits for async extension factori
 - ...anything you can dream up
 
 Place in `~/.morgan/agent/extensions/`, `.morgan/extensions/`, or a [morgan package](#morgan-packages) to share with others. For generated personal triggers, prefer a `triggers/<id>` subdirectory under the configured global agent extension directory. See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
-
-### Schedules
-
-Trusted project-local TypeScript schedules run while morgan is open. Place them in `.morgan/schedules/` under an explicit working context (`--cwd` or `/cwd`). See [docs/schedules.md](docs/schedules.md).
 
 ### Themes
 
@@ -571,7 +565,6 @@ Available built-in tools: `read`, `bash`, `edit`, `write`, `reload`, `task_stop`
 | `--theme <path>` | Load theme (repeatable) |
 | `--no-themes` | Disable theme discovery |
 | `--no-context-files`, `-nc` | Disable AGENTS.md and CLAUDE.md context file discovery |
-| `--no-schedules` | Disable trusted project-local schedules |
 
 Combine `--no-*` with explicit flags to load exactly what you need, ignoring settings.json (e.g., `--no-extensions -e ./my-ext.ts`).
 

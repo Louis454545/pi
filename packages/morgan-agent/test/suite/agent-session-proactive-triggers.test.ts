@@ -9,8 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DefaultResourceLoader } from "../../src/core/resource-loader.ts";
 import { createHarness, getAssistantTexts, type Harness } from "./harness.ts";
 
-async function waitForCondition(condition: () => boolean): Promise<void> {
-	const deadline = Date.now() + 2000;
+async function waitForCondition(condition: () => boolean, timeoutMs = 2000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (condition()) {
 			return;
@@ -214,7 +214,7 @@ describe("AgentSession proactive triggers", () => {
 		});
 	});
 
-	it("queues trigger events while busy and does not create a concurrent proactive turn", async () => {
+	it("delivers trigger events into the running turn while the agent is busy", async () => {
 		let emit: TriggerEmit | undefined;
 		const waiting = createWaitingTool();
 		const harness = await createHarness({
@@ -234,109 +234,92 @@ describe("AgentSession proactive triggers", () => {
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
 			fauxAssistantMessage("original complete"),
-			fauxAssistantMessage("busy event handled"),
 		]);
 		await harness.session.bindExtensions({});
 
 		const promptPromise = harness.session.prompt("start");
 		await waiting.waitForStart;
 		emit?.({ eventId: "busy-1", summary: "busy event" });
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		expect(getAssistantTexts(harness)).toEqual([""]);
+		// The session event is emitted synchronously, even while the agent is busy.
+		expect(harness.eventsOfType("proactive_trigger_event")).toHaveLength(1);
+		expect(harness.eventsOfType("proactive_trigger_event")[0]?.notification.eventId).toBe("busy-1");
 
 		waiting.release();
 		await promptPromise;
-		await waitForCondition(() => getAssistantTexts(harness).includes("busy event handled"));
-		expect(getAssistantTexts(harness)).toEqual(["", "original complete", "busy event handled"]);
-	});
 
-	it("deduplicates event ids and drops newest events beyond the pending queue bound", async () => {
-		let emit: TriggerEmit | undefined;
-		const waiting = createWaitingTool();
-		const harness = await createHarness({
-			tools: [waiting.tool],
-			extensionFactories: [
-				(morgan) => {
-					morgan.registerTrigger({
-						name: "bounded",
-						start: (_ctx, triggerEmit) => {
-							emit = triggerEmit;
-						},
-					});
-				},
-			],
-		});
-		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" })]);
-		await harness.session.bindExtensions({});
-
-		const promptPromise = harness.session.prompt("start");
-		await waiting.waitForStart;
-		emit?.({ eventId: "dup", summary: "first duplicate" });
-		emit?.({ eventId: "dup", summary: "second duplicate" });
-		for (let i = 0; i < 40; i++) {
-			emit?.({ eventId: `event-${i}`, summary: `event ${i}` });
-		}
-
-		await waitForCondition(() => harness.eventsOfType("proactive_trigger_overflow").length > 0);
-		expect(
-			harness.eventsOfType("proactive_trigger_event").filter((event) => event.notification.eventId === "dup"),
-		).toHaveLength(1);
-		expect(harness.eventsOfType("proactive_trigger_overflow").at(-1)?.dropped.eventId).toBe("event-39");
-
-		waiting.release();
-		await promptPromise;
-	});
-
-	it("exposes notify_user only during proactive turns and creates a visible notification", async () => {
-		let emit: TriggerEmit | undefined;
-		const harness = await createHarness({
-			extensionFactories: [
-				(morgan) => {
-					morgan.registerTrigger({
-						name: "notify",
-						start: (_ctx, triggerEmit) => {
-							emit = triggerEmit;
-						},
-					});
-				},
-			],
-		});
-		harnesses.push(harness);
-		harness.setResponses([
-			fauxAssistantMessage(
-				fauxToolCall("notify_user", {
-					title: "CI failed",
-					message: "The release job failed.",
-					severity: "warning",
-					source: "ci",
-				}),
-				{ stopReason: "toolUse" },
-			),
-			fauxAssistantMessage("notification turn done"),
-		]);
-		await harness.session.bindExtensions({});
-
-		expect(harness.session.getActiveToolNames()).not.toContain("notify_user");
-		emit?.({ eventId: "notify-1", summary: "CI failed" });
-		await waitForCondition(() => harness.eventsOfType("proactive_notification").length === 1);
-
-		const notification = harness.eventsOfType("proactive_notification")[0]?.notification;
-		expect(notification).toMatchObject({
-			title: "CI failed",
-			message: "The release job failed.",
-			severity: "warning",
-			source: "ci",
-			triggerName: "notify",
-			eventId: "notify-1",
-		});
+		expect(getAssistantTexts(harness)).toContain("original complete");
 		expect(
 			harness.session.messages.some(
-				(message) => message.role === "custom" && message.customType === "proactive_notification",
+				(message) => message.role === "custom" && message.customType === "proactive_trigger_event",
 			),
 		).toBe(true);
-		await waitForCondition(() => getAssistantTexts(harness).includes("notification turn done"));
+	});
+
+	it("does not expose a notify_user tool during proactive turns", async () => {
+		let emit: TriggerEmit | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(morgan) => {
+					morgan.registerTrigger({
+						name: "no-notify",
+						start: (_ctx, triggerEmit) => {
+							emit = triggerEmit;
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("handled without notify_user")]);
+		await harness.session.bindExtensions({});
+
+		const toolsBefore = harness.session.getActiveToolNames().slice();
+		emit?.({ eventId: "no-notify-1", summary: "event" });
+		await waitForCondition(() => getAssistantTexts(harness).includes("handled without notify_user"));
+
 		expect(harness.session.getActiveToolNames()).not.toContain("notify_user");
+		expect(harness.session.getActiveToolNames()).toEqual(toolsBefore);
+	});
+
+	it("runs a cron/interval scheduled trigger and delivers its event", async () => {
+		let runs = 0;
+		const harness = await createHarness({
+			extensionFactories: [
+				(morgan) => {
+					morgan.registerTrigger({
+						name: "scheduled",
+						schedule: { intervalMs: 1000 },
+						run: (_ctx, emit) => {
+							runs++;
+							emit({ summary: `scheduled run ${runs}` });
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("scheduled handled"), fauxAssistantMessage("scheduled handled")]);
+		await harness.session.bindExtensions({});
+
+		await waitForCondition(() => harness.eventsOfType("proactive_trigger_event").length >= 1, 4000);
+		expect(harness.eventsOfType("proactive_trigger_event")[0]?.notification.triggerName).toBe("scheduled");
+	});
+
+	it("reports a scheduled trigger without a run function as a diagnostic", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(morgan) => {
+					morgan.registerTrigger({ name: "broken-schedule", schedule: { intervalMs: 1000 } });
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const triggers = harness.session.extensionRunner.getRegisteredTriggers();
+		expect(triggers).toHaveLength(0);
+		expect(harness.session.extensionRunner.getTriggerDiagnostics()[0]?.message).toContain("schedule + run()");
+		warnSpy.mockRestore();
 	});
 
 	it("runs triggers without UI bindings", async () => {

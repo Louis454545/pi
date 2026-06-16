@@ -2563,11 +2563,6 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/schedule") {
-				this.handleScheduleCommand();
-				this.editor.setText("");
-				return;
-			}
 			if (text === "/changelog") {
 				this.handleChangelogCommand();
 				this.editor.setText("");
@@ -2798,22 +2793,10 @@ export class InteractiveMode {
 				this.ui.requestRender();
 				break;
 
-			case "schedule_notification":
+			case "proactive_trigger_event":
 				this.addMessageToChat({
 					role: "custom",
-					customType: "schedule_notification",
-					content: event.xml,
-					display: true,
-					details: event.notification,
-					timestamp: Date.now(),
-				});
-				this.ui.requestRender();
-				break;
-
-			case "proactive_notification":
-				this.addMessageToChat({
-					role: "custom",
-					customType: "proactive_notification",
+					customType: "proactive_trigger_event",
 					content: event.xml,
 					display: true,
 					details: event.notification,
@@ -5405,44 +5388,6 @@ export class InteractiveMode {
 		if (stats.cost > 0) {
 			info += `\n${theme.bold("Cost")}\n`;
 			info += `${theme.fg("dim", "Total:")} ${stats.cost.toFixed(4)}`;
-		}
-
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info, 1, 0));
-		this.ui.requestRender();
-	}
-
-	private handleScheduleCommand(): void {
-		const statuses = this.session.getScheduleStatuses();
-		let info = `${theme.bold("Schedules")}\n\n`;
-		if (statuses.length === 0) {
-			info += "No schedules loaded.";
-		} else {
-			info += statuses
-				.map((status) => {
-					const lines = [
-						`${theme.bold(status.name)} ${theme.fg(status.state === "error" ? "error" : "dim", `[${status.state}]`)}`,
-						`${theme.fg("dim", "Source:")} ${status.sourceFile}`,
-						`${theme.fg("dim", "Trigger:")} ${status.trigger || "(none)"}`,
-					];
-					if (status.description) {
-						lines.splice(1, 0, `${theme.fg("dim", "Description:")} ${status.description}`);
-					}
-					if (status.nextRunAt) {
-						lines.push(`${theme.fg("dim", "Next:")} ${status.nextRunAt}`);
-					}
-					if (status.lastRunAt) {
-						lines.push(`${theme.fg("dim", "Last:")} ${status.lastRunAt} (${status.lastStatus ?? "unknown"})`);
-					}
-					if (status.running || status.pending) {
-						lines.push(`${theme.fg("dim", "State:")} running=${status.running} pending=${status.pending}`);
-					}
-					if (status.error ?? status.lastError) {
-						lines.push(`${theme.fg("error", "Error:")} ${status.error ?? status.lastError}`);
-					}
-					return lines.join("\n");
-				})
-				.join("\n\n");
 		}
 
 		this.chatContainer.addChild(new Spacer(1));

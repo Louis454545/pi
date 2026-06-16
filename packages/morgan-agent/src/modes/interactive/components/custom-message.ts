@@ -1,11 +1,10 @@
 import type { TextContent } from "@earendil-works/morgan-ai";
 import type { Component } from "@earendil-works/morgan-tui";
 import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/morgan-tui";
-import type { ProactiveNotification, SubagentNotification } from "../../../core/agent-session.ts";
+import type { SubagentNotification } from "../../../core/agent-session.ts";
 import type { BackgroundTaskNotification, MonitorEventNotification } from "../../../core/background-tasks.ts";
-import type { MessageRenderer } from "../../../core/extensions/types.ts";
+import type { MessageRenderer, ProactiveTriggerEvent } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
-import type { ScheduleNotification } from "../../../core/schedules/index.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 
 /**
@@ -148,42 +147,14 @@ export class CustomMessageComponent extends Container {
 					);
 				}
 				return true;
-			case "schedule_notification":
-				if (!isScheduleNotification(this.message.details)) {
+			case "proactive_trigger_event":
+				if (!isProactiveTriggerEvent(this.message.details)) {
 					return false;
 				}
-				this.renderNotificationBlock(
-					`schedule:${this.message.details.scheduleName}`,
-					this.message.details.summary,
-					[
-						["run", this.message.details.runId],
-						["time", this.message.details.timestamp],
-					],
-				);
-				if (this.message.details.message) {
-					this.box.addChild(new Spacer(1));
-					this.box.addChild(
-						new Markdown(this.message.details.message, 0, 0, this.markdownTheme, {
-							color: (text: string) => theme.fg("customMessageText", text),
-						}),
-					);
-				}
-				return true;
-			case "proactive_notification":
-				if (!isProactiveNotification(this.message.details)) {
-					return false;
-				}
-				this.renderNotificationBlock(`proactive:${this.message.details.severity}`, this.message.details.title, [
-					["trigger", this.message.details.triggerName],
+				this.renderNotificationBlock(`trigger:${this.message.details.triggerName}`, this.message.details.summary, [
 					["event", this.message.details.eventId],
-					["source", this.message.details.source],
+					["time", this.message.details.createdAt],
 				]);
-				this.box.addChild(new Spacer(1));
-				this.box.addChild(
-					new Markdown(this.message.details.message, 0, 0, this.markdownTheme, {
-						color: (text: string) => theme.fg("customMessageText", text),
-					}),
-				);
 				return true;
 			default:
 				return false;
@@ -258,26 +229,12 @@ function isSubagentNotification(value: unknown): value is SubagentNotification {
 	);
 }
 
-function isScheduleNotification(value: unknown): value is ScheduleNotification {
+function isProactiveTriggerEvent(value: unknown): value is ProactiveTriggerEvent {
 	return (
 		isObject(value) &&
-		isString(value.scheduleName) &&
-		isString(value.runId) &&
-		isString(value.timestamp) &&
-		isString(value.summary) &&
-		isOptionalString(value.message)
-	);
-}
-
-function isProactiveNotification(value: unknown): value is ProactiveNotification {
-	return (
-		isObject(value) &&
-		isString(value.title) &&
-		isString(value.message) &&
-		(value.severity === "info" || value.severity === "warning" || value.severity === "error") &&
-		isOptionalString(value.source) &&
 		isString(value.triggerName) &&
 		isString(value.eventId) &&
+		isString(value.summary) &&
 		isString(value.createdAt)
 	);
 }

@@ -84,8 +84,6 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
-	/** Enable trusted project-local schedules. Default: false for SDK-created sessions. */
-	enableSchedules?: boolean;
 }
 
 /** Result from createAgentSession */
@@ -406,7 +404,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
-		enableSchedules: options.enableSchedules ?? false,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

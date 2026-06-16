@@ -86,11 +86,7 @@ Skill content here.`,
 			await loader.reload();
 
 			const { skills } = loader.getSkills();
-			const scheduledTasks = skills.find((s) => s.name === "scheduled-tasks");
 			const morganTriggers = skills.find((s) => s.name === "morgan-triggers");
-			expect(scheduledTasks).toBeDefined();
-			expect(scheduledTasks?.filePath).toBe(join(getBundledSkillsDir(), "scheduled-tasks", "SKILL.md"));
-			expect(scheduledTasks?.sourceInfo.source).toBe("bundled");
 			expect(morganTriggers).toBeDefined();
 			expect(morganTriggers?.filePath).toBe(join(getBundledSkillsDir(), "morgan-triggers", "SKILL.md"));
 			expect(morganTriggers?.sourceInfo.source).toBe("bundled");
@@ -98,13 +94,13 @@ Skill content here.`,
 
 		it("should let settings disable bundled default skills", async () => {
 			const settingsManager = SettingsManager.inMemory();
-			settingsManager.setSkillPaths(["-scheduled-tasks"]);
+			settingsManager.setSkillPaths(["-morgan-triggers"]);
 
 			const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
 			await loader.reload();
 
 			const { skills } = loader.getSkills();
-			expect(skills.some((s) => s.name === "scheduled-tasks")).toBe(false);
+			expect(skills.some((s) => s.name === "morgan-triggers")).toBe(false);
 		});
 
 		it("should prefer user browser skill over the bundled browser skill", async () => {
