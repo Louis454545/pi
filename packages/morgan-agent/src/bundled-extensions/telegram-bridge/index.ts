@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Static, Type } from "typebox";
 
@@ -8,13 +8,18 @@ const CONFIG_PATH = join(EXTENSION_DIR, "config.json");
 const STATE_PATH = join(EXTENSION_DIR, "state.json");
 const MAX_TELEGRAM_MESSAGE_LENGTH = 3900;
 
-const SEND_FILE_PARAMS = Type.Object({
-	chatId: Type.Number({ description: "Telegram chat id to send to" }),
-	path: Type.String({ description: "Local file path to send as a Telegram document" }),
-	caption: Type.Optional(Type.String({ description: "Optional document caption" })),
+const SEND_MESSAGE_PARAMS = Type.Object({
+	integration: Type.Literal("telegram", { description: "Message integration to use" }),
+	chatId: Type.Optional(Type.Number({ description: "Telegram chat id to send to" })),
+	message: Type.Optional(Type.String({ description: "Text message to send" })),
+	attachments: Type.Optional(
+		Type.Array(Type.String({ description: "Local file path to send as a Telegram document" }), {
+			description: "Local file paths to send as Telegram documents",
+		}),
+	),
 });
 
-type SendFileParams = Static<typeof SEND_FILE_PARAMS>;
+type SendMessageParams = Static<typeof SEND_MESSAGE_PARAMS>;
 
 interface MorganApi {
 	registerTrigger(trigger: {
@@ -22,7 +27,6 @@ interface MorganApi {
 		description?: string;
 		start(ctx: TriggerContext, emit: (event: TriggerEventInput) => void): undefined | (() => void);
 	}): void;
-	on(event: "message_end", handler: (event: MessageEndEvent, ctx: ExtensionContext) => Promise<void> | void): void;
 	registerCommand(
 		name: string,
 		options: { description?: string; handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> | void },
@@ -31,14 +35,18 @@ interface MorganApi {
 		name: string;
 		label: string;
 		description: string;
+		promptSnippet?: string;
+		promptGuidelines?: string[];
 		parameters: TParams;
 		execute(
 			toolCallId: string,
-			params: TParams extends typeof SEND_FILE_PARAMS ? SendFileParams : never,
+			params: TParams extends typeof SEND_MESSAGE_PARAMS ? SendMessageParams : never,
+			signal: AbortSignal | undefined,
+			onUpdate: unknown,
+			ctx: ExtensionContext,
 		): Promise<{
 			content: Array<{ type: "text"; text: string }>;
 			details: Record<string, unknown>;
-			isError?: boolean;
 		}>;
 	}): void;
 	sendUserMessage(content: string, options?: { deliverAs?: "followUp" | "steer" }): void;
@@ -52,6 +60,7 @@ interface ExtensionUI {
 interface ExtensionContext {
 	ui: ExtensionUI;
 	hasUI: boolean;
+	cwd: string;
 	isIdle(): boolean;
 }
 
@@ -68,14 +77,6 @@ interface TriggerEventInput {
 	summary: string;
 	payload?: unknown;
 	createdAt?: string;
-}
-
-interface MessageEndEvent {
-	message: {
-		role: string;
-		content?: Array<{ type: string; text?: string }>;
-		stopReason?: string;
-	};
 }
 
 interface TelegramBridgeConfig {
@@ -177,10 +178,6 @@ interface TelegramFile {
 	file_path?: string;
 }
 
-interface ReplyTarget {
-	chatId: number;
-}
-
 function loadConfig(): TelegramBridgeConfig {
 	return JSON.parse(readFileSync(CONFIG_PATH, "utf-8")) as TelegramBridgeConfig;
 }
@@ -235,19 +232,11 @@ async function sendTelegramMessage(config: TelegramBridgeConfig, chatId: number,
 	}
 }
 
-async function sendTelegramFile(
-	config: TelegramBridgeConfig,
-	chatId: number,
-	path: string,
-	caption: string | undefined,
-): Promise<void> {
+async function sendTelegramDocument(config: TelegramBridgeConfig, chatId: number, path: string): Promise<void> {
 	const form = new FormData();
 	const bytes = new Uint8Array(readFileSync(path));
 	form.set("chat_id", String(chatId));
 	form.set("document", new Blob([bytes]), basename(path));
-	if (caption) {
-		form.set("caption", caption);
-	}
 	await callTelegramForm<unknown>(config, "sendDocument", form);
 }
 
@@ -341,9 +330,17 @@ async function describeTelegramMessage(config: TelegramBridgeConfig, message: Te
 	const lines: string[] = [];
 	const chat = message.chat;
 	const from = message.from;
+	const chatId = chat?.id;
 
 	lines.push("Telegram message received.");
 	lines.push(`Chat: ${formatChat(chat)}`);
+	if (chatId !== undefined) {
+		if (config.allowedChatIds.includes(chatId)) {
+			lines.push(`Reply with the send_message tool using integration "telegram" and chatId ${chatId}.`);
+		} else {
+			lines.push(`This chat id is ${chatId}, but outbound replies require it in allowedChatIds.`);
+		}
+	}
 	if (from) {
 		lines.push(`From: ${formatUser(from)}`);
 	}
@@ -449,16 +446,55 @@ function addAllowedId(config: TelegramBridgeConfig, id: number): void {
 	writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
 }
 
-function extractAssistantText(event: MessageEndEvent): string | undefined {
-	if (event.message.role !== "assistant" || event.message.stopReason === "error") {
-		return undefined;
+function resolveOutboundChatId(config: TelegramBridgeConfig, chatId: number | undefined): number {
+	if (chatId !== undefined) {
+		if (!config.allowedChatIds.includes(chatId)) {
+			throw new Error(`Telegram chat ${chatId} is not allowed for outbound messages.`);
+		}
+		return chatId;
 	}
-	const text = event.message.content
-		?.filter((part) => part.type === "text" && part.text)
-		.map((part) => part.text)
-		.join("\n")
-		.trim();
-	return text || undefined;
+	if (config.allowedChatIds.length === 1) {
+		return config.allowedChatIds[0];
+	}
+	throw new Error("Telegram chatId is required when zero or multiple outbound chats are allowed.");
+}
+
+function resolveAttachmentPath(cwd: string, rawPath: string): string {
+	const trimmed = rawPath.trim();
+	if (!trimmed) {
+		throw new Error("Telegram attachment paths must not be empty.");
+	}
+	const absolutePath = resolve(cwd, trimmed);
+	if (!existsSync(absolutePath)) {
+		throw new Error(`Telegram attachment does not exist: ${absolutePath}`);
+	}
+	return absolutePath;
+}
+
+async function sendOutboundMessage(
+	config: TelegramBridgeConfig,
+	params: SendMessageParams,
+	cwd: string,
+): Promise<{
+	chatId: number;
+	messageSent: boolean;
+	attachments: string[];
+}> {
+	const chatId = resolveOutboundChatId(config, params.chatId);
+	const text = params.message?.trim();
+	const attachments = (params.attachments ?? []).map((path) => resolveAttachmentPath(cwd, path));
+	if (!text && attachments.length === 0) {
+		throw new Error("Telegram send_message requires message text or at least one attachment.");
+	}
+
+	if (text) {
+		await sendTelegramMessage(config, chatId, text);
+	}
+	for (const path of attachments) {
+		await sendTelegramDocument(config, chatId, path);
+	}
+
+	return { chatId, messageSent: !!text, attachments };
 }
 
 function isStaleRuntimeError(error: unknown): boolean {
@@ -469,8 +505,6 @@ function isStaleRuntimeError(error: unknown): boolean {
 }
 
 export default function telegramBridge(morgan: MorganApi) {
-	const pendingReplies: ReplyTarget[] = [];
-
 	morgan.registerTrigger({
 		name: "telegram-bridge",
 		description: "Receive Telegram bot messages and forward them to Morgan.",
@@ -532,7 +566,6 @@ export default function telegramBridge(morgan: MorganApi) {
 							if (isStopped()) {
 								return;
 							}
-							pendingReplies.push({ chatId: message.chat.id });
 							try {
 								morgan.sendUserMessage(prompt, { deliverAs: "followUp" });
 							} catch (error) {
@@ -582,18 +615,6 @@ export default function telegramBridge(morgan: MorganApi) {
 		},
 	});
 
-	morgan.on("message_end", async (event) => {
-		const text = extractAssistantText(event);
-		if (!text) {
-			return;
-		}
-		const target = pendingReplies.shift();
-		if (!target) {
-			return;
-		}
-		await sendTelegramMessage(loadConfig(), target.chatId, text);
-	});
-
 	morgan.registerCommand("telegram-status", {
 		description: "Show Telegram bridge status",
 		handler: (_args, ctx) => {
@@ -638,23 +659,20 @@ export default function telegramBridge(morgan: MorganApi) {
 	});
 
 	morgan.registerTool({
-		name: "telegram_send_file",
-		label: "Telegram Send File",
-		description: "Send a local file to an allowed Telegram chat as a document.",
-		parameters: SEND_FILE_PARAMS,
-		async execute(_toolCallId, params) {
-			const config = loadConfig();
-			if (!config.allowedChatIds.includes(params.chatId)) {
-				return {
-					content: [{ type: "text", text: `Telegram chat ${params.chatId} is not allowed.` }],
-					details: { chatId: params.chatId, path: params.path },
-					isError: true,
-				};
-			}
-			await sendTelegramFile(config, params.chatId, params.path, params.caption);
+		name: "send_message",
+		label: "Send Message",
+		description: "Send text and local file attachments through a configured messaging integration.",
+		promptSnippet: "Send messages through configured integrations such as Telegram",
+		promptGuidelines: [
+			'Use send_message with integration "telegram" to reply to Telegram messages; final assistant text is not sent to Telegram automatically.',
+			"When replying to a Telegram message, pass the chatId shown in the Telegram message prompt unless there is exactly one allowed Telegram chat.",
+		],
+		parameters: SEND_MESSAGE_PARAMS,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await sendOutboundMessage(loadConfig(), params, ctx.cwd);
 			return {
-				content: [{ type: "text", text: "Telegram file sent." }],
-				details: { chatId: params.chatId, path: params.path },
+				content: [{ type: "text", text: "Telegram message sent." }],
+				details: result,
 			};
 		},
 	});

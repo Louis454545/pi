@@ -11,3 +11,7 @@ Files:
 After editing this extension while Morgan is running, use `/reload` or the `reload` tool so Morgan reloads the bridge.
 
 Incoming Telegram files are downloaded to the configured `dataDir` and passed to Morgan as local filesystem paths.
+
+Morgan does not automatically send assistant responses back to Telegram. To reply from a session, use the
+`send_message` tool with `integration: "telegram"`. The tool sends text messages and local file attachments to
+allowed Telegram chats.

@@ -5,6 +5,7 @@ import type { OAuthLoginCallbacks } from "@earendil-works/morgan-ai/oauth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
+import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { BrowserHarnessRunner } from "../src/setup/browser-harness-setup.ts";
 import type { SelectOption, SetupPrompter } from "../src/setup/prompter.ts";
@@ -265,6 +266,14 @@ describe("setup wizard", () => {
 
 		const state = JSON.parse(readFileSync(join(bridgeDir, "state.json"), "utf-8")) as { offset?: number };
 		expect(state.offset).toBe(99);
+
+		const loader = new DefaultResourceLoader({ cwd: agentDir, agentDir, settingsManager });
+		await loader.reload();
+		const bridgeExtension = loader
+			.getExtensions()
+			.extensions.find((extension) => extension.path === join(bridgeDir, "index.ts"));
+		expect(bridgeExtension?.tools.has("send_message")).toBe(true);
+		expect(bridgeExtension?.tools.has("telegram_send_file")).toBe(false);
 	});
 
 	it("pairs the Telegram allowlist with /start when available", async () => {

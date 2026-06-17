@@ -8,6 +8,7 @@
 - Renamed config, state, and environment surfaces from Pi to Morgan: `.pi` is now `.morgan`, `~/.pi/agent` is now `~/.morgan/agent`, and `PI_*` variables are now `MORGAN_*`.
 - Renamed the SDK tool factory from `createCodingTools` to `createMorganTools` and removed the old extension import aliases.
 - Replaced the old prompt-managed memory files (`SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, daily notes, and `memory-index`) with curated memory under `~/.morgan/memory/`.
+- Replaced automatic Telegram bridge reply forwarding and `telegram_send_file` with an explicit `send_message` tool.
 
 ### Added
 
