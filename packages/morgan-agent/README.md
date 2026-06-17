@@ -68,19 +68,18 @@ I regularly publish my own `morgan-mono` work sessions here:
 ## Quick Start
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/morgan-agent
-morgan setup
-```
-
-`--ignore-scripts` disables dependency lifecycle scripts during install. Morgan does not require install scripts for normal npm installs.
-
-Installer alternative:
-
-```bash
 curl -fsSL https://morgan.dev/install.sh | sh
 ```
 
-The installer launches `morgan setup` after installation when run in an interactive terminal. Setup configures global defaults, enables bundled skills, installs the bundled browser harness when possible, and then starts Morgan.
+The installer downloads the release archive for your platform, verifies it against `SHA256SUMS`, installs `morgan` under `~/.local/share/morgan/current`, and writes a launcher into `~/.local/bin`. The public installer URL is served by the release site; this repository also keeps the source script at `scripts/install.sh`.
+
+Manual package-manager install, once the npm packages are published:
+
+```bash
+npm install -g --ignore-scripts @earendil-works/morgan-agent
+```
+
+The installer launches `morgan setup` after installation when run in an interactive terminal. `morgan` also launches setup on first interactive startup when global settings do not exist.
 
 Authenticate with an API key:
 

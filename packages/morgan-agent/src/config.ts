@@ -26,7 +26,7 @@ export const isBunRuntime = !!process.versions.bun;
 // Install Method Detection
 // =============================================================================
 
-export type InstallMethod = "bun-binary" | "npm" | "pnpm" | "yarn" | "bun" | "unknown";
+export type InstallMethod = "installer-binary" | "bun-binary" | "npm" | "pnpm" | "yarn" | "bun" | "unknown";
 
 interface SelfUpdateCommandStep {
 	command: string;
@@ -36,6 +36,14 @@ interface SelfUpdateCommandStep {
 
 export interface SelfUpdateCommand extends SelfUpdateCommandStep {
 	steps?: SelfUpdateCommandStep[];
+}
+
+interface InstallerManifest {
+	installMethod?: string;
+	repo?: string;
+	installerUrl?: string;
+	installDir?: string;
+	binDir?: string;
 }
 
 function makeSelfUpdateCommand(
@@ -54,11 +62,21 @@ function makeSelfUpdateCommandStep(command: string, args: string[]): SelfUpdateC
 	return {
 		command,
 		args,
-		display: [command, ...args].map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg)).join(" "),
+		display: [command, ...args].map(formatShellDisplayArg).join(" "),
 	};
 }
 
+function formatShellDisplayArg(arg: string): string {
+	if (!/\s/.test(arg)) return arg;
+	return `"${arg.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
 export function detectInstallMethod(): InstallMethod {
+	const manifest = readInstallerManifest();
+	if (manifest?.installMethod === "installer-binary") {
+		return "installer-binary";
+	}
+
 	if (isBunBinary) {
 		return "bun-binary";
 	}
@@ -79,6 +97,15 @@ export function detectInstallMethod(): InstallMethod {
 	}
 
 	return "unknown";
+}
+
+function readInstallerManifest(): InstallerManifest | undefined {
+	try {
+		const manifest = JSON.parse(readFileSync(join(getPackageDir(), "install.json"), "utf-8")) as InstallerManifest;
+		return manifest && typeof manifest === "object" ? manifest : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 function getInferredNpmInstall(): { root: string; prefix: string } | undefined {
@@ -107,6 +134,21 @@ function getSelfUpdateCommandForMethod(
 	npmCommand?: string[],
 ): SelfUpdateCommand | undefined {
 	switch (method) {
+		case "installer-binary": {
+			const manifest = readInstallerManifest();
+			if (!manifest?.installerUrl || !manifest.installDir || !manifest.binDir) return undefined;
+			const installerUrl = manifest.installerUrl;
+			const repo = manifest?.repo ?? "earendil-works/morgan";
+			return makeSelfUpdateCommandStep("sh", [
+				"-c",
+				'curl -fsSL "$1" | MORGAN_INSTALL_NO_SETUP=1 MORGAN_INSTALLER_URL="$1" MORGAN_INSTALL_REPO="$2" MORGAN_INSTALL_DIR="$3" MORGAN_INSTALL_BIN_DIR="$4" sh',
+				"sh",
+				installerUrl,
+				repo,
+				manifest.installDir,
+				manifest.binDir,
+			]);
+		}
 		case "bun-binary":
 			return undefined;
 		case "pnpm": {
@@ -229,6 +271,7 @@ function getGlobalPackageRoots(method: InstallMethod, _packageName: string, npmC
 			return roots;
 		}
 		case "bun-binary":
+		case "installer-binary":
 		case "unknown":
 			return [];
 	}
@@ -305,6 +348,9 @@ export function getSelfUpdateCommand(
 ): SelfUpdateCommand | undefined {
 	const method = detectInstallMethod();
 	const command = getSelfUpdateCommandForMethod(method, packageName, updatePackageName, npmCommand);
+	if (method === "installer-binary") {
+		return command && isSelfUpdatePathWritable() ? command : undefined;
+	}
 	if (!command || !isManagedByGlobalPackageManager(method, packageName, npmCommand) || !isSelfUpdatePathWritable()) {
 		return undefined;
 	}
@@ -317,8 +363,14 @@ export function getSelfUpdateUnavailableInstruction(
 	updatePackageName = packageName,
 ): string {
 	const method = detectInstallMethod();
+	if (method === "installer-binary") {
+		const command = getSelfUpdateCommandForMethod(method, packageName, updatePackageName, npmCommand);
+		return command
+			? `This installation is managed by the Morgan installer. Update it yourself with: ${command.display}`
+			: `Run the installer again: curl -fsSL https://morgan.dev/install.sh | sh`;
+	}
 	if (method === "bun-binary") {
-		return `Download from: https://github.com/earendil-works/morgan-mono/releases/latest`;
+		return `Download from: https://github.com/earendil-works/morgan/releases/latest`;
 	}
 	const command = getSelfUpdateCommandForMethod(method, packageName, updatePackageName, npmCommand);
 	if (command) {

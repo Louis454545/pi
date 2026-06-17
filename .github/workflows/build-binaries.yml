@@ -46,6 +46,9 @@ jobs:
       - name: Build binaries
         run: ./scripts/build-binaries.sh
 
+      - name: Check installer asset resolution
+        run: MORGAN_INSTALL_DRY_RUN=1 MORGAN_INSTALL_BASE_URL="https://github.com/earendil-works/morgan/releases/download/${RELEASE_TAG}" sh scripts/install.sh
+
       - name: Extract changelog for this version
         id: changelog
         run: |
@@ -70,6 +73,7 @@ jobs:
               morgan-linux-arm64.tar.gz \
               morgan-windows-x64.zip \
               morgan-windows-arm64.zip \
+              SHA256SUMS \
               --clobber
           else
             gh release create "${RELEASE_TAG}" \
@@ -80,7 +84,8 @@ jobs:
               morgan-linux-x64.tar.gz \
               morgan-linux-arm64.tar.gz \
               morgan-windows-x64.zip \
-              morgan-windows-arm64.zip
+              morgan-windows-arm64.zip \
+              SHA256SUMS
           fi
 
   publish-npm:

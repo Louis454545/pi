@@ -81,6 +81,19 @@ if [[ "$OUTPUT_DIR" != /* ]]; then
     OUTPUT_DIR="$(pwd)/$OUTPUT_DIR"
 fi
 
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1"
+        return
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1"
+        return
+    fi
+    echo "sha256sum or shasum is required" >&2
+    exit 1
+}
+
 if [[ "$SKIP_INSTALL" == "false" ]]; then
     echo "==> Installing dependencies..."
     npm ci --ignore-scripts
@@ -214,6 +227,14 @@ for platform in "${PLATFORMS[@]}"; do
     fi
 done
 
+echo "==> Creating checksums..."
+rm -f SHA256SUMS
+for archive in morgan-*.tar.gz morgan-*.zip; do
+    if [[ -f "$archive" ]]; then
+        sha256_file "$archive" >> SHA256SUMS
+    fi
+done
+
 # Extract archives for easy local testing
 echo "==> Extracting archives for testing..."
 for platform in "${PLATFORMS[@]}"; do
@@ -228,7 +249,7 @@ done
 echo ""
 echo "==> Build complete!"
 echo "Archives available in $OUTPUT_DIR/"
-ls -lh *.tar.gz *.zip 2>/dev/null || true
+ls -lh *.tar.gz *.zip SHA256SUMS 2>/dev/null || true
 echo ""
 echo "Extracted directories for testing:"
 for platform in "${PLATFORMS[@]}"; do

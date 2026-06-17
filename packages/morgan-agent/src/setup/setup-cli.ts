@@ -21,6 +21,10 @@ interface SetupCommandOptions {
 	invalidOption?: string;
 }
 
+export interface RunSetupOptions {
+	force?: boolean;
+}
+
 function printSetupHelp(): void {
 	console.log(`${chalk.bold("Usage:")}
   ${APP_NAME} setup [--force] [--no-launch]
@@ -83,6 +87,23 @@ export async function handleSetupCommand(args: string[]): Promise<SetupCommandRe
 		return { handled: true };
 	}
 
+	try {
+		await runSetup({ force: options.force });
+	} catch (error) {
+		if (error instanceof SetupCancelledError) {
+			process.exitCode = 1;
+			return { handled: true };
+		}
+		throw error;
+	}
+
+	if (options.noLaunch) {
+		return { handled: true };
+	}
+	return { handled: true, launchArgs: [] };
+}
+
+export async function runSetup(options: RunSetupOptions = {}): Promise<void> {
 	const agentDir = getAgentDir();
 	const authStorage = AuthStorage.create();
 	const modelRegistry = ModelRegistry.create(authStorage);
@@ -93,26 +114,15 @@ export async function handleSetupCommand(args: string[]): Promise<SetupCommandRe
 
 	try {
 		await runSetupWizard({
-			force: options.force,
+			force: options.force ?? false,
 			agentDir,
 			authStorage,
 			modelRegistry,
 			settingsManager,
 			prompter,
 		});
-	} catch (error) {
-		if (error instanceof SetupCancelledError) {
-			process.exitCode = 1;
-			return { handled: true };
-		}
-		throw error;
 	} finally {
 		await prompter.close();
 		stopThemeWatcher();
 	}
-
-	if (options.noLaunch) {
-		return { handled: true };
-	}
-	return { handled: true, launchArgs: [] };
 }

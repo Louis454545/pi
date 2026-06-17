@@ -203,6 +203,25 @@ describe("setup wizard", () => {
 		expect(result.browser.messages.join("\n")).toContain("browser connection is not ready");
 	});
 
+	it("can skip browser harness setup", async () => {
+		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
+		const prompter = new FakePrompter(["skip", "tui", "skip"]);
+		const browserRunner = new FakeBrowserRunner(true);
+
+		const result = await runSetupWizard({
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			prompter,
+			browserRunner,
+		});
+
+		expect(result.browser.status).toBe("skipped");
+		expect(browserRunner.calls).toEqual([]);
+		expect(prompter.messages).toContain("Browser: skipped");
+	});
+
 	it("logs in to subscription providers during setup", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
 		const prompter = new FakePrompter(["subscription", "anthropic", "claude-opus-4-8", "medium"]);

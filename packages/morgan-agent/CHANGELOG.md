@@ -12,6 +12,8 @@
 
 ### Added
 
+- Added a release-binary installer script with checksum verification and installer-managed self-update support.
+- Added automatic first-run launch of the full setup wizard when global settings do not exist.
 - Added global memory at `~/.morgan/memory/snapshot.md`, updated during internal dreaming compaction.
 - Added bundled browser-harness as a default `browser` skill.
 - Added a built-in `reload` tool so the agent can reload runtime resources after modifying agent-affecting files.
@@ -22,6 +24,7 @@
 
 ### Changed
 
+- Replaced the experimental theme/analytics first-time screen with the full setup wizard and made browser harness setup an explicit choice.
 - Moved the default session storage root from `~/.morgan/agent/sessions/` to `~/.morgan/sessions/`.
 - Replaced the separate compaction summarizer and post-run memory curator with internal dreaming compaction.
 - Strengthened reload tool prompt guidance so agents call it autonomously after changing slash commands, extensions, skills, themes, keybindings, prompts, or loaded project instructions.

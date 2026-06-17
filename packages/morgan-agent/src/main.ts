@@ -5,6 +5,7 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/morgan-ai";
 import chalk from "chalk";
@@ -13,13 +14,13 @@ import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
-import { shouldRunFirstTimeSetup, showFirstTimeSetup } from "./cli/startup-ui.ts";
 import {
 	ENV_GLOBAL_CONVERSATION_LOCK_HELD,
 	ENV_SESSION_DIR,
 	expandTildePath,
 	getAgentDir,
 	getPackageDir,
+	getSettingsPath,
 	VERSION,
 } from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
@@ -47,7 +48,8 @@ import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
-import { handleSetupCommand } from "./setup/setup-cli.ts";
+import { SetupCancelledError } from "./setup/prompter.ts";
+import { handleSetupCommand, runSetup } from "./setup/setup-cli.ts";
 import { isLocalPath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
@@ -116,6 +118,14 @@ function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc"> {
 
 function isPlainRuntimeMetadataCommand(parsed: Args): boolean {
 	return !parsed.print && parsed.mode === undefined && (parsed.help === true || parsed.listModels !== undefined);
+}
+
+export function shouldRunStartupSetup(
+	appMode: AppMode,
+	parsed: Args,
+	settingsPath: string = getSettingsPath(),
+): boolean {
+	return appMode === "interactive" && !parsed.help && parsed.listModels === undefined && !existsSync(settingsPath);
 }
 
 async function prepareInitialMessage(
@@ -360,6 +370,19 @@ export async function main(args: string[], options?: MainOptions) {
 	const cwd = workingContextCwd ?? homedir();
 	const includeProjectResources = true;
 
+	if (shouldRunStartupSetup(appMode, parsed)) {
+		try {
+			await runSetup();
+		} catch (error) {
+			if (error instanceof SetupCancelledError) {
+				process.exitCode = 1;
+				return;
+			}
+			throw error;
+		}
+		time("startupSetup");
+	}
+
 	// Run project-local migrations only when a working context is explicit.
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(workingContextCwd);
 	time("runMigrations");
@@ -368,13 +391,6 @@ export async function main(args: string[], options?: MainOptions) {
 		includeProjectSettings: includeProjectResources,
 	});
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
-
-	// Experimental first-time setup: theme choice and analytics opt-in.
-	// Runs before any runtime services are created so the chosen settings apply everywhere.
-	if (appMode === "interactive" && !parsed.help && parsed.listModels === undefined && shouldRunFirstTimeSetup()) {
-		await showFirstTimeSetup(startupSettingsManager);
-		time("firstTimeSetup");
-	}
 	const envSessionDir = process.env[ENV_SESSION_DIR];
 	const sessionDir =
 		(parsed.sessionDir ? resolvePath(parsed.sessionDir, launchCwd) : undefined) ??

@@ -167,6 +167,43 @@ describe("detectInstallMethod", () => {
 		);
 	});
 
+	test("self-updates installer-managed binary installs", () => {
+		const temp = mkdtempSync(join(tmpdir(), "morgan-installer-binary-"));
+		const binDir = join(temp, "bin");
+		const packageDir = join(temp, "current");
+		mkdirSync(packageDir, { recursive: true });
+		writeFileSync(
+			join(packageDir, "install.json"),
+			`${JSON.stringify({
+				installMethod: "installer-binary",
+				repo: "example/morgan",
+				installerUrl: "https://example.test/install.sh",
+				installDir: packageDir,
+				binDir,
+			})}\n`,
+		);
+		tempDir = temp;
+		process.env.MORGAN_PACKAGE_DIR = packageDir;
+		setExecPath(join(packageDir, "morgan"));
+
+		const command = getSelfUpdateCommand("@earendil-works/morgan-agent");
+
+		expect(detectInstallMethod()).toBe("installer-binary");
+		expect(command).toEqual({
+			command: "sh",
+			args: [
+				"-c",
+				'curl -fsSL "$1" | MORGAN_INSTALL_NO_SETUP=1 MORGAN_INSTALLER_URL="$1" MORGAN_INSTALL_REPO="$2" MORGAN_INSTALL_DIR="$3" MORGAN_INSTALL_BIN_DIR="$4" sh',
+				"sh",
+				"https://example.test/install.sh",
+				"example/morgan",
+				packageDir,
+				binDir,
+			],
+			display: `sh -c "curl -fsSL \\"\\$1\\" | MORGAN_INSTALL_NO_SETUP=1 MORGAN_INSTALLER_URL=\\"\\$1\\" MORGAN_INSTALL_REPO=\\"\\$2\\" MORGAN_INSTALL_DIR=\\"\\$3\\" MORGAN_INSTALL_BIN_DIR=\\"\\$4\\" sh" sh https://example.test/install.sh example/morgan ${packageDir} ${binDir}`,
+		});
+	});
+
 	test("self-updates npm installs from custom prefixes", () => {
 		const { prefix } = createNpmPrefixInstall();
 

@@ -19,6 +19,7 @@ import {
 
 type AuthChoice = "api-key" | "subscription" | "skip";
 type CommunicationChoice = "tui" | "telegram";
+type BrowserChoice = "install" | "skip";
 
 export interface SetupWizardOptions {
 	force?: boolean;
@@ -257,6 +258,39 @@ async function configureCommunicationBridge(options: SetupWizardOptions): Promis
 	});
 }
 
+async function configureBrowserHarness(options: SetupWizardOptions): Promise<BrowserHarnessSetupResult> {
+	const browserChoice = await options.prompter.select<BrowserChoice>(
+		"Configure browser control?",
+		[
+			{ id: "install", label: "Install browser harness" },
+			{ id: "skip", label: "Skip browser control" },
+		],
+		{ defaultId: "install" },
+	);
+
+	if (browserChoice === "skip") {
+		return { status: "skipped", messages: ["Browser control: skipped. Run `morgan setup --force` to configure it."] };
+	}
+
+	return await setupBrowserHarness({
+		agentDir: options.agentDir,
+		force: options.force,
+		prompter: options.prompter,
+		runner: options.browserRunner,
+	});
+}
+
+function reportSummary(
+	options: SetupWizardOptions,
+	browser: BrowserHarnessSetupResult,
+	communication: TelegramBridgeSetupResult,
+): void {
+	options.prompter.info("Setup summary:");
+	options.prompter.info(`Model: ${options.settingsManager.getDefaultProvider() ?? "not configured"}`);
+	options.prompter.info(`Communication: ${communication.status}`);
+	options.prompter.info(`Browser: ${browser.status}`);
+}
+
 export async function runSetupWizard(options: SetupWizardOptions): Promise<SetupWizardResult> {
 	await configureAuthAndModel(options);
 	const communication = await configureCommunicationBridge(options);
@@ -271,21 +305,17 @@ export async function runSetupWizard(options: SetupWizardOptions): Promise<Setup
 	options.settingsManager.setEnableSkillCommands(true);
 	await options.settingsManager.flush();
 
-	const browser = await setupBrowserHarness({
-		agentDir: options.agentDir,
-		force: options.force,
-		prompter: options.prompter,
-		runner: options.browserRunner,
-	});
+	const browser = await configureBrowserHarness(options);
 
 	for (const message of browser.messages) {
-		if (browser.status === "ready") {
+		if (browser.status === "ready" || browser.status === "skipped") {
 			options.prompter.info(message);
 		} else {
 			options.prompter.warn(message);
 		}
 	}
 
+	reportSummary(options, browser, communication);
 	options.prompter.info("Setup complete.");
 	return { launchMorgan: true, browser, communication };
 }

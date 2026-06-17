@@ -4,29 +4,37 @@ This page gets you from install to a useful first morgan session.
 
 ## Install
 
-Morgan is distributed as an npm package:
-
-```bash
-npm install -g --ignore-scripts @earendil-works/morgan-agent
-morgan setup
-```
-
-`--ignore-scripts` disables dependency lifecycle scripts during install. Morgan does not require install scripts for normal npm installs.
-
-Installer alternative:
+Install Morgan with the release installer:
 
 ```bash
 curl -fsSL https://morgan.dev/install.sh | sh
 ```
 
-The installer launches `morgan setup` after installation when run in an interactive terminal.
+The installer downloads the release archive for your platform, verifies it against `SHA256SUMS`, installs `morgan` under `~/.local/share/morgan/current`, and writes a launcher into `~/.local/bin`. The public installer URL is served by the release site; this repository keeps the source script at `scripts/install.sh`.
+
+Manual package-manager install, once the npm packages are published:
+
+```bash
+npm install -g --ignore-scripts @earendil-works/morgan-agent
+```
+
+`--ignore-scripts` disables dependency lifecycle scripts during npm installs. Morgan does not require install scripts for normal npm installs.
+
+The installer launches `morgan setup` after installation when run in an interactive terminal. `morgan` also launches setup on first interactive startup when global settings do not exist.
 
 ### Uninstall
 
-Use the package manager that installed morgan. The curl installer uses npm globally, so curl and npm installs are removed with npm:
+For the release installer:
 
 ```bash
-# curl installer or npm install -g
+rm -f ~/.local/bin/morgan
+rm -rf ~/.local/share/morgan/current
+```
+
+For package-manager installs, use the package manager that installed morgan:
+
+```bash
+# npm
 npm uninstall -g @earendil-works/morgan-agent
 
 # pnpm
@@ -48,7 +56,7 @@ cd /path/to/project
 morgan
 ```
 
-`morgan setup` configures global defaults, enables bundled skills, and installs the bundled browser harness into `~/.morgan/agent/browser-harness` when possible. If browser setup cannot finish, Morgan still starts and reports browser setup as pending.
+`morgan setup` configures global defaults, enables bundled skills, and can install the bundled browser harness into `~/.morgan/agent/browser-harness`. If browser setup cannot finish, Morgan still starts and reports browser setup as pending.
 
 ## Authenticate
 

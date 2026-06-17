@@ -4,30 +4,28 @@ Morgan is a minimal terminal coding harness. It is designed to stay small at the
 
 ## Quick start
 
-Install Morgan with npm:
-
-```bash
-npm install -g --ignore-scripts @earendil-works/morgan-agent
-morgan setup
-```
-
-`--ignore-scripts` disables dependency lifecycle scripts during install. Morgan does not require install scripts for normal npm installs.
-
-On Linux or macOS, you can also use the installer:
+Install Morgan with the release installer:
 
 ```bash
 curl -fsSL https://morgan.dev/install.sh | sh
 ```
 
-The installer launches `morgan setup` automatically when run interactively.
+The installer downloads the verified release archive for your platform and launches `morgan setup` automatically when run interactively. The public installer URL is served by the release site; this repository keeps the source script at `scripts/install.sh`.
 
-To uninstall morgan itself, use npm for curl and npm installs:
+Manual package-manager install, once the npm packages are published:
 
 ```bash
-npm uninstall -g @earendil-works/morgan-agent
+npm install -g --ignore-scripts @earendil-works/morgan-agent
 ```
 
-For pnpm, Yarn, or Bun installs, use the matching global remove command: `pnpm remove -g @earendil-works/morgan-agent`, `yarn global remove @earendil-works/morgan-agent`, or `bun uninstall -g @earendil-works/morgan-agent`.
+To uninstall a release-installer install:
+
+```bash
+rm -f ~/.local/bin/morgan
+rm -rf ~/.local/share/morgan/current
+```
+
+For npm, pnpm, Yarn, or Bun installs, use the matching global remove command.
 
 Then run it in a project directory:
 
