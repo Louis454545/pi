@@ -20,7 +20,19 @@ npm install -g --ignore-scripts @earendil-works/morgan-agent
 
 `--ignore-scripts` disables dependency lifecycle scripts during npm installs. Morgan does not require install scripts for normal npm installs.
 
-The installer launches `morgan setup` after installation when run in an interactive terminal. `morgan` also launches setup on first interactive startup when global settings do not exist.
+The installer launches `morgan setup` after installation when run in an interactive terminal. `morgan` also launches setup on first interactive startup when global settings do not exist. Setup offers a recommended profile, can resume after cancellation, and can defer browser control for later.
+
+For diagnostics:
+
+```bash
+morgan doctor
+```
+
+For non-interactive provisioning:
+
+```bash
+morgan setup --yes --profile recommended --browser later --provider anthropic --model claude-opus-4-8 --api-key "$ANTHROPIC_API_KEY"
+```
 
 ### Uninstall
 
@@ -56,7 +68,7 @@ cd /path/to/project
 morgan
 ```
 
-`morgan setup` configures global defaults, enables bundled skills, and can install the bundled browser harness into `~/.morgan/agent/browser-harness`. If browser setup cannot finish, Morgan still starts and reports browser setup as pending.
+`morgan setup` configures global defaults, enables bundled skills, and can install the bundled browser harness into `~/.morgan/agent/browser-harness`. If browser setup cannot finish, Morgan still starts and reports browser setup as pending. Run `morgan doctor` to inspect setup, auth, browser control, and self-update support.
 
 ## Authenticate
 

@@ -48,6 +48,7 @@ import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { handleDoctorCommand } from "./setup/doctor-cli.ts";
 import { SetupCancelledError } from "./setup/prompter.ts";
 import { handleSetupCommand, runSetup } from "./setup/setup-cli.ts";
 import { isLocalPath, resolvePath } from "./utils/paths.ts";
@@ -302,6 +303,10 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (await handleDaemonCommand(args)) {
+		return;
+	}
+
+	if (await handleDoctorCommand(args)) {
 		return;
 	}
 

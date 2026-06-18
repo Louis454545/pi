@@ -14,6 +14,7 @@
 
 - Added a release-binary installer script with checksum verification and installer-managed self-update support.
 - Added automatic first-run launch of the full setup wizard when global settings do not exist.
+- Added a recommended setup profile, resumable setup state, non-interactive setup options, and `morgan doctor` diagnostics.
 - Added global memory at `~/.morgan/memory/snapshot.md`, updated during internal dreaming compaction.
 - Added bundled browser-harness as a default `browser` skill.
 - Added a built-in `reload` tool so the agent can reload runtime resources after modifying agent-affecting files.

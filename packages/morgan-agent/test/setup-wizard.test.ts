@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OAuthLoginCallbacks } from "@earendil-works/morgan-ai/oauth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ENV_AGENT_DIR } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
@@ -10,6 +11,7 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { BrowserHarnessRunner } from "../src/setup/browser-harness-setup.ts";
 import type { SelectOption, SetupPrompter } from "../src/setup/prompter.ts";
 import { handleSetupCommand } from "../src/setup/setup-cli.ts";
+import { SetupStateStore } from "../src/setup/setup-state.ts";
 import { runSetupWizard } from "../src/setup/setup-wizard.ts";
 import type {
 	TelegramAllowedPeer,
@@ -127,6 +129,7 @@ class FakeTelegramBridgeClient implements TelegramBridgeClient {
 describe("setup wizard", () => {
 	let tempDir: string | undefined;
 	let originalExitCode: typeof process.exitCode;
+	const originalAgentDir = process.env[ENV_AGENT_DIR];
 
 	beforeEach(() => {
 		originalExitCode = process.exitCode;
@@ -135,6 +138,11 @@ describe("setup wizard", () => {
 
 	afterEach(() => {
 		process.exitCode = originalExitCode;
+		if (originalAgentDir === undefined) {
+			delete process.env[ENV_AGENT_DIR];
+		} else {
+			process.env[ENV_AGENT_DIR] = originalAgentDir;
+		}
 		if (tempDir) {
 			rmSync(tempDir, { recursive: true, force: true });
 			tempDir = undefined;
@@ -152,7 +160,10 @@ describe("setup wizard", () => {
 
 	it("stores API key defaults and installs the managed browser harness", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["api-key", "anthropic", "claude-opus-4-8", "medium"], ["sk-test"]);
+		const prompter = new FakePrompter(
+			["custom", "api-key", "anthropic", "claude-opus-4-8", "medium", "tui", "install"],
+			["sk-test"],
+		);
 		const browserRunner = new FakeBrowserRunner(true);
 
 		const result = await runSetupWizard({
@@ -186,7 +197,7 @@ describe("setup wizard", () => {
 
 	it("keeps Morgan setup successful when browser doctor is pending", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["skip"]);
+		const prompter = new FakePrompter(["recommended", "skip", "install"]);
 		const browserRunner = new FakeBrowserRunner(true, [0, 7]);
 
 		const result = await runSetupWizard({
@@ -205,7 +216,7 @@ describe("setup wizard", () => {
 
 	it("can skip browser harness setup", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["skip", "tui", "skip"]);
+		const prompter = new FakePrompter(["custom", "skip", "tui", "skip"]);
 		const browserRunner = new FakeBrowserRunner(true);
 
 		const result = await runSetupWizard({
@@ -222,9 +233,50 @@ describe("setup wizard", () => {
 		expect(prompter.messages).toContain("Browser: skipped");
 	});
 
+	it("can defer browser harness setup", async () => {
+		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
+		const prompter = new FakePrompter(["recommended", "skip", "later"]);
+		const browserRunner = new FakeBrowserRunner(true);
+
+		const result = await runSetupWizard({
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			prompter,
+			browserRunner,
+		});
+
+		expect(result.browser.status).toBe("pending");
+		expect(result.browser.messages.join("\n")).toContain("install later");
+		expect(browserRunner.calls).toEqual([]);
+	});
+
+	it("resumes an incomplete setup state without storing secrets", async () => {
+		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
+		const stateStore = new SetupStateStore(agentDir);
+		stateStore.save({ version: 1, profile: "recommended", completedSteps: ["authModel"] });
+		const prompter = new FakePrompter(["resume", "later"]);
+		const browserRunner = new FakeBrowserRunner(true);
+
+		const result = await runSetupWizard({
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			prompter,
+			browserRunner,
+			setupStateStore: stateStore,
+		});
+
+		expect(result.launchMorgan).toBe(true);
+		expect(result.browser.status).toBe("pending");
+		expect(existsSync(stateStore.getPath())).toBe(false);
+	});
+
 	it("logs in to subscription providers during setup", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["subscription", "anthropic", "claude-opus-4-8", "medium"]);
+		const prompter = new FakePrompter(["custom", "subscription", "anthropic", "claude-opus-4-8", "medium", "tui"]);
 		const browserRunner = new FakeBrowserRunner(true);
 
 		await runSetupWizard({
@@ -245,7 +297,7 @@ describe("setup wizard", () => {
 
 	it("installs an editable Telegram bridge when selected", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["skip", "telegram", "manual"], ["123456:token", "123,-456"]);
+		const prompter = new FakePrompter(["custom", "skip", "telegram", "manual"], ["123456:token", "123,-456"]);
 		const browserRunner = new FakeBrowserRunner(true);
 		const telegramClient = new FakeTelegramBridgeClient();
 		telegramClient.latestOffset = 99;
@@ -297,7 +349,7 @@ describe("setup wizard", () => {
 
 	it("pairs the Telegram allowlist with /start when available", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["skip", "telegram", "pair"], ["123456:token"]);
+		const prompter = new FakePrompter(["custom", "skip", "telegram", "pair"], ["123456:token"]);
 		const browserRunner = new FakeBrowserRunner(true);
 		const telegramClient = new FakeTelegramBridgeClient({
 			peer: { chatId: 555, userId: 777, offset: 12, label: "Louis" },
@@ -326,7 +378,7 @@ describe("setup wizard", () => {
 
 	it("asks before installing uv when it is missing", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["skip"], [], [true]);
+		const prompter = new FakePrompter(["recommended", "skip", "install"], [], [true]);
 		const browserRunner = new FakeBrowserRunner(false);
 
 		await runSetupWizard({
@@ -355,6 +407,53 @@ describe("setup wizard", () => {
 			expect(stdout).toContain("morgan setup [--force] [--no-launch]");
 			expect(errorSpy).not.toHaveBeenCalled();
 			expect(process.exitCode).toBeUndefined();
+		} finally {
+			logSpy.mockRestore();
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("runs recommended setup non-interactively", async () => {
+		tempDir = mkdtempSync(join(tmpdir(), "morgan-setup-cli-"));
+		const agentDir = join(tempDir, "agent");
+		process.env[ENV_AGENT_DIR] = agentDir;
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(
+				handleSetupCommand([
+					"setup",
+					"--yes",
+					"--no-launch",
+					"--profile",
+					"recommended",
+					"--browser",
+					"later",
+					"--provider",
+					"anthropic",
+					"--model",
+					"claude-opus-4-8",
+					"--thinking",
+					"low",
+					"--api-key",
+					"sk-test",
+				]),
+			).resolves.toEqual({ handled: true });
+
+			expect(process.exitCode).toBeUndefined();
+			expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining("sk-test"));
+			const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")) as {
+				defaultProvider?: string;
+				defaultModel?: string;
+				defaultThinkingLevel?: string;
+			};
+			expect(settings.defaultProvider).toBe("anthropic");
+			expect(settings.defaultModel).toBe("claude-opus-4-8");
+			expect(settings.defaultThinkingLevel).toBe("low");
+			const auth = readFileSync(join(agentDir, "auth.json"), "utf-8");
+			expect(auth).toContain("sk-test");
+			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).not.toContain("sk-test");
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();

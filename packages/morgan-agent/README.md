@@ -79,7 +79,19 @@ Manual package-manager install, once the npm packages are published:
 npm install -g --ignore-scripts @earendil-works/morgan-agent
 ```
 
-The installer launches `morgan setup` after installation when run in an interactive terminal. `morgan` also launches setup on first interactive startup when global settings do not exist.
+The installer launches `morgan setup` after installation when run in an interactive terminal. `morgan` also launches setup on first interactive startup when global settings do not exist. Setup offers a recommended profile, can resume after cancellation, and can defer browser control for later.
+
+For diagnostics:
+
+```bash
+morgan doctor
+```
+
+For non-interactive provisioning:
+
+```bash
+morgan setup --yes --profile recommended --browser later --provider anthropic --model claude-opus-4-8 --api-key "$ANTHROPIC_API_KEY"
+```
 
 Authenticate with an API key:
 

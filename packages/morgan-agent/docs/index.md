@@ -10,7 +10,7 @@ Install Morgan with the release installer:
 curl -fsSL https://morgan.dev/install.sh | sh
 ```
 
-The installer downloads the verified release archive for your platform and launches `morgan setup` automatically when run interactively. The public installer URL is served by the release site; this repository keeps the source script at `scripts/install.sh`.
+The installer downloads the verified release archive for your platform and launches `morgan setup` automatically when run interactively. The setup wizard offers a recommended profile, can resume after cancellation, and can defer browser control for later. Run `morgan doctor` to diagnose setup, auth, browser control, and self-update support.
 
 Manual package-manager install, once the npm packages are published:
 

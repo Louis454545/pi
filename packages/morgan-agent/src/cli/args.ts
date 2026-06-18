@@ -233,6 +233,7 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} list                      List installed extensions from settings
   ${APP_NAME} config                    Open TUI to enable/disable package resources
   ${APP_NAME} setup                     Configure Morgan and bundled capabilities
+  ${APP_NAME} doctor                    Diagnose Morgan setup and browser control
   ${APP_NAME} daemon <command>          Manage the background agent daemon
   ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list
 

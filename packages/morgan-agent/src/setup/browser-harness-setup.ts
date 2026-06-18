@@ -95,7 +95,10 @@ export async function setupBrowserHarness(options: BrowserHarnessSetupOptions): 
 
 	const copyError = copyBundledHarness(targetDir, options.force ?? false);
 	if (copyError) {
-		return { status: "pending", messages: [copyError] };
+		return {
+			status: "pending",
+			messages: [`Browser control pending. Reason: ${copyError} Next: reinstall Morgan or run \`morgan doctor\`.`],
+		};
 	}
 	messages.push(`Browser harness checkout: ${targetDir}`);
 
@@ -107,7 +110,10 @@ export async function setupBrowserHarness(options: BrowserHarnessSetupOptions): 
 		if (!shouldInstallUv) {
 			return {
 				status: "pending",
-				messages: [...messages, "uv is not installed. Run `curl -LsSf https://astral.sh/uv/install.sh | sh`."],
+				messages: [
+					...messages,
+					"Browser control pending. Reason: uv is not installed. Next: run `curl -LsSf https://astral.sh/uv/install.sh | sh`.",
+				],
 			};
 		}
 
@@ -120,7 +126,10 @@ export async function setupBrowserHarness(options: BrowserHarnessSetupOptions): 
 		if (uvInstallCode !== 0) {
 			return {
 				status: "pending",
-				messages: [...messages, `uv installer exited with code ${uvInstallCode ?? "unknown"}.`],
+				messages: [
+					...messages,
+					`Browser control pending. Reason: uv installer exited with code ${uvInstallCode ?? "unknown"}. Next: install uv manually, then run \`morgan setup --force\`.`,
+				],
 			};
 		}
 	}
@@ -138,7 +147,10 @@ export async function setupBrowserHarness(options: BrowserHarnessSetupOptions): 
 	if (installCode !== 0) {
 		return {
 			status: "pending",
-			messages: [...messages, `browser-harness install exited with code ${installCode ?? "unknown"}.`],
+			messages: [
+				...messages,
+				`Browser control pending. Reason: browser-harness install exited with code ${installCode ?? "unknown"}. Next: run \`morgan doctor\`.`,
+			],
 		};
 	}
 
@@ -150,8 +162,8 @@ export async function setupBrowserHarness(options: BrowserHarnessSetupOptions): 
 			status: "pending",
 			messages: [
 				...messages,
-				"browser-harness installed, but the browser connection is not ready.",
-				"Open Chrome and enable remote debugging at chrome://inspect/#remote-debugging, then run `browser-harness --doctor`.",
+				"Browser control pending. Reason: browser-harness installed, but the browser connection is not ready.",
+				"Next: open Chrome and enable remote debugging at chrome://inspect/#remote-debugging, then run `browser-harness --doctor`.",
 			],
 		};
 	}

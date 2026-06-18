@@ -12,17 +12,33 @@ import {
 } from "./browser-harness-setup.ts";
 import type { SelectOption, SetupPrompter } from "./prompter.ts";
 import {
+	type BrowserSetupChoice,
+	type CommunicationSetupChoice,
+	type SetupProfile,
+	type SetupResumeChoice,
+	SetupStateStore,
+	type SetupStep,
+} from "./setup-state.ts";
+import {
 	setupTelegramBridge,
 	type TelegramBridgeClient,
 	type TelegramBridgeSetupResult,
 } from "./telegram-bridge-setup.ts";
 
 type AuthChoice = "api-key" | "subscription" | "skip";
-type CommunicationChoice = "tui" | "telegram";
-type BrowserChoice = "install" | "skip";
+type SetupModeChoice = SetupProfile | "skip";
 
 export interface SetupWizardOptions {
 	force?: boolean;
+	nonInteractive?: boolean;
+	profile?: SetupProfile;
+	authChoice?: AuthChoice;
+	provider?: string;
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+	apiKey?: string;
+	communicationChoice?: CommunicationSetupChoice;
+	browserChoice?: BrowserSetupChoice;
 	agentDir: string;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
@@ -30,6 +46,7 @@ export interface SetupWizardOptions {
 	prompter: SetupPrompter;
 	browserRunner?: BrowserHarnessRunner;
 	telegramClient?: TelegramBridgeClient;
+	setupStateStore?: SetupStateStore;
 }
 
 export interface SetupWizardResult {
@@ -82,6 +99,8 @@ async function configureModelDefaults(
 	modelRegistry: ModelRegistry,
 	settingsManager: SettingsManager,
 	prompter: SetupPrompter,
+	selectedModelId?: string,
+	selectedThinkingLevel?: ThinkingLevel,
 ): Promise<void> {
 	const models = modelRegistry.getAll().filter((model) => model.provider === provider);
 	if (models.length === 0) {
@@ -92,13 +111,11 @@ async function configureModelDefaults(
 	}
 
 	const defaultModel = defaultModelForProvider(provider, modelRegistry.getAll());
-	const selectedModel = await prompter.selectModel?.({
-		provider,
-		models,
-		currentModel: defaultModel,
-	});
-	if (selectedModel) {
-		settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id);
+	if (selectedModelId) {
+		if (!models.some((model) => model.id === selectedModelId)) {
+			throw new Error(`Model "${provider}/${selectedModelId}" is not available.`);
+		}
+		settingsManager.setDefaultModelAndProvider(provider, selectedModelId);
 	} else if (!prompter.selectModel) {
 		const options: SelectOption<string>[] = models
 			.slice()
@@ -112,20 +129,30 @@ async function configureModelDefaults(
 		});
 		settingsManager.setDefaultModelAndProvider(provider, selectedModelId);
 	} else {
-		return;
+		const selectedModel = await prompter.selectModel({
+			provider,
+			models,
+			currentModel: defaultModel,
+		});
+		if (!selectedModel) {
+			return;
+		}
+		settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id);
 	}
-	const thinkingLevel = await prompter.select<ThinkingLevel>(
-		"Choose the default thinking level:",
-		[
-			{ id: "medium", label: "medium" },
-			{ id: "low", label: "low" },
-			{ id: "high", label: "high" },
-			{ id: "off", label: "off" },
-			{ id: "minimal", label: "minimal" },
-			{ id: "xhigh", label: "xhigh" },
-		],
-		{ defaultId: "medium" },
-	);
+	const thinkingLevel =
+		selectedThinkingLevel ??
+		(await prompter.select<ThinkingLevel>(
+			"Choose the default thinking level:",
+			[
+				{ id: "medium", label: "medium" },
+				{ id: "low", label: "low" },
+				{ id: "high", label: "high" },
+				{ id: "off", label: "off" },
+				{ id: "minimal", label: "minimal" },
+				{ id: "xhigh", label: "xhigh" },
+			],
+			{ defaultId: "medium" },
+		));
 	settingsManager.setDefaultThinkingLevel(thinkingLevel);
 	settingsManager.setEnableSkillCommands(true);
 	await settingsManager.flush();
@@ -133,15 +160,20 @@ async function configureModelDefaults(
 
 async function configureApiKeyAuth(options: SetupWizardOptions): Promise<void> {
 	const providers = uniqueProviders(options.modelRegistry.getAll());
-	const provider = await selectProvider(
-		options.modelRegistry,
-		options.prompter,
-		providers,
-		"Choose an API key provider:",
-		"api_key",
-	);
+	const provider =
+		options.provider ??
+		(await selectProvider(
+			options.modelRegistry,
+			options.prompter,
+			providers,
+			"Choose an API key provider:",
+			"api_key",
+		));
 	if (!provider) {
 		return;
+	}
+	if (!providers.includes(provider)) {
+		throw new Error(`Provider "${provider}" is not available.`);
 	}
 
 	const providerName = options.modelRegistry.getProviderDisplayName(provider);
@@ -151,15 +183,29 @@ async function configureApiKeyAuth(options: SetupWizardOptions): Promise<void> {
 			false,
 		);
 		if (!replace) {
-			await configureModelDefaults(provider, options.modelRegistry, options.settingsManager, options.prompter);
+			await configureModelDefaults(
+				provider,
+				options.modelRegistry,
+				options.settingsManager,
+				options.prompter,
+				options.model,
+				options.thinkingLevel,
+			);
 			return;
 		}
 	}
 
-	const apiKey = await options.prompter.input(`Paste API key for ${providerName}:`);
+	const apiKey = options.apiKey ?? (await options.prompter.input(`Paste API key for ${providerName}:`));
 	options.authStorage.set(provider, { type: "api_key", key: apiKey });
 	options.modelRegistry.refresh();
-	await configureModelDefaults(provider, options.modelRegistry, options.settingsManager, options.prompter);
+	await configureModelDefaults(
+		provider,
+		options.modelRegistry,
+		options.settingsManager,
+		options.prompter,
+		options.model,
+		options.thinkingLevel,
+	);
 	options.prompter.info(`Saved API key for ${providerName}.`);
 }
 
@@ -192,7 +238,14 @@ async function configureSubscriptionAuth(options: SetupWizardOptions): Promise<v
 			false,
 		);
 		if (!replace) {
-			await configureModelDefaults(provider, options.modelRegistry, options.settingsManager, options.prompter);
+			await configureModelDefaults(
+				provider,
+				options.modelRegistry,
+				options.settingsManager,
+				options.prompter,
+				options.model,
+				options.thinkingLevel,
+			);
 			return;
 		}
 	}
@@ -206,7 +259,14 @@ async function configureSubscriptionAuth(options: SetupWizardOptions): Promise<v
 		},
 	);
 	options.modelRegistry.refresh();
-	await configureModelDefaults(provider, options.modelRegistry, options.settingsManager, options.prompter);
+	await configureModelDefaults(
+		provider,
+		options.modelRegistry,
+		options.settingsManager,
+		options.prompter,
+		options.model,
+		options.thinkingLevel,
+	);
 	options.prompter.info(`Logged in to ${providerName}.`);
 }
 
@@ -217,34 +277,50 @@ async function configureAuthAndModel(options: SetupWizardOptions): Promise<void>
 		return;
 	}
 
-	const authChoice = await options.prompter.select<AuthChoice>(
-		"Choose authentication setup:",
-		[
-			{ id: "api-key", label: "API key" },
-			{ id: "subscription", label: "Subscription login" },
-			{ id: "skip", label: "Skip for now" },
-		],
-		{ defaultId: "api-key" },
-	);
+	const authChoice =
+		options.authChoice ??
+		(options.provider || options.apiKey
+			? "api-key"
+			: await options.prompter.select<AuthChoice>(
+					"Choose authentication setup:",
+					[
+						{ id: "api-key", label: "API key" },
+						{ id: "subscription", label: "Subscription login" },
+						{ id: "skip", label: "Skip for now" },
+					],
+					{ defaultId: "api-key" },
+				));
 
 	if (authChoice === "api-key") {
 		await configureApiKeyAuth(options);
 	} else if (authChoice === "subscription") {
 		await configureSubscriptionAuth(options);
 	} else {
+		if (options.provider && options.model) {
+			await configureModelDefaults(
+				options.provider,
+				options.modelRegistry,
+				options.settingsManager,
+				options.prompter,
+				options.model,
+				options.thinkingLevel,
+			);
+		}
 		options.prompter.info("Skipped authentication. Morgan will ask for a model/login when needed.");
 	}
 }
 
 async function configureCommunicationBridge(options: SetupWizardOptions): Promise<TelegramBridgeSetupResult> {
-	const communicationChoice = await options.prompter.select<CommunicationChoice>(
-		"Choose communication channel:",
-		[
-			{ id: "tui", label: "TUI only" },
-			{ id: "telegram", label: "Telegram" },
-		],
-		{ defaultId: "tui" },
-	);
+	const communicationChoice =
+		options.communicationChoice ??
+		(await options.prompter.select<CommunicationSetupChoice>(
+			"Choose communication channel:",
+			[
+				{ id: "tui", label: "TUI only" },
+				{ id: "telegram", label: "Telegram" },
+			],
+			{ defaultId: "tui" },
+		));
 
 	if (communicationChoice === "tui") {
 		return { status: "skipped", messages: ["Communication channel: TUI only."] };
@@ -259,17 +335,23 @@ async function configureCommunicationBridge(options: SetupWizardOptions): Promis
 }
 
 async function configureBrowserHarness(options: SetupWizardOptions): Promise<BrowserHarnessSetupResult> {
-	const browserChoice = await options.prompter.select<BrowserChoice>(
-		"Configure browser control?",
-		[
-			{ id: "install", label: "Install browser harness" },
-			{ id: "skip", label: "Skip browser control" },
-		],
-		{ defaultId: "install" },
-	);
+	const browserChoice =
+		options.browserChoice ??
+		(await options.prompter.select<BrowserSetupChoice>(
+			"Configure browser control?",
+			[
+				{ id: "install", label: "Install browser harness" },
+				{ id: "later", label: "Install later" },
+				{ id: "skip", label: "Skip browser control" },
+			],
+			{ defaultId: "install" },
+		));
 
 	if (browserChoice === "skip") {
 		return { status: "skipped", messages: ["Browser control: skipped. Run `morgan setup --force` to configure it."] };
+	}
+	if (browserChoice === "later") {
+		return { status: "pending", messages: ["Browser control: install later. Run `morgan setup --force`."] };
 	}
 
 	return await setupBrowserHarness({
@@ -291,9 +373,92 @@ function reportSummary(
 	options.prompter.info(`Browser: ${browser.status}`);
 }
 
+async function resolveSetupProfile(
+	options: SetupWizardOptions,
+	stateStore: SetupStateStore,
+): Promise<SetupProfile | "skip"> {
+	if (options.force || options.nonInteractive) {
+		stateStore.clear();
+	}
+
+	const savedState = !options.force && !options.nonInteractive ? stateStore.load() : undefined;
+	if (savedState && savedState.completedSteps.length > 0 && !options.profile) {
+		const resumeChoice = await options.prompter.select<SetupResumeChoice>(
+			"Resume previous setup?",
+			[
+				{ id: "resume", label: "Resume setup" },
+				{ id: "start-over", label: "Start over" },
+				{ id: "skip", label: "Skip setup" },
+			],
+			{ defaultId: "resume" },
+		);
+		if (resumeChoice === "skip") {
+			return "skip";
+		}
+		if (resumeChoice === "start-over") {
+			stateStore.clear();
+		} else if (savedState.profile) {
+			return savedState.profile;
+		}
+	}
+
+	return (
+		options.profile ??
+		(await options.prompter.select<SetupModeChoice>(
+			"Choose setup mode:",
+			[
+				{ id: "recommended", label: "Recommended" },
+				{ id: "custom", label: "Custom" },
+				{ id: "skip", label: "Skip for now" },
+			],
+			{ defaultId: "recommended" },
+		))
+	);
+}
+
+function isStepCompleted(stateStore: SetupStateStore, step: SetupStep): boolean {
+	return stateStore.load()?.completedSteps.includes(step) ?? false;
+}
+
+async function runSetupStep(
+	options: SetupWizardOptions,
+	stateStore: SetupStateStore,
+	step: SetupStep,
+	fn: () => Promise<void>,
+): Promise<void> {
+	if (!options.force && isStepCompleted(stateStore, step)) {
+		return;
+	}
+	await fn();
+	stateStore.markCompleted(step);
+}
+
 export async function runSetupWizard(options: SetupWizardOptions): Promise<SetupWizardResult> {
-	await configureAuthAndModel(options);
-	const communication = await configureCommunicationBridge(options);
+	const stateStore = options.setupStateStore ?? new SetupStateStore(options.agentDir);
+	const profile = await resolveSetupProfile(options, stateStore);
+	if (profile === "skip") {
+		options.prompter.info("Skipped setup. Run `morgan setup` when you are ready.");
+		return {
+			launchMorgan: false,
+			browser: { status: "skipped", messages: ["Browser control: skipped."] },
+			communication: { status: "skipped", messages: ["Communication channel: skipped."] },
+		};
+	}
+
+	stateStore.update((state) => ({ ...state, profile }));
+
+	await runSetupStep(options, stateStore, "authModel", async () => {
+		await configureAuthAndModel(options);
+	});
+
+	let communication: TelegramBridgeSetupResult = { status: "skipped", messages: ["Communication channel: TUI only."] };
+	await runSetupStep(options, stateStore, "communication", async () => {
+		communication =
+			profile === "recommended"
+				? { status: "skipped", messages: ["Communication channel: TUI only."] }
+				: await configureCommunicationBridge(options);
+		stateStore.update((state) => ({ ...state, communicationChoice: options.communicationChoice ?? "tui" }));
+	});
 	for (const message of communication.messages) {
 		if (communication.status === "ready" || communication.status === "skipped") {
 			options.prompter.info(message);
@@ -302,10 +467,18 @@ export async function runSetupWizard(options: SetupWizardOptions): Promise<Setup
 		}
 	}
 
-	options.settingsManager.setEnableSkillCommands(true);
-	await options.settingsManager.flush();
+	await runSetupStep(options, stateStore, "skills", async () => {
+		options.settingsManager.setEnableSkillCommands(true);
+		await options.settingsManager.flush();
+	});
 
-	const browser = await configureBrowserHarness(options);
+	let browser: BrowserHarnessSetupResult = { status: "skipped", messages: ["Browser control: skipped."] };
+	await runSetupStep(options, stateStore, "browser", async () => {
+		browser = await configureBrowserHarness(options);
+		if (options.browserChoice) {
+			stateStore.update((state) => ({ ...state, browserChoice: options.browserChoice }));
+		}
+	});
 
 	for (const message of browser.messages) {
 		if (browser.status === "ready" || browser.status === "skipped") {
@@ -317,5 +490,6 @@ export async function runSetupWizard(options: SetupWizardOptions): Promise<Setup
 
 	reportSummary(options, browser, communication);
 	options.prompter.info("Setup complete.");
+	stateStore.clear();
 	return { launchMorgan: true, browser, communication };
 }
