@@ -114,6 +114,11 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("drafting, replying to, and sending messages");
 			expect(prompt).toContain("operating the user's authenticated applications or accounts");
 			expect(prompt).toContain("Complete such delegated work through the available tools");
+			expect(prompt).toContain("Do not turn recoverable difficulties into permission loops");
+			expect(prompt).toContain("treat that as implementation feedback");
+			expect(prompt).toContain("continue the original task automatically");
+			expect(prompt).toContain("Stopping or replacing an internal process is an implementation detail");
+			expect(prompt).toContain("when continuing would genuinely expand the requested scope");
 			expect(prompt).toContain("Finish the job");
 			expect(prompt).toContain("real completed result backed by tool output");
 			expect(prompt).toContain("never substitute fabricated data");
