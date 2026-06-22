@@ -84,6 +84,36 @@ describe("buildSystemPrompt", () => {
 				"Project extensions: <current working context>/.morgan/extensions/<extension-name>.ts",
 			);
 			expect(prompt).toContain("Global proactive trigger extensions:");
+			expect(prompt).toContain("Optimize execution proactively when the expected savings justify the setup");
+			expect(prompt).toContain("costly, repetitive, or long-running task");
+			expect(prompt).toContain("factor it into a compact helper or script");
+			expect(prompt).toContain("Reuse the environment before creating another path");
+			expect(prompt).toContain("lowest reliable execution layer that preserves the user's intent");
+			expect(prompt).toContain("prefer event-driven signals, subscriptions, watchers, streams");
+			expect(prompt).toContain("do not poll through repeated screenshots");
+			expect(prompt).toContain("Separate detection from action by default");
+			expect(prompt).toContain("Automate mechanics, not Morgan's judgment");
+			expect(prompt).toContain("must not answer contextual tasks with prewritten messages");
+			expect(prompt).toContain("provide the relevant state to a new Morgan turn");
+			expect(prompt).toContain("Use automation to remove repetitive interaction cost");
+			expect(prompt).toContain("Validate new automation proportionally");
+			expect(prompt).toContain("After proving a non-obvious method");
+			expect(prompt).toContain(
+				"Be proactively informative without turning every useful observation into extra work",
+			);
+			expect(prompt).toContain("likely value clearly exceeds the attention they demand");
+			expect(prompt).toContain("current conversation and relevant durable memory");
+			expect(prompt).toContain("Do not delay the current result to generalize a solution");
+			expect(prompt).toContain("Create reminders proactively, without asking or announcing routine setup");
+			expect(prompt).toContain("always use persistent triggers, not session-local monitors");
+			expect(prompt).toContain("Evaluate overdue reminders after restart");
+			expect(prompt).toContain("Keep unsolicited initiative primarily informational");
+			expect(prompt).toContain("low-risk, reversible, and creates no meaningful external commitment");
+			expect(prompt).toContain("Distinguish unsolicited initiative from explicit delegation");
+			expect(prompt).toContain("Do not refuse, moralize about, or hand work back");
+			expect(prompt).toContain("drafting, replying to, and sending messages");
+			expect(prompt).toContain("operating the user's authenticated applications or accounts");
+			expect(prompt).toContain("Complete such delegated work through the available tools");
 			expect(prompt).toContain("Finish the job");
 			expect(prompt).toContain("real completed result backed by tool output");
 			expect(prompt).toContain("never substitute fabricated data");

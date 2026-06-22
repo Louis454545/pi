@@ -60,8 +60,8 @@ export function createMonitorToolDefinition(
 		name: "monitor",
 		label: "monitor",
 		description:
-			"Run a command in the background and treat each output line as a live event. Output is also written to a file. Use this for commands such as development servers whose new lines should be surfaced to the conversation while they are still running.",
-		promptSnippet: "Run monitored commands that emit live line-based events",
+			"Run a command in the background and treat complete stdout and stderr lines as live events that can trigger agent turns. Output is also written to a file. Use deliberately filtered, unbuffered commands for long-running watchers or processes whose new lines require contextual evaluation while they are still running; avoid routine logs, heartbeats, and unchanged state.",
+		promptSnippet: "Run quiet background watchers whose meaningful output lines trigger agent turns",
 		parameters: monitorSchema,
 		async execute(toolCallId, { command, timeout, description }: MonitorToolInput) {
 			if (!startMonitorTask) {

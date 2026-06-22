@@ -79,9 +79,21 @@ If you start struggling with a specific mechanic while navigating, look in inter
 - uploads.md
 - viewport.md
 
+## Optimize repeated and waiting work
+
+Use the smallest reliable mechanism that preserves the user's intent. Before repeating a long browser-harness script, consider whether its cost or expected reuse justifies a task-specific helper in `agent-workspace/agent_helpers.py`. Keep one-off actions direct; factor expensive or repeated flows into compact primitives and preserve a proven reusable workflow in the relevant skill.
+
+For long waits, make the browser or an external source detect the change instead of repeatedly waking the agent to inspect the page. Prefer, in order, an existing API/webhook/stream, a browser or network event, an in-page observer, then cheap targeted state polling when no reliable event signal exists. Screenshots are for initial exploration and meaningful visual verification, not periodic polling. If a watcher is useful only for the current task, run it with Morgan's `monitor` tool; use a trigger extension plus skill guidance when it must survive beyond the task.
+
+Design monitored watchers so only contextually actionable changes or watcher failures produce output. Remember that every complete stdout or stderr line can wake Morgan: use unbuffered output (`python -u`, `PYTHONUNBUFFERED=1`, or `flush=True`), suppress routine logs and heartbeats, bound event payloads, and coalesce or deduplicate noisy changes. Establish an initial baseline so existing state is not reported as new. On failure, emit one concise diagnostic and let Morgan repair, replace, or stop the watcher instead of looping errors.
+
+A browser watcher detects and reports; Morgan reasons and acts. Unless the user explicitly asks for deterministic rules, do not put prewritten replies, canned response tables, keyword-based answers, or automatic contextual actions inside the watcher or helper. Emit the new state and enough bounded context for Morgan to understand it, then let the resulting agent turn compose the response and perform the browser action. Helpers may compress navigation, extraction, typing, and submission mechanics, but must not replace Morgan's live judgment.
+
+Validate a new watcher with representative state transitions, using screenshots or direct inspection where useful, then stop repeating expensive validation once it is trustworthy. Revalidate when the page navigates, reloads, changes execution context, or otherwise shows evidence that the detector may be stale. Pin monitoring to the intended target rather than assuming the daemon's active tab will remain unchanged. In-page observers disappear on navigation and must be reinstalled. `drain_events()` consumes the daemon's shared bounded CDP event buffer, so do not run competing consumers or treat it as a durable event queue.
+
 ## What actually works
 
-- Screenshots first: use capture_screenshot() to understand the current page quickly, find visible targets, and decide whether you need a click, a selector, or more navigation.
+- Screenshots first for exploration and action verification: use capture_screenshot() to understand the current page quickly, find visible targets, and decide whether you need a click, a selector, or more navigation. Do not use screenshots as a periodic waiting loop.
 - Clicking: capture_screenshot() → read the pixel off the image → click_at_xy(x, y) → capture_screenshot() to verify. Suppress the Playwright-habit reflex of "locate first, then click" — no getBoundingClientRect, no selector hunt. Drop to DOM only when the target has no visible geometry (hidden input, 0×0 node). Hit-testing happens in Chrome's browser process, so clicks go through iframes / shadow DOM / cross-origin without extra work.
 - Bulk HTTP: http_get(url) + ThreadPoolExecutor. No browser for static pages (249 Netflix pages in 2.8s).
 - After goto: wait_for_load().
@@ -118,7 +130,7 @@ If you start struggling with a specific mechanic while navigating, look in inter
 - Browser Use API is camelCase on the wire. cdpUrl, proxyCountryCode, etc.
 - Remote cdpUrl is HTTPS, not ws. Resolve the websocket URL via /json/version.
 - Stop cloud browsers with PATCH /browsers/{id} + {"action":"stop"}.
-- After every meaningful action, re-screenshot before assuming it worked. Use the image to verify changed state, open menus, navigation, visible errors, and whether the page is in the state you expected.
+- After every meaningful visible action, re-screenshot before assuming it worked. Use the image to verify changed state, open menus, navigation, visible errors, and whether the page is in the state you expected. This is action verification, not a reason to poll an idle page with screenshots.
 - Use screenshots to drive exploration. They are often the fastest way to find the next click target, notice hidden blockers, and decide if a selector is even worth writing.
 - Prefer compositor-level actions over framework hacks. Try screenshots, coordinate clicks, and raw key input before adding DOM-specific workarounds.
 - If you need framework-specific DOM tricks, check interaction-skills/ first. That is where dropdown, dialog, iframe, shadow DOM, and form-specific guidance belongs.
