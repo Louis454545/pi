@@ -28,7 +28,7 @@ import type { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
-import { acquireGlobalConversationLock, SessionManager } from "./core/session-manager.ts";
+import { acquireGlobalConversationLock, exportSessionToJsonl, SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { handleDaemonCommand } from "./daemon/command.ts";
@@ -115,7 +115,13 @@ export function shouldRunStartupSetup(
 	parsed: Args,
 	settingsPath: string = getSettingsPath(),
 ): boolean {
-	return appMode === "interactive" && !parsed.help && parsed.listModels === undefined && !existsSync(settingsPath);
+	return (
+		appMode === "interactive" &&
+		!parsed.help &&
+		parsed.listModels === undefined &&
+		!parsed.export &&
+		!existsSync(settingsPath)
+	);
 }
 
 async function prepareInitialMessage(
@@ -254,6 +260,19 @@ function resolveCliPaths(cwd: string, paths: string[] | undefined): string[] | u
 	return paths?.map((value) => (isLocalPath(value) ? resolvePath(value, cwd) : value));
 }
 
+async function exportGlobalConversation(outputPath: string, agentDir: string, cwd: string): Promise<void> {
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	reportDiagnostics(collectSettingsDiagnostics(settingsManager, "export session lookup"));
+	const sessionDir = settingsManager.getSessionDir();
+	const releaseGlobalLock = await acquireGlobalConversationLock(agentDir, sessionDir);
+	try {
+		const sessionManager = SessionManager.openGlobal(agentDir, { cwd, sessionDir });
+		console.log(`Exported to: ${exportSessionToJsonl(sessionManager, outputPath)}`);
+	} finally {
+		await releaseGlobalLock();
+	}
+}
+
 export interface MainOptions {
 	extensionFactories?: ExtensionFactory[];
 }
@@ -312,12 +331,6 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exit(0);
 	}
 
-	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
-	const shouldTakeOverStdout = appMode !== "interactive" && !isPlainRuntimeMetadataCommand(parsed);
-	if (shouldTakeOverStdout) {
-		takeOverStdout();
-	}
-
 	if (parsed.mode === "rpc" && parsed.fileArgs.length > 0) {
 		console.error(chalk.red("Error: @file arguments are not supported in RPC mode"));
 		process.exit(1);
@@ -331,6 +344,16 @@ export async function main(args: string[], options?: MainOptions) {
 	const launchCwd = process.cwd();
 	const agentDir = getAgentDir();
 	const cwd = homedir();
+	if (parsed.export) {
+		await exportGlobalConversation(parsed.export, agentDir, cwd);
+		return;
+	}
+
+	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
+	const shouldTakeOverStdout = appMode !== "interactive" && !isPlainRuntimeMetadataCommand(parsed);
+	if (shouldTakeOverStdout) {
+		takeOverStdout();
+	}
 
 	if (shouldRunStartupSetup(appMode, parsed)) {
 		try {
@@ -475,15 +498,6 @@ export async function main(args: string[], options?: MainOptions) {
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRegistry } = services;
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
-	if (parsed.export) {
-		try {
-			console.log(`Exported to: ${session.exportToJsonl(parsed.export)}`);
-		} finally {
-			await runtime.dispose();
-		}
-		return;
-	}
-
 	if (parsed.listModels !== undefined) {
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
 		await listModels(modelRegistry, searchPattern);

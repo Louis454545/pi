@@ -1,9 +1,11 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
-import { shouldRunStartupSetup } from "../src/main.ts";
+import { ENV_AGENT_DIR } from "../src/config.ts";
+import { isStdoutTakenOver, restoreStdout } from "../src/core/output-guard.ts";
+import { main, shouldRunStartupSetup } from "../src/main.ts";
 
 describe("startup setup gate", () => {
 	let tempDir: string;
@@ -15,6 +17,7 @@ describe("startup setup gate", () => {
 	});
 
 	afterEach(() => {
+		restoreStdout();
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -31,8 +34,31 @@ describe("startup setup gate", () => {
 	it("skips metadata and non-interactive modes", () => {
 		expect(shouldRunStartupSetup("interactive", parseArgs(["--help"]), settingsPath)).toBe(false);
 		expect(shouldRunStartupSetup("interactive", parseArgs(["--list-models"]), settingsPath)).toBe(false);
+		expect(shouldRunStartupSetup("interactive", parseArgs(["--export", "session.jsonl"]), settingsPath)).toBe(false);
 		expect(shouldRunStartupSetup("print", parseArgs(["--print", "hello"]), settingsPath)).toBe(false);
 		expect(shouldRunStartupSetup("json", parseArgs(["--mode", "json"]), settingsPath)).toBe(false);
 		expect(shouldRunStartupSetup("rpc", parseArgs(["--mode", "rpc"]), settingsPath)).toBe(false);
+	});
+
+	it("exports without startup setup or stdout takeover", async () => {
+		const oldAgentDir = process.env[ENV_AGENT_DIR];
+		const agentDir = join(tempDir, "agent");
+		const outputPath = join(tempDir, "session.jsonl");
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		process.env[ENV_AGENT_DIR] = agentDir;
+		try {
+			await main(["--export", outputPath]);
+		} finally {
+			if (oldAgentDir === undefined) {
+				delete process.env[ENV_AGENT_DIR];
+			} else {
+				process.env[ENV_AGENT_DIR] = oldAgentDir;
+			}
+			log.mockRestore();
+		}
+
+		expect(isStdoutTakenOver()).toBe(false);
+		expect(existsSync(outputPath)).toBe(true);
+		expect(readFileSync(outputPath, "utf-8")).toContain('"type":"session"');
 	});
 });

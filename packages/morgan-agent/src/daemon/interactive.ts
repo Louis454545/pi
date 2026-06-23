@@ -71,13 +71,11 @@ type ToolResultPayload = {
 };
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
-const BUILT_IN_COMMANDS: Array<{ name: string; description: string }> = [
+export const DAEMON_ATTACH_BUILT_IN_COMMANDS: Array<{ name: string; description: string }> = [
 	{ name: "quit", description: "Exit daemon attach" },
-	{ name: "reset", description: "Archive and reset the global conversation" },
+	{ name: "reset", description: "Reset the global conversation" },
 	{ name: "compact", description: "Compact daemon conversation context" },
-	{ name: "session", description: "Show daemon conversation information" },
-	{ name: "name", description: "Set daemon conversation name" },
-	{ name: "export", description: "Export daemon conversation to HTML" },
+	{ name: "export", description: "Export daemon conversation to JSONL" },
 	{ name: "copy", description: "Copy last assistant response" },
 	{ name: "model", description: "Select or set daemon model" },
 	{ name: "reload", description: "Reload daemon resources" },
@@ -664,8 +662,8 @@ class DaemonInteractiveMode {
 		} catch {
 			this.daemonCommands = [];
 		}
-		const commandNames = new Set(BUILT_IN_COMMANDS.map((command) => command.name));
-		const commands = [...BUILT_IN_COMMANDS];
+		const commandNames = new Set(DAEMON_ATTACH_BUILT_IN_COMMANDS.map((command) => command.name));
+		const commands = [...DAEMON_ATTACH_BUILT_IN_COMMANDS];
 		for (const command of this.daemonCommands) {
 			if (commandNames.has(command.name)) {
 				continue;

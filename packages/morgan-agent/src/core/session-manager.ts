@@ -9,7 +9,7 @@ import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { createCompactionSummaryMessage, createCustomMessage } from "./messages.ts";
 
-export const CURRENT_SESSION_VERSION = 1;
+export const CURRENT_SESSION_VERSION = 3;
 
 export interface SessionHeader {
 	type: "session";
@@ -177,6 +177,39 @@ export function buildSessionContext(entries: SessionEntry[]): SessionContext {
 	}
 	for (let index = compactionIndex + 1; index < entries.length; index++) appendMessage(entries[index]);
 	return { messages, thinkingLevel, model };
+}
+
+export function exportSessionToJsonl(
+	sessionManager: ReadonlySessionManager,
+	outputPath?: string,
+	baseCwd: string = sessionManager.getCwd(),
+): string {
+	const filePath = resolvePath(
+		outputPath ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`,
+		baseCwd,
+	);
+	const dir = dirname(filePath);
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true });
+	}
+
+	const header: SessionHeader = {
+		type: "session",
+		version: CURRENT_SESSION_VERSION,
+		id: sessionManager.getSessionId(),
+		timestamp: new Date().toISOString(),
+		cwd: sessionManager.getCwd(),
+	};
+	const lines = [JSON.stringify(header)];
+	let prevId: string | null = null;
+	for (const entry of sessionManager.getBranch()) {
+		const linear = { ...entry, parentId: prevId };
+		lines.push(JSON.stringify(linear));
+		prevId = entry.id;
+	}
+
+	writeFileSync(filePath, `${lines.join("\n")}\n`);
+	return filePath;
 }
 
 function createHeader(cwd: string): SessionHeader {

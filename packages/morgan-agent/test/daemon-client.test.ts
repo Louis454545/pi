@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { DaemonClient } from "../src/daemon/client.ts";
 import { parseDaemonCommand } from "../src/daemon/command.ts";
 import {
+	DAEMON_ATTACH_BUILT_IN_COMMANDS,
 	getDaemonEscapeAction,
 	getDaemonStreamingAssistantIndex,
 	parseDaemonModelQuery,
@@ -425,6 +426,19 @@ describe("parseDaemonModelQuery", () => {
 });
 
 describe("daemon attach helpers", () => {
+	test("advertises only active built-in slash commands", () => {
+		const commandNames = DAEMON_ATTACH_BUILT_IN_COMMANDS.map((command) => command.name);
+
+		expect(commandNames).not.toContain("session");
+		expect(commandNames).not.toContain("name");
+		expect(DAEMON_ATTACH_BUILT_IN_COMMANDS.find((command) => command.name === "reset")?.description).toBe(
+			"Reset the global conversation",
+		);
+		expect(DAEMON_ATTACH_BUILT_IN_COMMANDS.find((command) => command.name === "export")?.description).toBe(
+			"Export daemon conversation to JSONL",
+		);
+	});
+
 	test("tracks the latest assistant message as streaming when attaching mid-response", () => {
 		const first = assistantMessage("done");
 		const second = assistantMessage("partial");
