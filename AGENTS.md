@@ -175,3 +175,14 @@ Attribution:
 ## User Override
 
 If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.
+
+## Cursor Cloud specific instructions
+
+Durable, non-obvious notes for Cloud agents (the startup update script already runs `npm install --ignore-scripts`):
+
+- **Node version**: the repo requires Node `>=22.19.0` (`engines.node`), but the pre-baked `/exec-daemon/node` on `PATH` is `v22.14.0`. A compatible Node (nvm default, currently `v22.23.1`) is installed and the agent's `~/.bashrc` prepends it to `PATH`. Interactive/login shells get the right Node automatically. If a non-login shell ever resolves the wrong Node, run `nvm use default` (or `export PATH="$(dirname "$(nvm which default)"):$PATH"`). `npm install` itself is not blocked by the version mismatch (no `engine-strict`).
+- **Dependencies**: install with `npm install --ignore-scripts` (per the Dependency and Install Security rules). This skips the `husky` `prepare` script, so git pre-commit hooks are NOT installed by default; run `npm run check` manually before committing (the pre-commit hook would otherwise run it).
+- **Run the app (dev)**: `./morgan-test.sh` runs the `morgan` CLI/TUI directly from source via `tsx` (no build needed). It is a single local process; there are no servers, databases, or other services to start.
+- **Provider credential required for real agent turns**: with no provider configured, `morgan` starts but shows `No models available` and `-p` prompts hang/produce nothing. Set a provider key (e.g. `GEMINI_API_KEY` — `google` is the default provider — or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`), or use `/login` in the TUI. See `packages/morgan-agent/docs/providers.md`.
+- **Lint/typecheck**: `npm run check`. **Tests**: `./test.sh` (offline runner that unsets API keys and skips e2e). Do NOT run `npm test` or the full vitest suite directly (see the Commands section). For the interactive TUI, use the tmux recipe in "Testing morgan Interactive Mode with tmux".
+- **Optional components** (not needed for core dev/test): the Python/Playwright browser harness and `uv` are absent and surface as warnings in `morgan doctor`; install via `morgan setup --force` only if doing browser-automation work.
