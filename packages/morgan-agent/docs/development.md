@@ -1,6 +1,6 @@
 # Development
 
-See [AGENTS.md](https://github.com/earendil-works/morgan-mono/blob/main/AGENTS.md) for additional guidelines.
+See the repository contributor guidelines before changing development workflows.
 
 ## Setup
 

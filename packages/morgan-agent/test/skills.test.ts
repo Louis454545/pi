@@ -347,12 +347,10 @@ describe("skills", () => {
 
 	describe("loadSkills with options", () => {
 		const emptyAgentDir = resolve(__dirname, "fixtures/empty-agent");
-		const emptyCwd = resolve(__dirname, "fixtures/empty-cwd");
 
 		it("should load from explicit skillPaths", () => {
 			const { skills, diagnostics } = loadSkills({
 				agentDir: emptyAgentDir,
-				cwd: emptyCwd,
 				skillPaths: [join(fixturesDir, "valid-skill")],
 				includeDefaults: true,
 			});
@@ -364,7 +362,6 @@ describe("skills", () => {
 		it("should warn when skill path does not exist", () => {
 			const { skills, diagnostics } = loadSkills({
 				agentDir: emptyAgentDir,
-				cwd: emptyCwd,
 				skillPaths: ["/non/existent/path"],
 				includeDefaults: true,
 			});
@@ -376,13 +373,11 @@ describe("skills", () => {
 			const homeSkillsDir = join(homedir(), ".morgan/agent/skills");
 			const { skills: withTilde } = loadSkills({
 				agentDir: emptyAgentDir,
-				cwd: emptyCwd,
 				skillPaths: ["~/.morgan/agent/skills"],
 				includeDefaults: true,
 			});
 			const { skills: withoutTilde } = loadSkills({
 				agentDir: emptyAgentDir,
-				cwd: emptyCwd,
 				skillPaths: [homeSkillsDir],
 				includeDefaults: true,
 			});

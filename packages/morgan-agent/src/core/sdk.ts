@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentMessage, type ThinkingLevel } from "@earendil-works/morgan-agent-core";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/morgan-ai";
@@ -14,15 +15,12 @@ import { findInitialModel } from "./model-resolver.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
-import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
+import { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
 import {
 	createBashTool,
 	createEditTool,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
 	createMonitorTool,
 	createMorganTools,
 	createReadOnlyTools,
@@ -36,8 +34,6 @@ import {
 } from "./tools/index.ts";
 
 export interface CreateAgentSessionOptions {
-	/** Working directory for project-local discovery. Default: process.cwd() */
-	cwd?: string;
 	/** Global config directory. Default: ~/.morgan/agent */
 	agentDir?: string;
 
@@ -77,10 +73,10 @@ export interface CreateAgentSessionOptions {
 	/** Resource loader. When omitted, DefaultResourceLoader is used. */
 	resourceLoader?: ResourceLoader;
 
-	/** Session manager. Default: SessionManager.create(cwd) */
+	/** Session manager. Defaults to Morgan's global conversation. */
 	sessionManager?: SessionManager;
 
-	/** Settings manager. Default: SettingsManager.create(cwd, agentDir) */
+	/** Settings manager. Default: global settings under agentDir. */
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
@@ -125,9 +121,6 @@ export {
 	createTaskStopTool,
 	createMonitorTool,
 	createSubagentTool,
-	createGrepTool,
-	createFindTool,
-	createLsTool,
 };
 
 // Helper Functions
@@ -151,14 +144,9 @@ function getDefaultAgentDir(): string {
  *   thinkingLevel: 'high',
  * });
  *
- * // Continue previous session
- * const { session, modelFallbackMessage } = await createAgentSession({
- *   continueSession: true,
- * });
- *
  * // Full control
  * const loader = new DefaultResourceLoader({
- *   cwd: process.cwd(),
+ *   cwd: homedir(),
  *   agentDir: getAgentDir(),
  *   settingsManager: SettingsManager.create(),
  * });
@@ -172,7 +160,7 @@ function getDefaultAgentDir(): string {
  * ```
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
-	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
+	const cwd = resolvePath(homedir());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	let resourceLoader = options.resourceLoader;
 
@@ -183,7 +171,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const modelRegistry = options.modelRegistry ?? ModelRegistry.create(authStorage, modelsPath);
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
-	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
+	const sessionManager = options.sessionManager ?? SessionManager.openGlobal(agentDir, { cwd });
 
 	if (!resourceLoader) {
 		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
@@ -382,7 +370,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			sessionManager.appendThinkingLevelChange(thinkingLevel);
 		}
 	} else {
-		// Save initial model and thinking level for new sessions so they can be restored on resume
+		// Save initial model and thinking level at the start of a fresh global conversation.
 		if (model) {
 			sessionManager.appendModelChange(model.provider, model.id);
 		}

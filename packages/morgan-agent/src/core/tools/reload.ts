@@ -28,7 +28,7 @@ export function createReloadToolDefinition(
 		promptSnippet: "Reload morgan runtime resources after agent-affecting edits",
 		promptGuidelines: [
 			"After you create, edit, delete, install, or update files that affect the running morgan agent, call reload before you say the work is complete.",
-			"Agent-affecting files include morgan extensions, skills, prompt templates, themes, keybindings, settings, AGENTS.md/project instructions, and other files loaded into the system prompt or command/autocomplete runtime.",
+			"Agent-affecting files include global Morgan extensions, skills, prompt templates, themes, keybindings, settings, and other files loaded into the command or autocomplete runtime.",
 			"If a user asks for a new slash command, extension, skill, theme, keybinding, or prompt behavior, reload after writing the files so the command or behavior is available immediately.",
 			"Do not use reload after ordinary product source edits, tests, docs, or generated files that the current morgan runtime does not load.",
 		],

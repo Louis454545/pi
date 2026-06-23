@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
 import type { Context } from "@earendil-works/morgan-ai";
 import { fauxAssistantMessage } from "@earendil-works/morgan-ai";
 import { afterEach, describe, expect, it } from "vitest";
@@ -51,7 +50,7 @@ describe("AgentSession subagents", () => {
 		}
 	});
 
-	it("starts a persistent subagent and injects the completion notification into the parent", async () => {
+	it("starts a subagent and injects the completion notification into the parent", async () => {
 		const harness = await createHarness({ persistSession: true });
 		harnesses.push(harness);
 		let notificationReachedParent = false;
@@ -71,15 +70,9 @@ describe("AgentSession subagents", () => {
 		await harness.session.waitForSubagents();
 
 		expect(result.taskId).toMatch(/^subagent_/);
-		expect(result.sessionFile).toBeDefined();
+		expect(result.sessionFile).toBeUndefined();
 		expect(result.parentSessionFile).toBe(harness.session.sessionFile);
 		expect(result.message).toContain("Trace file:");
-		expect(result.sessionFile && existsSync(result.sessionFile)).toBe(true);
-
-		const trace = readFileSync(result.sessionFile!, "utf-8");
-		expect(trace).toContain(`"parentSession":"${harness.session.sessionFile}"`);
-		expect(trace).toContain("subagent_context");
-		expect(trace).toContain("<parent-session-file>");
 
 		const notifications = harness.eventsOfType("subagent_notification");
 		expect(notifications).toHaveLength(1);
@@ -129,21 +122,16 @@ describe("AgentSession subagents", () => {
 		expect(contextText(secondContext!)).toContain("Additional detail: inspect package metadata.");
 	});
 
-	it("treats a non-string action with a message as a send", async () => {
+	it("rejects non-string action values", async () => {
 		const harness = await createHarness({ persistSession: true });
 		harnesses.push(harness);
 
-		harness.setResponses([fauxAssistantMessage("child answer"), fauxAssistantMessage("parent saw completion")]);
-
-		const result = await harness.session.handleSubagentToolAction({
-			action: { reason: "start subagent" },
-			name: "compat-worker",
-			message: "inspect the repo",
-		});
-		await harness.session.waitForSubagents();
-
-		expect(result.action).toBe("send");
-		expect(result.taskId).toMatch(/^subagent_/);
-		expect(result.sessionFile && existsSync(result.sessionFile)).toBe(true);
+		await expect(
+			harness.session.handleSubagentToolAction({
+				action: { reason: "start subagent" },
+				name: "worker",
+				message: "inspect the repo",
+			}),
+		).rejects.toThrow('subagent action must be omitted or one of the literal strings "send", "list", or "status".');
 	});
 });

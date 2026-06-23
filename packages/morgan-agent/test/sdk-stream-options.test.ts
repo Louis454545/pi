@@ -95,7 +95,6 @@ describe("createAgentSession stream options", () => {
 
 		const sessionManager = SessionManager.inMemory(cwd);
 		const { session } = await createAgentSession({
-			cwd,
 			agentDir,
 			model,
 			authStorage,

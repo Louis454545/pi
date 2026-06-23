@@ -507,7 +507,6 @@ You are given one or more GitHub PR URLs: $@`,
 		);
 
 		const templates = loadPromptTemplates({
-			cwd: process.cwd(),
 			agentDir: getAgentDir(),
 			promptPaths: [testDir],
 			includeDefaults: false,
@@ -530,7 +529,6 @@ Wrap it. Additional instructions: $ARGUMENTS`,
 		);
 
 		const templates = loadPromptTemplates({
-			cwd: process.cwd(),
 			agentDir: getAgentDir(),
 			promptPaths: [testDir],
 			includeDefaults: false,
@@ -552,7 +550,6 @@ Audit changelog entries for all commits since the last release.`,
 		);
 
 		const templates = loadPromptTemplates({
-			cwd: process.cwd(),
 			agentDir: getAgentDir(),
 			promptPaths: [testDir],
 			includeDefaults: false,
@@ -574,7 +571,6 @@ Do something`,
 		);
 
 		const templates = loadPromptTemplates({
-			cwd: process.cwd(),
 			agentDir: getAgentDir(),
 			promptPaths: [testDir],
 			includeDefaults: false,
@@ -596,7 +592,6 @@ Analyze GitHub issue(s): $ARGUMENTS`,
 		);
 
 		const templates = loadPromptTemplates({
-			cwd: process.cwd(),
 			agentDir: getAgentDir(),
 			promptPaths: [testDir],
 			includeDefaults: false,

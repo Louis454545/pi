@@ -219,7 +219,6 @@ export function createTestResourceLoader(options: CreateTestResourceLoaderOption
 		getSkills: () => ({ skills: [], diagnostics: [] }),
 		getPrompts: () => ({ prompts: [], diagnostics: [] }),
 		getThemes: () => ({ themes: [], diagnostics: [] }),
-		getAgentsFiles: () => ({ agentsFiles: [] }),
 		getSystemPrompt: () => undefined,
 		getAppendSystemPrompt: () => [],
 		extendResources: () => {},
@@ -245,7 +244,9 @@ export function createTestSession(options: TestSessionOptions = {}): TestSession
 		},
 	});
 
-	const sessionManager = options.inMemory ? SessionManager.inMemory() : SessionManager.create(tempDir);
+	const sessionManager = options.inMemory
+		? SessionManager.inMemory(tempDir)
+		: SessionManager.openGlobal(tempDir, { cwd: tempDir });
 	const settingsManager = SettingsManager.create(tempDir, tempDir);
 
 	if (options.settingsOverrides) {
@@ -275,41 +276,4 @@ export function createTestSession(options: TestSessionOptions = {}): TestSession
 	};
 
 	return { session, sessionManager, tempDir, cleanup };
-}
-
-/**
- * Build a session tree for testing using SessionManager.
- * Returns the IDs of all created entries.
- *
- * Example tree structure:
- * ```
- * u1 -> a1 -> u2 -> a2
- *          -> u3 -> a3  (branch from a1)
- * u4 -> a4              (another root)
- * ```
- */
-export function buildTestTree(
-	session: SessionManager,
-	structure: {
-		messages: Array<{ role: "user" | "assistant"; text: string; branchFrom?: string }>;
-	},
-): Map<string, string> {
-	const ids = new Map<string, string>();
-
-	for (const msg of structure.messages) {
-		if (msg.branchFrom) {
-			const branchFromId = ids.get(msg.branchFrom);
-			if (!branchFromId) {
-				throw new Error(`Cannot branch from unknown entry: ${msg.branchFrom}`);
-			}
-			session.branch(branchFromId);
-		}
-
-		const id =
-			msg.role === "user" ? session.appendMessage(userMsg(msg.text)) : session.appendMessage(assistantMsg(msg.text));
-
-		ids.set(msg.text, id);
-	}
-
-	return ids;
 }

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/morgan-ai";
@@ -8,14 +8,11 @@ import { SessionManager } from "../src/core/session-manager.ts";
 
 describe("createAgentSession session manager defaults", () => {
 	let tempDir: string;
-	let cwd: string;
 	let agentDir: string;
 
 	beforeEach(() => {
 		tempDir = join(tmpdir(), `morgan-sdk-session-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-		cwd = join(tempDir, "project");
 		agentDir = join(tempDir, "agent");
-		mkdirSync(cwd, { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
 	});
 
@@ -30,13 +27,11 @@ describe("createAgentSession session manager defaults", () => {
 		expect(model).toBeTruthy();
 
 		const { session } = await createAgentSession({
-			cwd,
 			agentDir,
 			model: model!,
 		});
 
-		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-		const expectedSessionDir = join(tempDir, "sessions", safePath);
+		const expectedSessionDir = join(tempDir, "sessions", "global");
 		const sessionDir = session.sessionManager.getSessionDir();
 		const sessionFile = session.sessionManager.getSessionFile();
 
@@ -50,9 +45,8 @@ describe("createAgentSession session manager defaults", () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();
 
-		const sessionManager = SessionManager.inMemory(cwd);
+		const sessionManager = SessionManager.inMemory(tempDir);
 		const { session } = await createAgentSession({
-			cwd,
 			agentDir,
 			model: model!,
 			sessionManager,
@@ -64,13 +58,11 @@ describe("createAgentSession session manager defaults", () => {
 		session.dispose();
 	});
 
-	it("derives cwd from an explicit sessionManager when cwd is omitted", async () => {
+	it("keeps HOME as the SDK working directory even with an explicit sessionManager", async () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();
 
-		const sessionCwd = join(tempDir, "session-project");
-		mkdirSync(sessionCwd, { recursive: true });
-		const sessionManager = SessionManager.inMemory(sessionCwd);
+		const sessionManager = SessionManager.inMemory(tempDir);
 		const { session } = await createAgentSession({
 			agentDir,
 			model: model!,
@@ -78,17 +70,7 @@ describe("createAgentSession session manager defaults", () => {
 		});
 
 		expect(session.sessionManager).toBe(sessionManager);
-		expect(session.systemPrompt).toContain(`Current working context: ${sessionCwd}`);
-
-		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash");
-		expect(bashTool).toBeTruthy();
-		const result = await bashTool!.execute("test", { command: "pwd" });
-		const output = result.content
-			.filter((item): item is { type: "text"; text: string } => item.type === "text")
-			.map((item) => item.text)
-			.join("");
-
-		expect(realpathSync(output.trim())).toBe(realpathSync(sessionCwd));
+		expect(session.systemPrompt).toContain("Current working context:");
 
 		session.dispose();
 	});

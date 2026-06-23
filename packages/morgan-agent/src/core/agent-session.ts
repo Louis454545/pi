@@ -8,7 +8,6 @@
  * - Model and thinking level management
  * - Compaction (manual and auto)
  * - Bash execution
- * - Session switching and branching
  *
  * Modes use this class and add their own I/O layer on top.
  */
@@ -37,7 +36,6 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/morgan-ai";
-import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
@@ -57,18 +55,14 @@ import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
 	type CompactionResult,
 	calculateContextTokens,
-	collectEntriesForBranchSummary,
 	createDreamCompactionPrompt,
 	estimateContextTokens,
 	estimateDreamCompactionFit,
 	finalizeDreamCompaction,
-	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
-import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
-import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
 	type ContextUsage,
 	type ExtensionCommandContextActions,
@@ -83,7 +77,6 @@ import {
 	type ProactiveTriggerEvent,
 	type ReplacedSessionContext,
 	type SessionBeforeDreamResult,
-	type SessionBeforeTreeResult,
 	type SessionStartEvent,
 	type ShutdownHandler,
 	type ToolDefinition,
@@ -91,7 +84,6 @@ import {
 	type ToolExecutionStartEvent,
 	type ToolExecutionUpdateEvent,
 	type ToolInfo,
-	type TreePreparation,
 	type TurnEndEvent,
 	type TurnStartEvent,
 	wrapRegisteredTools,
@@ -101,7 +93,7 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, CompactionEntry } from "./session-manager.ts";
+import type { CompactionEntry } from "./session-manager.ts";
 import {
 	CURRENT_SESSION_VERSION,
 	getLatestCompactionEntry,
@@ -175,7 +167,6 @@ export type AgentSessionEvent =
 			followUp: readonly string[];
 	  }
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
-	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| { type: "task_notification"; notification: BackgroundTaskNotification; xml: string }
 	| { type: "monitor_event"; notification: MonitorEventNotification; xml: string }
@@ -274,7 +265,7 @@ interface SubagentParentBridge {
 	sendMessage(message: string): Promise<SubagentToolActionResult>;
 }
 
-/** Session statistics for /session command */
+/** Runtime conversation statistics. */
 export interface SessionStats {
 	sessionFile: string | undefined;
 	sessionId: string;
@@ -393,7 +384,6 @@ export class AgentSession {
 	private _overflowRecoveryAttempted = false;
 
 	// Branch summarization state
-	private _branchSummaryAbortController: AbortController | undefined = undefined;
 
 	// Retry state
 	private _retryAbortController: AbortController | undefined = undefined;
@@ -683,7 +673,7 @@ export class AgentSession {
 				// Regular LLM message - persist as SessionMessageEntry
 				this.sessionManager.appendMessage(event.message);
 			}
-			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
+			// Other internal message types are persisted elsewhere.
 
 			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
@@ -880,7 +870,6 @@ export class AgentSession {
 		try {
 			this.abortRetry();
 			this.abortCompaction();
-			this.abortBranchSummary();
 			this.abortBash();
 			this._backgroundTaskManager.dispose();
 			this._subagentManager.dispose();
@@ -890,7 +879,7 @@ export class AgentSession {
 		}
 
 		this._extensionRunner.invalidate(
-			"This extension ctx is stale after session replacement or reload. Do not use a captured morgan or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+			"This extension ctx is stale after conversation reset or reload. After ctx.newSession(), continue work through withSession. After ctx.reload(), do not use the old ctx.",
 		);
 		this._disconnectFromAgent();
 		this._eventListeners = [];
@@ -978,13 +967,9 @@ export class AgentSession {
 		this._refreshBaseSystemPrompt(validToolNames);
 	}
 
-	/** Whether compaction or branch summarization is currently running */
+	/** Whether compaction is currently running */
 	get isCompacting(): boolean {
-		return (
-			this._autoCompactionAbortController !== undefined ||
-			this._compactionAbortController !== undefined ||
-			this._branchSummaryAbortController !== undefined
-		);
+		return this._autoCompactionAbortController !== undefined || this._compactionAbortController !== undefined;
 	}
 
 	/** All messages including custom types like BashExecutionMessage */
@@ -1010,11 +995,6 @@ export class AgentSession {
 	/** Current session ID */
 	get sessionId(): string {
 		return this.sessionManager.getSessionId();
-	}
-
-	/** Current session display name, if set */
-	get sessionName(): string | undefined {
-		return this.sessionManager.getSessionName();
 	}
 
 	/** Scoped models for cycling (from --models flag) */
@@ -1076,7 +1056,6 @@ export class AgentSession {
 		const appendSystemPrompt =
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;
-		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 		const loadedExtensions = this._resourceLoader.getExtensions();
 		const memoryContext = loadAgentMemoryPromptContext({
 			agentDir: this._agentDir,
@@ -1085,7 +1064,7 @@ export class AgentSession {
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
 			skills: loadedSkills,
-			contextFiles: loadedContextFiles,
+			contextFiles: [],
 			memoryContext,
 			appendSystemPrompt,
 			selectedTools: validToolNames,
@@ -1829,8 +1808,6 @@ export class AgentSession {
 	}
 
 	private _getDreamCompactionTools(): AgentTool[] | undefined {
-		const activeToolNames = new Set(this.agent.state.tools.map((tool) => tool.name));
-		const dreamReadOnlyTools = ["grep", "find", "ls"];
 		const dreamWriteTools = ["write", "edit"];
 		const tools: AgentTool[] = [];
 		const seen = new Set<string>();
@@ -1853,11 +1830,6 @@ export class AgentSession {
 		};
 
 		addBuiltinTool("read");
-		for (const toolName of dreamReadOnlyTools) {
-			if (activeToolNames.has(toolName)) {
-				addBuiltinTool(toolName);
-			}
-		}
 
 		let hasWriteCapability = false;
 		for (const toolName of dreamWriteTools) {
@@ -1892,7 +1864,7 @@ export class AgentSession {
 			this._resolveToolPath(summaryOutputPath),
 			this._resolveToolPath(snapshotPath),
 		]);
-		const readOnlyTools = new Set(["read", "grep", "find", "ls"]);
+		const readOnlyTools = new Set(["read"]);
 
 		return async (context, signal) => {
 			const toolName = context.toolCall.name;
@@ -2013,7 +1985,6 @@ export class AgentSession {
 			result.firstKeptEntryId,
 			result.tokensBefore,
 			result.details,
-			false,
 		);
 
 		const sessionContext = this.sessionManager.buildSessionContext();
@@ -2084,13 +2055,6 @@ export class AgentSession {
 	abortCompaction(): void {
 		this._compactionAbortController?.abort();
 		this._autoCompactionAbortController?.abort();
-	}
-
-	/**
-	 * Cancel in-progress branch summarization.
-	 */
-	abortBranchSummary(): void {
-		this._branchSummaryAbortController?.abort();
 	}
 
 	/**
@@ -2412,15 +2376,6 @@ export class AgentSession {
 				appendEntry: (customType, data) => {
 					this.sessionManager.appendCustomEntry(customType, data);
 				},
-				setSessionName: (name) => {
-					this.setSessionName(name);
-				},
-				getSessionName: () => {
-					return this.sessionManager.getSessionName();
-				},
-				setLabel: (entryId, label) => {
-					this.sessionManager.appendLabelChange(entryId, label);
-				},
 				getActiveTools: () => this.getActiveToolNames(),
 				getAllTools: () => this.getAllTools(),
 				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
@@ -2437,7 +2392,6 @@ export class AgentSession {
 			{
 				getModel: () => this.model,
 				isIdle: () => !this.isStreaming,
-				isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 				getSignal: () => this.agent.signal,
 				abort: () => {
 					if (this._extensionAbortHandler) {
@@ -2804,9 +2758,7 @@ export class AgentSession {
 
 	createSubagentSession(name: string, taskId: string): AgentSession {
 		const parentSessionFile = this.sessionFile;
-		const sessionManager = this.sessionManager.isPersisted()
-			? SessionManager.create(this._cwd, this.sessionManager.getSessionDir(), { parentSession: parentSessionFile })
-			: SessionManager.inMemory(this._cwd);
+		const sessionManager = SessionManager.inMemory(this._cwd);
 		const extensionRunnerRef: { current?: ExtensionRunner } = {};
 		const childAgent = new Agent({
 			initialState: {
@@ -3102,253 +3054,6 @@ export class AgentSession {
 	}
 
 	// =========================================================================
-	// Session Management
-	// =========================================================================
-
-	/**
-	 * Set a display name for the current session.
-	 */
-	setSessionName(name: string): void {
-		this.sessionManager.appendSessionInfo(name);
-		this._emit({ type: "session_info_changed", name: this.sessionManager.getSessionName() });
-	}
-
-	// =========================================================================
-	// Tree Navigation
-	// =========================================================================
-
-	/**
-	 * Navigate to a different node in the session tree.
-	 * Unlike fork() which creates a new session file, this stays in the same file.
-	 *
-	 * @param targetId The entry ID to navigate to
-	 * @param options.summarize Whether user wants to summarize abandoned branch
-	 * @param options.customInstructions Custom instructions for summarizer
-	 * @param options.replaceInstructions If true, customInstructions replaces the default prompt
-	 * @param options.label Label to attach to the branch summary entry
-	 * @returns Result with editorText (if user message) and cancelled status
-	 */
-	async navigateTree(
-		targetId: string,
-		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
-	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
-		const oldLeafId = this.sessionManager.getLeafId();
-
-		// No-op if already at target
-		if (targetId === oldLeafId) {
-			return { cancelled: false };
-		}
-
-		// Model required for summarization
-		if (options.summarize && !this.model) {
-			throw new Error("No model available for summarization");
-		}
-
-		const targetEntry = this.sessionManager.getEntry(targetId);
-		if (!targetEntry) {
-			throw new Error(`Entry ${targetId} not found`);
-		}
-
-		// Collect entries to summarize (from old leaf to common ancestor)
-		const { entries: entriesToSummarize, commonAncestorId } = collectEntriesForBranchSummary(
-			this.sessionManager,
-			oldLeafId,
-			targetId,
-		);
-
-		// Prepare event data - mutable so extensions can override
-		let customInstructions = options.customInstructions;
-		let replaceInstructions = options.replaceInstructions;
-		let label = options.label;
-
-		const preparation: TreePreparation = {
-			targetId,
-			oldLeafId,
-			commonAncestorId,
-			entriesToSummarize,
-			userWantsSummary: options.summarize ?? false,
-			customInstructions,
-			replaceInstructions,
-			label,
-		};
-
-		// Set up abort controller for summarization
-		this._branchSummaryAbortController = new AbortController();
-
-		try {
-			let extensionSummary: { summary: string; details?: unknown } | undefined;
-			let fromExtension = false;
-
-			// Emit session_before_tree event
-			if (this._extensionRunner.hasHandlers("session_before_tree")) {
-				const result = (await this._extensionRunner.emit({
-					type: "session_before_tree",
-					preparation,
-					signal: this._branchSummaryAbortController.signal,
-				})) as SessionBeforeTreeResult | undefined;
-
-				if (result?.cancel) {
-					return { cancelled: true };
-				}
-
-				if (result?.summary && options.summarize) {
-					extensionSummary = result.summary;
-					fromExtension = true;
-				}
-
-				// Allow extensions to override instructions and label
-				if (result?.customInstructions !== undefined) {
-					customInstructions = result.customInstructions;
-				}
-				if (result?.replaceInstructions !== undefined) {
-					replaceInstructions = result.replaceInstructions;
-				}
-				if (result?.label !== undefined) {
-					label = result.label;
-				}
-			}
-
-			// Run default summarizer if needed
-			let summaryText: string | undefined;
-			let summaryDetails: unknown;
-			if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
-				const model = this.model!;
-				const { apiKey, headers } = await this._getRequiredRequestAuth(model);
-				const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
-				const result = await generateBranchSummary(entriesToSummarize, {
-					model,
-					apiKey,
-					headers,
-					signal: this._branchSummaryAbortController.signal,
-					customInstructions,
-					replaceInstructions,
-					reserveTokens: branchSummarySettings.reserveTokens,
-					streamFn: this.agent.streamFn,
-				});
-				if (result.aborted) {
-					return { cancelled: true, aborted: true };
-				}
-				if (result.error) {
-					throw new Error(result.error);
-				}
-				summaryText = result.summary;
-				summaryDetails = {
-					readFiles: result.readFiles || [],
-					modifiedFiles: result.modifiedFiles || [],
-				};
-			} else if (extensionSummary) {
-				summaryText = extensionSummary.summary;
-				summaryDetails = extensionSummary.details;
-			}
-
-			// Determine the new leaf position based on target type
-			let newLeafId: string | null;
-			let editorText: string | undefined;
-
-			if (targetEntry.type === "message" && targetEntry.message.role === "user") {
-				// User message: leaf = parent (null if root), text goes to editor
-				newLeafId = targetEntry.parentId;
-				editorText = this._extractUserMessageText(targetEntry.message.content);
-			} else if (targetEntry.type === "custom_message") {
-				// Custom message: leaf = parent (null if root), text goes to editor
-				newLeafId = targetEntry.parentId;
-				editorText =
-					typeof targetEntry.content === "string"
-						? targetEntry.content
-						: targetEntry.content
-								.filter((c): c is { type: "text"; text: string } => c.type === "text")
-								.map((c) => c.text)
-								.join("");
-			} else {
-				// Non-user message: leaf = selected node
-				newLeafId = targetId;
-			}
-
-			// Switch leaf (with or without summary)
-			// Summary is attached at the navigation target position (newLeafId), not the old branch
-			let summaryEntry: BranchSummaryEntry | undefined;
-			if (summaryText) {
-				// Create summary at target position (can be null for root)
-				const summaryId = this.sessionManager.branchWithSummary(
-					newLeafId,
-					summaryText,
-					summaryDetails,
-					fromExtension,
-				);
-				summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
-
-				// Attach label to the summary entry
-				if (label) {
-					this.sessionManager.appendLabelChange(summaryId, label);
-				}
-			} else if (newLeafId === null) {
-				// No summary, navigating to root - reset leaf
-				this.sessionManager.resetLeaf();
-			} else {
-				// No summary, navigating to non-root
-				this.sessionManager.branch(newLeafId);
-			}
-
-			// Attach label to target entry when not summarizing (no summary entry to label)
-			if (label && !summaryText) {
-				this.sessionManager.appendLabelChange(targetId, label);
-			}
-
-			// Update agent state
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
-
-			// Emit session_tree event
-			await this._extensionRunner.emit({
-				type: "session_tree",
-				newLeafId: this.sessionManager.getLeafId(),
-				oldLeafId,
-				summaryEntry,
-				fromExtension: summaryText ? fromExtension : undefined,
-			});
-
-			// Emit to custom tools
-
-			return { editorText, cancelled: false, summaryEntry };
-		} finally {
-			this._branchSummaryAbortController = undefined;
-		}
-	}
-
-	/**
-	 * Get all user messages from session for fork selector.
-	 */
-	getUserMessagesForForking(): Array<{ entryId: string; text: string }> {
-		const entries = this.sessionManager.getEntries();
-		const result: Array<{ entryId: string; text: string }> = [];
-
-		for (const entry of entries) {
-			if (entry.type !== "message") continue;
-			if (entry.message.role !== "user") continue;
-
-			const text = this._extractUserMessageText(entry.message.content);
-			if (text) {
-				result.push({ entryId: entry.id, text });
-			}
-		}
-
-		return result;
-	}
-
-	private _extractUserMessageText(content: string | Array<{ type: string; text?: string }>): string {
-		if (typeof content === "string") return content;
-		if (Array.isArray(content)) {
-			return content
-				.filter((c): c is { type: "text"; text: string } => c.type === "text")
-				.map((c) => c.text)
-				.join("");
-		}
-		return "";
-	}
-
-	/**
-	 * Get session statistics.
-	 */
 	getSessionStats(): SessionStats {
 		const state = this.state;
 		const userMessages = state.messages.filter((m) => m.role === "user").length;
@@ -3441,29 +3146,6 @@ export class AgentSession {
 	}
 
 	/**
-	 * Export conversation to HTML.
-	 * @param outputPath Optional output path (defaults to conversation directory)
-	 * @returns Path to exported file
-	 */
-	async exportToHtml(outputPath?: string): Promise<string> {
-		const configuredThemeName = this.settingsManager.getTheme();
-		const themeName = configuredThemeName && getThemeByName(configuredThemeName) ? configuredThemeName : undefined;
-
-		// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
-		const toolRenderer: ToolHtmlRenderer = createToolHtmlRenderer({
-			getToolDefinition: (name) => this.getToolDefinition(name),
-			theme,
-			cwd: this.sessionManager.getCwd(),
-		});
-
-		return await exportSessionToHtml(this.sessionManager, this.state, {
-			outputPath,
-			themeName,
-			toolRenderer,
-		});
-	}
-
-	/**
 	 * Export the current session branch to a JSONL file.
 	 * Writes the session header followed by all entries on the current branch path.
 	 * @param outputPath Target file path. If omitted, generates a timestamped file in cwd.
@@ -3472,7 +3154,7 @@ export class AgentSession {
 	exportToJsonl(outputPath?: string): string {
 		const filePath = resolvePath(
 			outputPath ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`,
-			process.cwd(),
+			this._cwd,
 		);
 		const dir = dirname(filePath);
 		if (!existsSync(dir)) {

@@ -60,30 +60,6 @@ describe("parseArgs", () => {
 		});
 	});
 
-	describe("--continue flag", () => {
-		test("parses --continue flag", () => {
-			const result = parseArgs(["--continue"]);
-			expect(result.continue).toBe(true);
-		});
-
-		test("parses -c shorthand", () => {
-			const result = parseArgs(["-c"]);
-			expect(result.continue).toBe(true);
-		});
-	});
-
-	describe("--resume flag", () => {
-		test("parses --resume flag", () => {
-			const result = parseArgs(["--resume"]);
-			expect(result.resume).toBe(true);
-		});
-
-		test("parses -r shorthand", () => {
-			const result = parseArgs(["-r"]);
-			expect(result.resume).toBe(true);
-		});
-	});
-
 	describe("flags with values", () => {
 		test("parses --provider", () => {
 			const result = parseArgs(["--provider", "openai"]);
@@ -125,27 +101,6 @@ describe("parseArgs", () => {
 			expect(result.mode).toBe("rpc");
 		});
 
-		test("parses --session", () => {
-			const result = parseArgs(["--session", "/path/to/session.jsonl"]);
-			expect(result.session).toBe("/path/to/session.jsonl");
-		});
-
-		test("parses --session-id", () => {
-			const result = parseArgs(["--session-id", "orchestrated-session"]);
-			expect(result.sessionId).toBe("orchestrated-session");
-		});
-
-		test("parses --fork", () => {
-			const result = parseArgs(["--fork", "1234abcd"]);
-			expect(result.fork).toBe("1234abcd");
-			expect(result.messages).toEqual([]);
-		});
-
-		test("parses --cwd", () => {
-			const result = parseArgs(["--cwd", "./workspace"]);
-			expect(result.cwd).toBe("./workspace");
-		});
-
 		test("parses --export", () => {
 			const result = parseArgs(["--export", "session.jsonl"]);
 			expect(result.export).toBe("session.jsonl");
@@ -159,36 +114,6 @@ describe("parseArgs", () => {
 		test("parses --models as comma-separated list", () => {
 			const result = parseArgs(["--models", "gpt-4o,claude-sonnet,gemini-pro"]);
 			expect(result.models).toEqual(["gpt-4o", "claude-sonnet", "gemini-pro"]);
-		});
-	});
-
-	describe("--name flag", () => {
-		test("parses --name flag with value", () => {
-			const result = parseArgs(["--name", "my-session"]);
-			expect(result.name).toBe("my-session");
-		});
-
-		test("parses -n shorthand", () => {
-			const result = parseArgs(["-n", "quick-session"]);
-			expect(result.name).toBe("quick-session");
-		});
-
-		test("preserves empty values for main validation", () => {
-			const result = parseArgs(["--name", ""]);
-			expect(result.name).toBe("");
-		});
-
-		test("reports missing value", () => {
-			const result = parseArgs(["--name"]);
-			expect(result.diagnostics).toEqual([{ type: "error", message: "--name requires a value" }]);
-		});
-
-		test("works alongside other flags", () => {
-			const result = parseArgs(["--name", "named-run", "--print", "--model", "gpt-4o", "hello"]);
-			expect(result.name).toBe("named-run");
-			expect(result.print).toBe(true);
-			expect(result.model).toBe("gpt-4o");
-			expect(result.messages).toEqual(["hello"]);
 		});
 	});
 
@@ -283,40 +208,6 @@ describe("parseArgs", () => {
 		test("parses --no-themes flag", () => {
 			const result = parseArgs(["--no-themes"]);
 			expect(result.noThemes).toBe(true);
-		});
-	});
-
-	describe("--no-context-files flag", () => {
-		test("parses --no-context-files flag", () => {
-			const result = parseArgs(["--no-context-files"]);
-			expect(result.noContextFiles).toBe(true);
-		});
-
-		test("parses -nc shorthand", () => {
-			const result = parseArgs(["-nc"]);
-			expect(result.noContextFiles).toBe(true);
-		});
-	});
-
-	describe("project approval flags", () => {
-		test("parses --approve", () => {
-			const result = parseArgs(["--approve"]);
-			expect(result.projectTrustOverride).toBe(true);
-		});
-
-		test("parses -a shorthand", () => {
-			const result = parseArgs(["-a"]);
-			expect(result.projectTrustOverride).toBe(true);
-		});
-
-		test("parses --no-approve", () => {
-			const result = parseArgs(["--no-approve"]);
-			expect(result.projectTrustOverride).toBe(false);
-		});
-
-		test("parses -na shorthand", () => {
-			const result = parseArgs(["-na"]);
-			expect(result.projectTrustOverride).toBe(false);
 		});
 	});
 

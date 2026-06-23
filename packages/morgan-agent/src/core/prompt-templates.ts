@@ -1,6 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { basename, dirname, join, resolve, sep } from "path";
-import { CONFIG_DIR_NAME } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -174,8 +173,6 @@ function loadTemplatesFromDir(dir: string, getSourceInfo: (filePath: string) => 
 }
 
 export interface LoadPromptTemplatesOptions {
-	/** Working directory for project-local templates. */
-	cwd: string;
 	/** Agent config directory for global templates. */
 	agentDir: string;
 	/** Explicit prompt template paths (files or directories). */
@@ -187,11 +184,9 @@ export interface LoadPromptTemplatesOptions {
 /**
  * Load all prompt templates from:
  * 1. Global: agentDir/prompts/
- * 2. Project: cwd/{CONFIG_DIR_NAME}/prompts/
- * 3. Explicit prompt paths
+ * 2. Explicit prompt paths
  */
 export function loadPromptTemplates(options: LoadPromptTemplatesOptions): PromptTemplate[] {
-	const resolvedCwd = resolvePath(options.cwd);
 	const resolvedAgentDir = resolvePath(options.agentDir);
 	const promptPaths = options.promptPaths;
 	const includeDefaults = options.includeDefaults;
@@ -199,7 +194,6 @@ export function loadPromptTemplates(options: LoadPromptTemplatesOptions): Prompt
 	const templates: PromptTemplate[] = [];
 
 	const globalPromptsDir = join(resolvedAgentDir, "prompts");
-	const projectPromptsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "prompts");
 
 	const isUnderPath = (target: string, root: string): boolean => {
 		const normalizedRoot = resolve(root);
@@ -218,13 +212,6 @@ export function loadPromptTemplates(options: LoadPromptTemplatesOptions): Prompt
 				baseDir: globalPromptsDir,
 			});
 		}
-		if (isUnderPath(resolvedPath, projectPromptsDir)) {
-			return createSyntheticSourceInfo(resolvedPath, {
-				source: "local",
-				scope: "project",
-				baseDir: projectPromptsDir,
-			});
-		}
 		return createSyntheticSourceInfo(resolvedPath, {
 			source: "local",
 			baseDir: statSync(resolvedPath).isDirectory() ? resolvedPath : dirname(resolvedPath),
@@ -233,12 +220,11 @@ export function loadPromptTemplates(options: LoadPromptTemplatesOptions): Prompt
 
 	if (includeDefaults) {
 		templates.push(...loadTemplatesFromDir(globalPromptsDir, getSourceInfo));
-		templates.push(...loadTemplatesFromDir(projectPromptsDir, getSourceInfo));
 	}
 
-	// 3. Load explicit prompt paths
+	// Load explicit prompt paths
 	for (const rawPath of promptPaths) {
-		const resolvedPath = resolvePath(rawPath, resolvedCwd, { trim: true });
+		const resolvedPath = resolvePath(rawPath, resolvedAgentDir, { trim: true });
 		if (!existsSync(resolvedPath)) {
 			continue;
 		}

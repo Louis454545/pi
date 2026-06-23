@@ -7,7 +7,6 @@
  *
  * UI methods exercised:
  * - select() - on tool_call for dangerous bash commands
- * - confirm() - on session_before_switch
  * - input() - via /rpc-input command
  * - editor() - via /rpc-editor command
  * - notify() - after each dialog completes
@@ -63,19 +62,6 @@ export default function (morgan: ExtensionAPI) {
 		}
 
 		return undefined;
-	});
-
-	// -- confirm on session clear --
-
-	morgan.on("session_before_switch", async (event, ctx) => {
-		if (event.reason !== "new") return;
-		if (!ctx.hasUI) return;
-
-		const confirmed = await ctx.ui.confirm("Clear session?", "All messages will be lost.");
-		if (!confirmed) {
-			ctx.ui.notify("Clear cancelled", "info");
-			return { cancel: true };
-		}
 	});
 
 	// -- input via command --

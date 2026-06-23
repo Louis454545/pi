@@ -7,7 +7,7 @@
 
 import type { AgentMessage } from "@earendil-works/morgan-agent-core";
 import type { AssistantMessage, Model, Usage } from "@earendil-works/morgan-ai";
-import { createBranchSummaryMessage, createCompactionSummaryMessage, createCustomMessage } from "../messages.ts";
+import { createCompactionSummaryMessage, createCustomMessage } from "../messages.ts";
 import { buildSessionContext, type CompactionEntry, type SessionEntry } from "../session-manager.ts";
 import {
 	computeFileLists,
@@ -40,8 +40,7 @@ function extractFileOperations(
 	// Collect from previous compaction's details (if morgan-generated)
 	if (prevCompactionIndex >= 0) {
 		const prevCompaction = entries[prevCompactionIndex] as CompactionEntry;
-		if (!prevCompaction.fromHook && prevCompaction.details) {
-			// fromHook field kept for session file compatibility
+		if (prevCompaction.details) {
 			const details = prevCompaction.details as CompactionDetails;
 			if (Array.isArray(details.readFiles)) {
 				for (const f of details.readFiles) fileOps.read.add(f);
@@ -74,9 +73,6 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 	}
 	if (entry.type === "custom_message") {
 		return createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp);
-	}
-	if (entry.type === "branch_summary") {
-		return createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
 	}
 	if (entry.type === "compaction") {
 		return createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp);
@@ -271,7 +267,6 @@ export function estimateTokens(message: AgentMessage): number {
 			chars = message.command.length + message.output.length;
 			return Math.ceil(chars / 4);
 		}
-		case "branchSummary":
 		case "compactionSummary": {
 			chars = message.summary.length;
 			return Math.ceil(chars / 4);
@@ -298,7 +293,6 @@ function findValidCutPoints(entries: SessionEntry[], startIndex: number, endInde
 				switch (role) {
 					case "bashExecution":
 					case "custom":
-					case "branchSummary":
 					case "compactionSummary":
 					case "user":
 					case "assistant":
@@ -312,16 +306,13 @@ function findValidCutPoints(entries: SessionEntry[], startIndex: number, endInde
 			case "thinking_level_change":
 			case "model_change":
 			case "compaction":
-			case "branch_summary":
 			case "custom":
 			case "custom_message":
-			case "label":
-			case "session_info":
 				break;
 		}
 
 		// branch_summary and custom_message are user-role messages, valid cut points
-		if (entry.type === "branch_summary" || entry.type === "custom_message") {
+		if (entry.type === "custom_message") {
 			cutPoints.push(i);
 		}
 	}
@@ -336,8 +327,7 @@ function findValidCutPoints(entries: SessionEntry[], startIndex: number, endInde
 export function findTurnStartIndex(entries: SessionEntry[], entryIndex: number, startIndex: number): number {
 	for (let i = entryIndex; i >= startIndex; i--) {
 		const entry = entries[i];
-		// branch_summary and custom_message are user-role messages, can start a turn
-		if (entry.type === "branch_summary" || entry.type === "custom_message") {
+		if (entry.type === "custom_message") {
 			return i;
 		}
 		if (entry.type === "message") {
@@ -601,7 +591,7 @@ export function prepareCompaction(
 	// Get UUID of first kept entry
 	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
 	if (!firstKeptEntry?.id) {
-		return undefined; // Session needs migration
+		return undefined;
 	}
 	const firstKeptEntryId = firstKeptEntry.id;
 
@@ -655,7 +645,7 @@ export function finalizeDreamCompaction(preparation: CompactionPreparation, summ
 	const summary = `${summaryMarkdown.trimEnd()}${formatFileOperations(readFiles, modifiedFiles)}`;
 
 	if (!firstKeptEntryId) {
-		throw new Error("First kept entry has no UUID - session may need migration");
+		throw new Error("First kept entry is invalid");
 	}
 
 	return {

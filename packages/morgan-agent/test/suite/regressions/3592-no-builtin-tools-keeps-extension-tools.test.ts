@@ -57,7 +57,6 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 		await resourceLoader.reload();
 
 		const { session } = await createAgentSession({
-			cwd: tempDir,
 			agentDir,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
@@ -78,20 +77,7 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 				.getAllTools()
 				.map((tool) => tool.name)
 				.sort(),
-		).toEqual([
-			"bash",
-			"dynamic_tool",
-			"edit",
-			"find",
-			"grep",
-			"ls",
-			"monitor",
-			"read",
-			"reload",
-			"subagent",
-			"task_stop",
-			"write",
-		]);
+		).toEqual(["bash", "dynamic_tool", "edit", "monitor", "read", "reload", "subagent", "task_stop", "write"]);
 		expect(session.getActiveToolNames()).toEqual(["dynamic_tool"]);
 		expect(session.systemPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
 		expect(session.systemPrompt).not.toContain("- read:");

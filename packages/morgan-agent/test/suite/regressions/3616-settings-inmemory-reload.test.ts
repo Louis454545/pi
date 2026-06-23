@@ -54,7 +54,6 @@ describe("regression #3616: in-memory settings survive reload", () => {
 			noSkills: true,
 			noPromptTemplates: true,
 			noThemes: true,
-			noContextFiles: true,
 		});
 
 		await resourceLoader.reload();

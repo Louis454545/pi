@@ -66,9 +66,6 @@ export function normalizeSubagentAction(input: SubagentToolInput): SubagentActio
 	if (input.action === "send" || input.action === "list" || input.action === "status") {
 		return input.action;
 	}
-	if (input.message?.trim()) {
-		return "send";
-	}
 	throw new Error('subagent action must be omitted or one of the literal strings "send", "list", or "status".');
 }
 

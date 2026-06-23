@@ -154,7 +154,7 @@ describe("setup wizard", () => {
 		const agentDir = join(tempDir, "agent");
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		const modelRegistry = ModelRegistry.inMemory(authStorage);
-		const settingsManager = SettingsManager.create(tempDir, agentDir, { includeProjectSettings: false });
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
 		return { agentDir, authStorage, modelRegistry, settingsManager };
 	}
 

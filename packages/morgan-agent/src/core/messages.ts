@@ -16,13 +16,6 @@ export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this p
 export const COMPACTION_SUMMARY_SUFFIX = `
 </summary>`;
 
-export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
-
-<summary>
-`;
-
-export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
-
 /**
  * Message type for bash executions via the ! command.
  */
@@ -52,13 +45,6 @@ export interface CustomMessage<T = unknown> {
 	timestamp: number;
 }
 
-export interface BranchSummaryMessage {
-	role: "branchSummary";
-	summary: string;
-	fromId: string;
-	timestamp: number;
-}
-
 export interface CompactionSummaryMessage {
 	role: "compactionSummary";
 	summary: string;
@@ -71,7 +57,6 @@ declare module "@earendil-works/morgan-agent-core" {
 	interface CustomAgentMessages {
 		bashExecution: BashExecutionMessage;
 		custom: CustomMessage;
-		branchSummary: BranchSummaryMessage;
 		compactionSummary: CompactionSummaryMessage;
 	}
 }
@@ -95,15 +80,6 @@ export function bashExecutionToText(msg: BashExecutionMessage): string {
 		text += `\n\n[Output truncated. Full output: ${msg.fullOutputPath}]`;
 	}
 	return text;
-}
-
-export function createBranchSummaryMessage(summary: string, fromId: string, timestamp: string): BranchSummaryMessage {
-	return {
-		role: "branchSummary",
-		summary,
-		fromId,
-		timestamp: new Date(timestamp).getTime(),
-	};
 }
 
 export function createCompactionSummaryMessage(
@@ -167,12 +143,6 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						timestamp: m.timestamp,
 					};
 				}
-				case "branchSummary":
-					return {
-						role: "user",
-						content: [{ type: "text" as const, text: BRANCH_SUMMARY_PREFIX + m.summary + BRANCH_SUMMARY_SUFFIX }],
-						timestamp: m.timestamp,
-					};
 				case "compactionSummary":
 					return {
 						role: "user",
@@ -186,8 +156,6 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 				case "toolResult":
 					return m;
 				default:
-					// biome-ignore lint/correctness/noSwitchDeclarations: fine
-					const _exhaustiveCheck: never = m;
 					return undefined;
 			}
 		})

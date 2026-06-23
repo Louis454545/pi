@@ -78,11 +78,7 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("specific trigger-focused description");
 			expect(prompt).toContain("Create Morgan-owned resources in Morgan-owned locations:");
 			expect(prompt).toContain("Global personal skills: ~/.morgan/agent/skills/<skill-name>/SKILL.md");
-			expect(prompt).toContain("Project skills: <current working context>/.morgan/skills/<skill-name>/SKILL.md");
 			expect(prompt).toContain("Global personal extensions: ~/.morgan/agent/extensions/<extension-name>.ts");
-			expect(prompt).toContain(
-				"Project extensions: <current working context>/.morgan/extensions/<extension-name>.ts",
-			);
 			expect(prompt).toContain("Global proactive trigger extensions:");
 			expect(prompt).toContain("Optimize execution proactively when the expected savings justify the setup");
 			expect(prompt).toContain("costly, repetitive, or long-running task");
@@ -270,7 +266,7 @@ describe("buildSystemPrompt", () => {
 		test("injects curated memory sections in stable order before working context", () => {
 			const prompt = buildSystemPrompt({
 				cwd: process.cwd(),
-				contextFiles: [{ path: "/repo/AGENTS.md", content: "Working-context instructions" }],
+				contextFiles: [{ path: "/repo/NOTES.md", content: "Working-context instructions" }],
 				skills: [],
 				memoryContext,
 			});

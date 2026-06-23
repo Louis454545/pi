@@ -178,7 +178,6 @@ describe("DaemonClient", () => {
 							followUpMode: "all",
 							sessionFile: "/tmp/session.jsonl",
 							sessionId: "session-1",
-							sessionName: "Daemon test",
 							autoCompactionEnabled: true,
 							messageCount: 0,
 							pendingMessageCount: 0,

@@ -1,7 +1,5 @@
 import type { AgentMessage } from "@earendil-works/morgan-agent-core";
 import type { AssistantMessage, Usage } from "@earendil-works/morgan-ai";
-import { readFileSync } from "fs";
-import { join } from "path";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	type CompactionSettings,
@@ -17,8 +15,6 @@ import {
 	buildSessionContext,
 	type CompactionEntry,
 	type ModelChangeEntry,
-	migrateSessionEntries,
-	parseSessionEntries,
 	type SessionEntry,
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
@@ -27,14 +23,6 @@ import {
 // ============================================================================
 // Test fixtures
 // ============================================================================
-
-function loadLargeSessionEntries(): SessionEntry[] {
-	const sessionPath = join(__dirname, "fixtures/large-session.jsonl");
-	const content = readFileSync(sessionPath, "utf-8");
-	const entries = parseSessionEntries(content);
-	migrateSessionEntries(entries); // Add id/parentId for v1 fixtures
-	return entries.filter((e): e is SessionEntry => e.type !== "session");
-}
 
 function createMockUsage(input: number, output: number, cacheRead = 0, cacheWrite = 0): Usage {
 	return {
@@ -148,7 +136,6 @@ function extractText(messages: AgentMessage[]): string {
 						.filter((block): block is { type: "text"; text: string } => block.type === "text")
 						.map((block) => block.text)
 						.join(" ");
-				case "branchSummary":
 				case "compactionSummary":
 					return message.summary;
 				case "custom":
@@ -454,37 +441,5 @@ describe("prepareCompaction with previous compaction", () => {
 		expect(summarizedText).toContain("user msg 3 - kept by compaction1");
 		expect(summarizedText).not.toContain("First summary");
 		expect(preparation!.previousSummary).toBe("First summary");
-	});
-});
-
-// ============================================================================
-// Integration tests with real session data
-// ============================================================================
-
-describe("Large session fixture", () => {
-	it("should parse the large session", () => {
-		const entries = loadLargeSessionEntries();
-		expect(entries.length).toBeGreaterThan(100);
-
-		const messageCount = entries.filter((e) => e.type === "message").length;
-		expect(messageCount).toBeGreaterThan(100);
-	});
-
-	it("should find cut point in large session", () => {
-		const entries = loadLargeSessionEntries();
-		const result = findCutPoint(entries, 0, entries.length, DEFAULT_COMPACTION_SETTINGS.keepRecentTokens);
-
-		// Cut point should be at a message entry (user or assistant)
-		expect(entries[result.firstKeptEntryIndex].type).toBe("message");
-		const role = (entries[result.firstKeptEntryIndex] as SessionMessageEntry).message.role;
-		expect(role === "user" || role === "assistant").toBe(true);
-	});
-
-	it("should load session correctly", () => {
-		const entries = loadLargeSessionEntries();
-		const loaded = buildSessionContext(entries);
-
-		expect(loaded.messages.length).toBeGreaterThan(100);
-		expect(loaded.model).not.toBeNull();
 	});
 });

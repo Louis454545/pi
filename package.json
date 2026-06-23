@@ -6,9 +6,7 @@
 		"packages/*",
 		"packages/morgan-agent/examples/extensions/with-deps",
 		"packages/morgan-agent/examples/extensions/custom-provider-anthropic",
-		"packages/morgan-agent/examples/extensions/custom-provider-gitlab-duo",
-		"packages/morgan-agent/examples/extensions/sandbox",
-		"packages/morgan-agent/examples/extensions/gondolin"
+		"packages/morgan-agent/examples/extensions/custom-provider-gitlab-duo"
 	],
 	"scripts": {
 		"clean": "npm run clean --workspaces",

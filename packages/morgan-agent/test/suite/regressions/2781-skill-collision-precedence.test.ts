@@ -7,14 +7,11 @@ import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
 describe("issue #2781 skill collision precedence: user skills should override package skills", () => {
 	let tempDir: string;
 	let agentDir: string;
-	let cwd: string;
 
 	beforeEach(() => {
 		tempDir = join(tmpdir(), `morgan-2781-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		agentDir = join(tempDir, "agent");
-		cwd = join(tempDir, "project");
 		mkdirSync(agentDir, { recursive: true });
-		mkdirSync(cwd, { recursive: true });
 	});
 
 	afterEach(() => {
@@ -48,26 +45,16 @@ describe("issue #2781 skill collision precedence: user skills should override pa
 		return skillPath;
 	}
 
-	function createProjectSkill(name: string, description: string): string {
-		const skillDir = join(cwd, ".morgan", "skills", name);
-		mkdirSync(skillDir, { recursive: true });
-		const skillPath = join(skillDir, "SKILL.md");
-		writeFileSync(skillPath, `---\nname: ${name}\ndescription: ${description}\n---\nProject skill content`);
-		return skillPath;
-	}
-
-	function createSettingsWithPackage(pkgDir: string, scope: "user" | "project"): void {
-		const settingsDir = scope === "user" ? agentDir : join(cwd, ".morgan");
-		mkdirSync(settingsDir, { recursive: true });
-		writeFileSync(join(settingsDir, "settings.json"), JSON.stringify({ packages: [pkgDir] }, null, 2));
+	function createSettingsWithPackage(pkgDir: string): void {
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [pkgDir] }, null, 2));
 	}
 
 	it("user auto-discovered skill should override package skill with same name", async () => {
 		const pkgDir = createPackageWithSkill("web-fetch", "Package web-fetch skill");
 		const userSkillPath = createUserSkill("web-fetch", "User web-fetch override");
-		createSettingsWithPackage(pkgDir, "user");
+		createSettingsWithPackage(pkgDir);
 
-		const loader = new DefaultResourceLoader({ cwd, agentDir });
+		const loader = new DefaultResourceLoader({ cwd: tempDir, agentDir });
 		await loader.reload();
 
 		const { skills } = loader.getSkills();
@@ -77,43 +64,12 @@ describe("issue #2781 skill collision precedence: user skills should override pa
 		expect(webFetch!.description).toBe("User web-fetch override");
 	});
 
-	it("project auto-discovered skill should override package skill with same name", async () => {
-		const pkgDir = createPackageWithSkill("web-fetch", "Package web-fetch skill");
-		const projectSkillPath = createProjectSkill("web-fetch", "Project web-fetch override");
-		createSettingsWithPackage(pkgDir, "user");
-
-		const loader = new DefaultResourceLoader({ cwd, agentDir });
-		await loader.reload();
-
-		const { skills } = loader.getSkills();
-		const webFetch = skills.find((s) => s.name === "web-fetch");
-		expect(webFetch).toBeDefined();
-		expect(webFetch!.filePath).toBe(projectSkillPath);
-		expect(webFetch!.description).toBe("Project web-fetch override");
-	});
-
-	it("project skill should override user skill which should override package skill", async () => {
-		const pkgDir = createPackageWithSkill("web-fetch", "Package web-fetch skill");
-		createUserSkill("web-fetch", "User web-fetch override");
-		const projectSkillPath = createProjectSkill("web-fetch", "Project web-fetch override");
-		createSettingsWithPackage(pkgDir, "user");
-
-		const loader = new DefaultResourceLoader({ cwd, agentDir });
-		await loader.reload();
-
-		const { skills } = loader.getSkills();
-		const webFetch = skills.find((s) => s.name === "web-fetch");
-		expect(webFetch).toBeDefined();
-		expect(webFetch!.filePath).toBe(projectSkillPath);
-		expect(webFetch!.description).toBe("Project web-fetch override");
-	});
-
 	it("collision diagnostics should report package skill as loser when user skill wins", async () => {
 		const pkgDir = createPackageWithSkill("web-fetch", "Package web-fetch skill");
 		createUserSkill("web-fetch", "User web-fetch override");
-		createSettingsWithPackage(pkgDir, "user");
+		createSettingsWithPackage(pkgDir);
 
-		const loader = new DefaultResourceLoader({ cwd, agentDir });
+		const loader = new DefaultResourceLoader({ cwd: tempDir, agentDir });
 		await loader.reload();
 
 		const { diagnostics } = loader.getSkills();

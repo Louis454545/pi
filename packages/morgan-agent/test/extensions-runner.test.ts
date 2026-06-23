@@ -7,8 +7,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { createExtensionRuntime, discoverAndLoadExtensions, loadExtensions } from "../src/core/extensions/loader.ts";
-import { ExtensionRunner, emitProjectTrustEvent } from "../src/core/extensions/runner.ts";
+import {
+	createExtensionRuntime,
+	discoverAndLoadExtensions as loadDiscoveredExtensions,
+} from "../src/core/extensions/loader.ts";
+import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import type {
 	ExtensionActions,
 	ExtensionContextActions,
@@ -16,6 +19,10 @@ import type {
 	ProviderConfig,
 } from "../src/core/extensions/types.ts";
 import { KeybindingsManager, type KeyId } from "../src/core/keybindings.ts";
+
+const discoverAndLoadExtensions = (paths: string[], _cwd: string, agentDir: string) =>
+	loadDiscoveredExtensions(paths, agentDir);
+
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 
@@ -60,9 +67,6 @@ describe("ExtensionRunner", () => {
 		sendMessage: () => {},
 		sendUserMessage: () => {},
 		appendEntry: () => {},
-		setSessionName: () => {},
-		getSessionName: () => undefined,
-		setLabel: () => {},
 		getActiveTools: () => [],
 		getAllTools: () => [],
 		setActiveTools: () => {},
@@ -76,7 +80,6 @@ describe("ExtensionRunner", () => {
 	const extensionContextActions: ExtensionContextActions = {
 		getModel: () => undefined,
 		isIdle: () => true,
-		isProjectTrusted: () => true,
 		getSignal: () => undefined,
 		abort: () => {},
 		hasPendingMessages: () => false,
@@ -85,45 +88,6 @@ describe("ExtensionRunner", () => {
 		compact: () => {},
 		getSystemPrompt: () => "",
 	};
-
-	describe("project_trust", () => {
-		it("continues past undecided handlers and returns the first yes/no decision", async () => {
-			const undecidedPath = path.join(extensionsDir, "undecided.ts");
-			const decidedPath = path.join(extensionsDir, "decided.ts");
-			fs.writeFileSync(
-				undecidedPath,
-				`export default function(pi) {
-	pi.on("project_trust", () => ({ trusted: "undecided", remember: true }));
-}`,
-			);
-			fs.writeFileSync(
-				decidedPath,
-				`export default function(pi) {
-	pi.on("project_trust", () => ({ trusted: "no", remember: true }));
-}`,
-			);
-
-			const extensionsResult = await loadExtensions([undecidedPath, decidedPath], tempDir);
-			const result = await emitProjectTrustEvent(
-				extensionsResult,
-				{ type: "project_trust", cwd: tempDir },
-				{
-					cwd: tempDir,
-					mode: "tui",
-					hasUI: false,
-					ui: {
-						select: async () => undefined,
-						confirm: async () => false,
-						input: async () => undefined,
-						notify: () => {},
-					},
-				},
-			);
-
-			expect(result.result).toEqual({ trusted: "no", remember: true });
-			expect(result.errors).toEqual([]);
-		});
-	});
 
 	describe("shortcut conflicts", () => {
 		it("warns when extension shortcut conflicts with built-in", async () => {
@@ -497,18 +461,6 @@ describe("ExtensionRunner", () => {
 			expect(ctx.hasUI).toBe(false);
 		});
 
-		it("exposes project trust state on ExtensionContext", async () => {
-			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
-			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
-			runner.bindCore(extensionActions, {
-				...extensionContextActions,
-				isProjectTrusted: () => false,
-			});
-
-			const ctx = runner.createContext();
-			expect(ctx.isProjectTrusted()).toBe(false);
-		});
-
 		it("exposes rpc mode with hasUI true when an RPC UI context is provided", async () => {
 			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
@@ -848,30 +800,6 @@ describe("ExtensionRunner", () => {
 
 			runtime.unregisterProvider("instant-provider");
 			expect(modelRegistry.find("instant-provider", "instant-model")).toBeUndefined();
-		});
-	});
-
-	describe("command context", () => {
-		it("passes fork options through to the bound handler", async () => {
-			const runtime = createExtensionRuntime();
-			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
-			const fork = vi.fn(async () => ({ cancelled: false }));
-
-			runner.bindCommandContext({
-				waitForIdle: async () => {},
-				newSession: async () => ({ cancelled: false }),
-				fork,
-				navigateTree: async () => ({ cancelled: false }),
-				switchSession: async () => ({ cancelled: false }),
-				reload: async () => {},
-			});
-
-			const commandContext = runner.createCommandContext();
-			await commandContext.fork("entry-1");
-			expect(fork).toHaveBeenCalledWith("entry-1", undefined);
-
-			await commandContext.fork("entry-2", { position: "at" });
-			expect(fork).toHaveBeenLastCalledWith("entry-2", { position: "at" });
 		});
 	});
 

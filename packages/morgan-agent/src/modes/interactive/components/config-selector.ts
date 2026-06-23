@@ -3,7 +3,7 @@
  */
 
 import { homedir } from "node:os";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, relative } from "node:path";
 import {
 	type Component,
 	Container,
@@ -15,7 +15,6 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/morgan-tui";
-import { CONFIG_DIR_NAME } from "../../../config.ts";
 import type { PathMetadata, ResolvedPaths, ResolvedResource } from "../../../core/package-manager.ts";
 import type { PackageSource, SettingsManager } from "../../../core/settings-manager.ts";
 import { theme } from "../theme/theme.ts";
@@ -50,7 +49,7 @@ interface ResourceSubgroup {
 interface ResourceGroup {
 	key: string;
 	label: string;
-	scope: "user" | "project" | "temporary";
+	scope: "user" | "temporary";
 	origin: "package" | "top-level";
 	source: string;
 	subgroups: ResourceSubgroup[];
@@ -82,11 +81,11 @@ function getGroupLabel(metadata: PathMetadata): string {
 		if (metadata.baseDir) {
 			return metadata.scope === "user"
 				? `User (${formatBaseDir(metadata.baseDir)})`
-				: `Project (${formatBaseDir(metadata.baseDir)})`;
+				: `Path (${formatBaseDir(metadata.baseDir)})`;
 		}
-		return metadata.scope === "user" ? "User (~/.morgan/agent/)" : "Project (.morgan/)";
+		return metadata.scope === "user" ? "User (~/.morgan/agent/)" : "Explicit path";
 	}
-	return metadata.scope === "user" ? "User settings" : "Project settings";
+	return metadata.scope === "user" ? "User settings" : "Explicit path";
 }
 
 function buildGroups(resolved: ResolvedPaths): ResourceGroup[] {
@@ -148,7 +147,7 @@ function buildGroups(resolved: ResolvedPaths): ResourceGroup[] {
 	addToGroup(resolved.prompts, "prompts");
 	addToGroup(resolved.themes, "themes");
 
-	// Sort groups: packages first, then top-level; user before project
+	// Sort groups: packages first, then top-level; user before explicit paths.
 	const groups = Array.from(groupMap.values());
 	groups.sort((a, b) => {
 		if (a.origin !== b.origin) {
@@ -203,7 +202,6 @@ class ResourceList implements Component, Focusable {
 	private searchInput: Input;
 	private maxVisible: number;
 	private settingsManager: SettingsManager;
-	private cwd: string;
 	private agentDir: string;
 
 	public onCancel?: () => void;
@@ -219,16 +217,9 @@ class ResourceList implements Component, Focusable {
 		this.searchInput.focused = value;
 	}
 
-	constructor(
-		groups: ResourceGroup[],
-		settingsManager: SettingsManager,
-		cwd: string,
-		agentDir: string,
-		terminalHeight?: number,
-	) {
+	constructor(groups: ResourceGroup[], settingsManager: SettingsManager, agentDir: string, terminalHeight?: number) {
 		this.groups = groups;
 		this.settingsManager = settingsManager;
-		this.cwd = cwd;
 		this.agentDir = agentDir;
 		this.searchInput = new Input();
 		// 8 lines of chrome: top spacer + top border + spacer + header (2 lines) + spacer + bottom spacer + bottom border
@@ -455,9 +446,7 @@ class ResourceList implements Component, Focusable {
 	}
 
 	private toggleTopLevelResource(item: ResourceItem, enabled: boolean): void {
-		const scope = item.metadata.scope as "user" | "project";
-		const settings =
-			scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
+		const settings = this.settingsManager.getGlobalSettings();
 
 		const arrayKey = item.resourceType as "extensions" | "skills" | "prompts" | "themes";
 		const current = (settings[arrayKey] ?? []) as string[];
@@ -479,33 +468,19 @@ class ResourceList implements Component, Focusable {
 			updated.push(disablePattern);
 		}
 
-		if (scope === "project") {
-			if (arrayKey === "extensions") {
-				this.settingsManager.setProjectExtensionPaths(updated);
-			} else if (arrayKey === "skills") {
-				this.settingsManager.setProjectSkillPaths(updated);
-			} else if (arrayKey === "prompts") {
-				this.settingsManager.setProjectPromptTemplatePaths(updated);
-			} else if (arrayKey === "themes") {
-				this.settingsManager.setProjectThemePaths(updated);
-			}
-		} else {
-			if (arrayKey === "extensions") {
-				this.settingsManager.setExtensionPaths(updated);
-			} else if (arrayKey === "skills") {
-				this.settingsManager.setSkillPaths(updated);
-			} else if (arrayKey === "prompts") {
-				this.settingsManager.setPromptTemplatePaths(updated);
-			} else if (arrayKey === "themes") {
-				this.settingsManager.setThemePaths(updated);
-			}
+		if (arrayKey === "extensions") {
+			this.settingsManager.setExtensionPaths(updated);
+		} else if (arrayKey === "skills") {
+			this.settingsManager.setSkillPaths(updated);
+		} else if (arrayKey === "prompts") {
+			this.settingsManager.setPromptTemplatePaths(updated);
+		} else if (arrayKey === "themes") {
+			this.settingsManager.setThemePaths(updated);
 		}
 	}
 
 	private togglePackageResource(item: ResourceItem, enabled: boolean): void {
-		const scope = item.metadata.scope as "user" | "project";
-		const settings =
-			scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
+		const settings = this.settingsManager.getGlobalSettings();
 
 		const packages = [...(settings.packages ?? [])] as PackageSource[];
 		const pkgIndex = packages.findIndex((pkg) => {
@@ -554,20 +529,15 @@ class ResourceList implements Component, Focusable {
 			packages[pkgIndex] = (pkg as { source: string }).source;
 		}
 
-		if (scope === "project") {
-			this.settingsManager.setProjectPackages(packages);
-		} else {
-			this.settingsManager.setPackages(packages);
-		}
+		this.settingsManager.setPackages(packages);
 	}
 
-	private getTopLevelBaseDir(scope: "user" | "project"): string {
-		return scope === "project" ? join(this.cwd, CONFIG_DIR_NAME) : this.agentDir;
+	private getTopLevelBaseDir(): string {
+		return this.agentDir;
 	}
 
 	private getResourcePattern(item: ResourceItem): string {
-		const scope = item.metadata.scope as "user" | "project";
-		const baseDir = item.metadata.baseDir ?? this.getTopLevelBaseDir(scope);
+		const baseDir = item.metadata.baseDir ?? this.getTopLevelBaseDir();
 		return relative(baseDir, item.path);
 	}
 
@@ -592,7 +562,6 @@ export class ConfigSelectorComponent extends Container implements Focusable {
 	constructor(
 		resolvedPaths: ResolvedPaths,
 		settingsManager: SettingsManager,
-		cwd: string,
 		agentDir: string,
 		onClose: () => void,
 		onExit: () => void,
@@ -611,7 +580,7 @@ export class ConfigSelectorComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 
 		// Resource list
-		this.resourceList = new ResourceList(groups, settingsManager, cwd, agentDir, terminalHeight);
+		this.resourceList = new ResourceList(groups, settingsManager, agentDir, terminalHeight);
 		this.resourceList.onCancel = onClose;
 		this.resourceList.onExit = onExit;
 		this.resourceList.onToggle = () => requestRender();

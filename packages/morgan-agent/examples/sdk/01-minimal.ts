@@ -2,7 +2,7 @@
  * Minimal SDK Usage
  *
  * Uses all defaults: discovers skills, extensions, tools, context files
- * from cwd and ~/.morgan/agent. Model chosen from settings or first available.
+ * from ~/.morgan/agent. Model chosen from settings or first available.
  */
 
 import { createAgentSession } from "@earendil-works/morgan-agent";

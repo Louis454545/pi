@@ -11,7 +11,6 @@ import { initTheme, stopThemeWatcher } from "../modes/interactive/theme/theme.ts
 export interface ConfigSelectorOptions {
 	resolvedPaths: ResolvedPaths;
 	settingsManager: SettingsManager;
-	cwd: string;
 	agentDir: string;
 }
 
@@ -27,7 +26,6 @@ export async function selectConfig(options: ConfigSelectorOptions): Promise<void
 		const selector = new ConfigSelectorComponent(
 			options.resolvedPaths,
 			options.settingsManager,
-			options.cwd,
 			options.agentDir,
 			() => {
 				if (!resolved) {

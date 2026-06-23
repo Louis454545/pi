@@ -6,12 +6,7 @@ import { resolvePath } from "../utils/paths.ts";
 import { AuthStorage } from "./auth-storage.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { ModelRegistry } from "./model-registry.ts";
-import {
-	DefaultResourceLoader,
-	type DefaultResourceLoaderOptions,
-	type ResourceLoader,
-	type ResourceLoaderReloadOptions,
-} from "./resource-loader.ts";
+import { DefaultResourceLoader, type DefaultResourceLoaderOptions, type ResourceLoader } from "./resource-loader.ts";
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -42,16 +37,13 @@ export interface CreateAgentSessionServicesOptions {
 	settingsManager?: SettingsManager;
 	modelRegistry?: ModelRegistry;
 	extensionFlagValues?: Map<string, boolean | string>;
-	includeProjectResources?: boolean;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
-	resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
 }
 
 /**
  * Inputs for creating an AgentSession from already-created services.
  *
- * Use this after services exist and any cwd-bound model/tool/session options
- * have been resolved against those services.
+ * Use this after services exist and runtime-bound options have been resolved.
  */
 export interface CreateAgentSessionFromServicesOptions {
 	services: AgentSessionServices;
@@ -79,7 +71,6 @@ export interface AgentSessionServices {
 	settingsManager: SettingsManager;
 	modelRegistry: ModelRegistry;
 	resourceLoader: ResourceLoader;
-	includeProjectResources: boolean;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 
@@ -142,19 +133,15 @@ export async function createAgentSessionServices(
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
 	const authStorage = options.authStorage ?? AuthStorage.create(join(agentDir, "auth.json"));
-	const includeProjectResources = options.includeProjectResources ?? true;
-	const settingsManager =
-		options.settingsManager ??
-		SettingsManager.create(cwd, agentDir, { includeProjectSettings: includeProjectResources });
+	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	const modelRegistry = options.modelRegistry ?? ModelRegistry.create(authStorage, join(agentDir, "models.json"));
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
 		cwd,
 		agentDir,
 		settingsManager,
-		includeProjectResources,
 	});
-	await resourceLoader.reload(options.resourceLoaderReloadOptions);
+	await resourceLoader.reload();
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	const extensionsResult = resourceLoader.getExtensions();
@@ -179,7 +166,6 @@ export async function createAgentSessionServices(
 		settingsManager,
 		modelRegistry,
 		resourceLoader,
-		includeProjectResources,
 		diagnostics,
 	};
 }
@@ -195,7 +181,6 @@ export async function createAgentSessionFromServices(
 	options: CreateAgentSessionFromServicesOptions,
 ): Promise<CreateAgentSessionResult> {
 	return createAgentSession({
-		cwd: options.services.cwd,
 		agentDir: options.services.agentDir,
 		authStorage: options.services.authStorage,
 		settingsManager: options.services.settingsManager,

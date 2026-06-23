@@ -1,4 +1,4 @@
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { Text, type TUI } from "@earendil-works/morgan-tui";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, test } from "vitest";
@@ -434,22 +434,6 @@ describe("ToolExecutionComponent parity", () => {
 			compact: "[skill] attio",
 			hidden: "Hidden skill instructions",
 			absent: "read skill attio",
-		},
-		{
-			title: "AGENTS.md",
-			path: join(process.cwd(), ".morgan", "AGENTS.md"),
-			content: "Hidden resource instructions",
-			compact: "read resource .morgan/AGENTS.md",
-			hidden: "Hidden resource instructions",
-			absent: undefined,
-		},
-		{
-			title: "outside AGENTS.md",
-			path: resolve(process.cwd(), "..", "AGENTS.md"),
-			content: "Hidden outside resource instructions",
-			compact: `read resource ${resolve(process.cwd(), "..", "AGENTS.md").replace(/\\/g, "/")}`,
-			hidden: "Hidden outside resource instructions",
-			absent: undefined,
 		},
 		{
 			title: "Morgan documentation",

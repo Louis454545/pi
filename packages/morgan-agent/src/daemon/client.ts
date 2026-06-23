@@ -3,7 +3,6 @@ import { createConnection, type Socket } from "node:net";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/morgan-agent-core";
 import type { ImageContent } from "@earendil-works/morgan-ai";
 import { APP_NAME } from "../config.ts";
-import type { SessionStats } from "../core/agent-session.ts";
 import type { BashResult } from "../core/bash-executor.ts";
 import type { CompactionResult } from "../core/compaction/index.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "../modes/rpc/jsonl.ts";
@@ -300,46 +299,14 @@ export class DaemonClient {
 		}
 	}
 
-	async getSessionStats(): Promise<SessionStats> {
-		const response = await this.sendRpc({ type: "get_session_stats" });
+	async exportJsonl(outputPath?: string): Promise<{ path: string }> {
+		const response = await this.sendRpc({ type: "export_jsonl", outputPath });
 		return this.getRpcData(response);
-	}
-
-	async exportHtml(outputPath?: string): Promise<{ path: string }> {
-		const response = await this.sendRpc({ type: "export_html", outputPath });
-		return this.getRpcData(response);
-	}
-
-	async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
-		const response = await this.sendRpc({ type: "switch_session", sessionPath });
-		return this.getRpcData(response);
-	}
-
-	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
-		const response = await this.sendRpc({ type: "fork", entryId });
-		return this.getRpcData(response);
-	}
-
-	async clone(): Promise<{ cancelled: boolean }> {
-		const response = await this.sendRpc({ type: "clone" });
-		return this.getRpcData(response);
-	}
-
-	async getForkMessages(): Promise<Array<{ entryId: string; text: string }>> {
-		const response = await this.sendRpc({ type: "get_fork_messages" });
-		return this.getRpcData<{ messages: Array<{ entryId: string; text: string }> }>(response).messages;
 	}
 
 	async getLastAssistantText(): Promise<string | null> {
 		const response = await this.sendRpc({ type: "get_last_assistant_text" });
 		return this.getRpcData<{ text: string | null }>(response).text;
-	}
-
-	async setSessionName(name: string): Promise<void> {
-		const response = await this.sendRpc({ type: "set_session_name", name });
-		if (!response.success) {
-			throw new Error(response.error);
-		}
 	}
 
 	async reload(): Promise<void> {

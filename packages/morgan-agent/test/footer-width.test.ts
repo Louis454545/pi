@@ -15,7 +15,7 @@ type AssistantUsage = {
 };
 
 function createSession(options: {
-	sessionName: string;
+	cwd?: string;
 	modelId?: string;
 	provider?: string;
 	reasoning?: boolean;
@@ -48,8 +48,7 @@ function createSession(options: {
 		},
 		sessionManager: {
 			getEntries: () => entries,
-			getSessionName: () => options.sessionName,
-			getCwd: () => "/tmp/project",
+			getCwd: () => options.cwd ?? "/tmp/project",
 		},
 		getContextUsage: () => ({ contextWindow: 200_000, percent: 12.3 }),
 		modelRegistry: {
@@ -90,9 +89,9 @@ describe("FooterComponent width handling", () => {
 		initTheme(undefined, false);
 	});
 
-	it("keeps all lines within width for wide session names", () => {
+	it("keeps all lines within width for wide cwd values", () => {
 		const width = 93;
-		const session = createSession({ sessionName: "한글".repeat(30) });
+		const session = createSession({ cwd: `/tmp/${"한글".repeat(30)}` });
 		const footer = new FooterComponent(session, createFooterData(1));
 
 		const lines = footer.render(width);
@@ -104,7 +103,6 @@ describe("FooterComponent width handling", () => {
 	it("keeps stats line within width for wide model and provider names", () => {
 		const width = 60;
 		const session = createSession({
-			sessionName: "",
 			modelId: "模".repeat(30),
 			provider: "공급자",
 			reasoning: true,
@@ -127,7 +125,6 @@ describe("FooterComponent width handling", () => {
 
 	it("shows the latest cache hit rate when cache usage is present", () => {
 		const session = createSession({
-			sessionName: "",
 			usage: {
 				input: 100,
 				output: 10,

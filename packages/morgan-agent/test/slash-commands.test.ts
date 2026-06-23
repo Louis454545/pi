@@ -9,7 +9,7 @@ describe("built-in slash commands", () => {
 		expect(commandNames.has("fork")).toBe(false);
 		expect(commandNames.has("clone")).toBe(false);
 		expect(commandNames.has("reset")).toBe(true);
-		expect(commandNames.has("cwd")).toBe(true);
-		expect(commandNames.has("import")).toBe(true);
+		expect(commandNames.has("cwd")).toBe(false);
+		expect(commandNames.has("import")).toBe(false);
 	});
 });

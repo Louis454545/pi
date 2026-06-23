@@ -97,7 +97,7 @@ export default function (morgan: ExtensionAPI) {
 				return;
 			}
 
-			// Gather conversation context from current branch. If the branch was compacted,
+			// Gather conversation context. If it was compacted,
 			// include the compaction summary plus entries from firstKeptEntryId onward.
 			const messages = getHandoffMessages(ctx.sessionManager.getBranch());
 
@@ -109,8 +109,6 @@ export default function (morgan: ExtensionAPI) {
 			// Convert to LLM format and serialize
 			const llmMessages = convertToLlm(messages);
 			const conversationText = serializeConversation(llmMessages);
-			const currentSessionFile = ctx.sessionManager.getSessionFile();
-
 			// Generate the handoff prompt with loader UI
 			const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
 				const loader = new BorderedLoader(tui, theme, `Generating handoff prompt...`);
@@ -172,11 +170,8 @@ export default function (morgan: ExtensionAPI) {
 				return;
 			}
 
-			// Create new session with parent tracking. Use the replacement-session
-			// context for post-switch UI work; the original ctx is stale after a
-			// successful session replacement.
+			// Reset the conversation and continue through the fresh context.
 			const newSessionResult = await ctx.newSession({
-				parentSession: currentSessionFile,
 				withSession: async (replacementCtx) => {
 					replacementCtx.ui.setEditorText(editedPrompt);
 					replacementCtx.ui.notify("Handoff ready. Submit when ready.", "info");

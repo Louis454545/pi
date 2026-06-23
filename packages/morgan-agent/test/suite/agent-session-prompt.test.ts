@@ -163,7 +163,7 @@ describe("AgentSession prompt characterization", () => {
 						baseDir: tempDir,
 						sourceInfo: createSyntheticSourceInfo(skillPath, {
 							source: "local",
-							scope: "project",
+							scope: "temporary",
 							origin: "top-level",
 							baseDir: tempDir,
 						}),

@@ -24,10 +24,9 @@ function createTempDir(): string {
 async function runCli(args: string[]): Promise<{ stdout: string; stderr: string; code: number | null }> {
 	const tempRoot = createTempDir();
 	const agentDir = join(tempRoot, "agent");
-	const projectDir = join(tempRoot, "project");
-	const projectConfigDir = join(projectDir, ".morgan");
+	const launchDir = join(tempRoot, "launch");
 	mkdirSync(agentDir, { recursive: true });
-	mkdirSync(projectConfigDir, { recursive: true });
+	mkdirSync(launchDir, { recursive: true });
 
 	const fakeNpmPath = join(tempRoot, "fake-npm.mjs");
 	writeFileSync(
@@ -41,7 +40,7 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 	);
 
 	writeFileSync(
-		join(projectConfigDir, "settings.json"),
+		join(agentDir, "settings.json"),
 		JSON.stringify(
 			{
 				packages: ["npm:fake-package"],
@@ -55,7 +54,7 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 
 	return await new Promise((resolvePromise, reject) => {
 		const child = spawn(process.execPath, [cliPath, ...args], {
-			cwd: projectDir,
+			cwd: launchDir,
 			env: {
 				...process.env,
 				[ENV_AGENT_DIR]: agentDir,
@@ -106,23 +105,23 @@ describe("stdout cleanliness in non-interactive modes", () => {
 		expect(result.stderr).toContain("Usage:");
 	});
 
-	it("keeps stdout empty for -p --help while routing trusted startup chatter to stderr", async () => {
+	it("prints -p --help to stderr without running package installs", async () => {
 		const result = await runCli(["-p", "--help", "--approve"]);
 
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("");
-		expect(result.stderr).toContain("changed 1 package in 471ms");
-		expect(result.stderr).toContain("found 0 vulnerabilities");
 		expect(result.stderr).toContain("Usage:");
+		expect(result.stderr).not.toContain("changed 1 package in 471ms");
+		expect(result.stderr).not.toContain("found 0 vulnerabilities");
 	});
 
-	it("ignores untrusted project package installs for help", async () => {
+	it("does not run configured package installs for help", async () => {
 		const result = await runCli(["-p", "--help"]);
 
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("");
+		expect(result.stderr).toContain("Usage:");
 		expect(result.stderr).not.toContain("changed 1 package in 471ms");
 		expect(result.stderr).not.toContain("found 0 vulnerabilities");
-		expect(result.stderr).toContain("Usage:");
 	});
 });

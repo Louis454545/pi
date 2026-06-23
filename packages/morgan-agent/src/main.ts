@@ -13,16 +13,7 @@ import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
-import { createProjectTrustContext } from "./cli/project-trust.ts";
-import {
-	ENV_GLOBAL_CONVERSATION_LOCK_HELD,
-	ENV_SESSION_DIR,
-	expandTildePath,
-	getAgentDir,
-	getPackageDir,
-	getSettingsPath,
-	VERSION,
-} from "./config.ts";
+import { ENV_GLOBAL_CONVERSATION_LOCK_HELD, getAgentDir, getPackageDir, getSettingsPath, VERSION } from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
@@ -31,20 +22,16 @@ import {
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
-import { exportFromFile } from "./core/export-html/index.ts";
 import type { ExtensionFactory } from "./core/extensions/types.ts";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
-import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import { acquireGlobalConversationLock, SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
-import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { handleDaemonCommand } from "./daemon/command.ts";
-import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
@@ -53,6 +40,8 @@ import { SetupCancelledError } from "./setup/prompter.ts";
 import { handleSetupCommand, runSetup } from "./setup/setup-cli.ts";
 import { isLocalPath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
+
+type AppMode = "interactive" | "print" | "json" | "rpc";
 
 /**
  * Read all content from piped stdin.
@@ -150,26 +139,6 @@ async function prepareInitialMessage(
 	});
 }
 
-function reportDeprecatedSessionFlags(parsed: Args): void {
-	const flags = [
-		parsed.continue ? "--continue" : undefined,
-		parsed.resume ? "--resume" : undefined,
-		parsed.session ? "--session" : undefined,
-		parsed.sessionId ? "--session-id" : undefined,
-		parsed.fork ? "--fork" : undefined,
-	].filter((flag): flag is string => flag !== undefined);
-	if (flags.length > 0) {
-		console.error(
-			chalk.yellow(
-				`Warning: ${flags.join(", ")} ${flags.length === 1 ? "is" : "are"} deprecated; the global conversation is continued by default.`,
-			),
-		);
-	}
-	if (parsed.name !== undefined) {
-		console.error(chalk.yellow("Warning: --name is deprecated; use /name to rename the global conversation."));
-	}
-}
-
 function createSessionManager(
 	parsed: Args,
 	agentDir: string,
@@ -180,7 +149,6 @@ function createSessionManager(
 		return SessionManager.inMemory(cwd);
 	}
 
-	reportDeprecatedSessionFlags(parsed);
 	return SessionManager.openGlobal(agentDir, { cwd, sessionDir });
 }
 
@@ -344,20 +312,6 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exit(0);
 	}
 
-	if (parsed.export) {
-		let result: string;
-		try {
-			const outputPath = parsed.messages.length > 0 ? parsed.messages[0] : undefined;
-			result = await exportFromFile(parsed.export, outputPath);
-		} catch (error: unknown) {
-			const message = error instanceof Error ? error.message : "Failed to export conversation";
-			console.error(chalk.red(`Error: ${message}`));
-			process.exit(1);
-		}
-		console.log(`Exported to: ${result}`);
-		process.exit(0);
-	}
-
 	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
 	const shouldTakeOverStdout = appMode !== "interactive" && !isPlainRuntimeMetadataCommand(parsed);
 	if (shouldTakeOverStdout) {
@@ -369,11 +323,14 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 
+	if (parsed.help) {
+		printHelp();
+		process.exit(0);
+	}
+
 	const launchCwd = process.cwd();
 	const agentDir = getAgentDir();
-	const workingContextCwd = parsed.cwd !== undefined ? resolvePath(parsed.cwd, launchCwd) : undefined;
-	const cwd = workingContextCwd ?? homedir();
-	const includeProjectResources = true;
+	const cwd = homedir();
 
 	if (shouldRunStartupSetup(appMode, parsed)) {
 		try {
@@ -388,19 +345,9 @@ export async function main(args: string[], options?: MainOptions) {
 		time("startupSetup");
 	}
 
-	// Run project-local migrations only when a working context is explicit.
-	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(workingContextCwd);
-	time("runMigrations");
-
-	const startupSettingsManager = SettingsManager.create(cwd, agentDir, {
-		includeProjectSettings: includeProjectResources,
-	});
+	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
-	const envSessionDir = process.env[ENV_SESSION_DIR];
-	const sessionDir =
-		(parsed.sessionDir ? resolvePath(parsed.sessionDir, launchCwd) : undefined) ??
-		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
-		startupSettingsManager.getSessionDir();
+	const sessionDir = startupSettingsManager.getSessionDir();
 	const shouldUsePersistentGlobalConversation =
 		!parsed.noSession &&
 		!parsed.help &&
@@ -417,25 +364,7 @@ export async function main(args: string[], options?: MainOptions) {
 		await releaseGlobalLock?.();
 		throw error;
 	}
-	if (parsed.name !== undefined) {
-		const name = parsed.name.trim();
-		if (!name) {
-			await releaseGlobalLock?.();
-			console.error(chalk.red("Error: --name requires a non-empty value"));
-			process.exit(1);
-		}
-		sessionManager.appendSessionInfo(name);
-	}
 	time("createSessionManager");
-
-	const trustStore = new ProjectTrustStore(agentDir);
-	const sessionCwd = sessionManager.getCwd();
-	const autoTrustOnReloadCwd =
-		parsed.projectTrustOverride === undefined && !hasTrustRequiringProjectResources(sessionCwd)
-			? sessionCwd
-			: undefined;
-	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
-	const projectTrustByCwd = new Map<string, boolean>();
 
 	const resolvedExtensionPaths = resolveCliPaths(launchCwd, parsed.extensions);
 	const resolvedSkillPaths = resolveCliPaths(launchCwd, parsed.skills);
@@ -446,56 +375,15 @@ export async function main(args: string[], options?: MainOptions) {
 		cwd,
 		agentDir,
 		sessionManager,
-		includeProjectResources,
 		sessionStartEvent,
-		projectTrustContext,
 	}) => {
-		const isInitialRuntime = sessionStartEvent === undefined;
-		const projectTrustDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
-		const cachedProjectTrust = projectTrustByCwd.get(cwd);
-		const hasTrustRequiringResources = hasTrustRequiringProjectResources(cwd);
-		const shouldResolveProjectTrust =
-			parsed.projectTrustOverride === undefined && cachedProjectTrust === undefined && hasTrustRequiringResources;
-		const projectTrusted = shouldResolveProjectTrust
-			? false
-			: (cachedProjectTrust ??
-				parsed.projectTrustOverride ??
-				(!hasTrustRequiringResources || trustStore.get(cwd) === true));
-		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, {
-			includeProjectSettings: includeProjectResources,
-			projectTrusted,
-		});
+		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir);
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,
 			authStorage,
 			settingsManager: runtimeSettingsManager,
 			extensionFlagValues: parsed.unknownFlags,
-			includeProjectResources,
-			resourceLoaderReloadOptions: shouldResolveProjectTrust
-				? {
-						resolveProjectTrust: async ({ extensionsResult }) => {
-							const trusted = await resolveProjectTrusted({
-								cwd,
-								trustStore,
-								trustOverride: parsed.projectTrustOverride,
-								defaultProjectTrust: startupSettingsManager.getDefaultProjectTrust(),
-								extensionsResult,
-								projectTrustContext:
-									projectTrustContext ??
-									createProjectTrustContext({
-										cwd,
-										mode: isInitialRuntime ? trustPromptMode : appMode,
-										settingsManager: startupSettingsManager,
-										hasUI: isInitialRuntime && trustPromptMode === "interactive",
-									}),
-								onExtensionError: (message) => projectTrustDiagnostics.push({ type: "warning", message }),
-							});
-							projectTrustByCwd.set(cwd, trusted);
-							return trusted;
-						},
-					}
-				: undefined,
 			resourceLoaderOptions: {
 				additionalExtensionPaths: resolvedExtensionPaths,
 				additionalSkillPaths: resolvedSkillPaths,
@@ -505,14 +393,12 @@ export async function main(args: string[], options?: MainOptions) {
 				noSkills: parsed.noSkills,
 				noPromptTemplates: parsed.noPromptTemplates,
 				noThemes: parsed.noThemes,
-				noContextFiles: parsed.noContextFiles,
 				appendSystemPrompt: parsed.appendSystemPrompt,
 				extensionFactories: options?.extensionFactories,
 			},
 		});
 		const { settingsManager, modelRegistry, resourceLoader } = services;
 		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
-			...projectTrustDiagnostics,
 			...services.diagnostics,
 			...collectSettingsDiagnostics(settingsManager, "runtime creation"),
 			...resourceLoader.getExtensions().errors.map(({ path, error }) => ({
@@ -578,7 +464,6 @@ export async function main(args: string[], options?: MainOptions) {
 			cwd: sessionManager.getCwd(),
 			agentDir,
 			sessionManager,
-			includeProjectResources,
 		});
 	} catch (error) {
 		await releaseGlobalLock?.();
@@ -588,16 +473,15 @@ export async function main(args: string[], options?: MainOptions) {
 	releaseGlobalLock = undefined;
 	time("createAgentSessionRuntime");
 	const { services, session, modelFallbackMessage } = runtime;
-	const { settingsManager, modelRegistry, resourceLoader } = services;
+	const { settingsManager, modelRegistry } = services;
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
-
-	if (parsed.help) {
-		const extensionFlags = resourceLoader
-			.getExtensions()
-			.extensions.flatMap((extension) => Array.from(extension.flags.values()));
-		printHelp(extensionFlags);
-		await runtime.dispose();
-		process.exit(0);
+	if (parsed.export) {
+		try {
+			console.log(`Exported to: ${session.exportToJsonl(parsed.export)}`);
+		} finally {
+			await runtime.dispose();
+		}
+		return;
 	}
 
 	if (parsed.listModels !== undefined) {
@@ -626,11 +510,6 @@ export async function main(args: string[], options?: MainOptions) {
 	initTheme(settingsManager.getTheme(), appMode === "interactive");
 	time("initTheme");
 
-	// Show deprecation warnings in interactive mode
-	if (appMode === "interactive" && deprecationWarnings.length > 0) {
-		await showDeprecationWarnings(deprecationWarnings);
-	}
-
 	time("resolveModelScope");
 	reportDiagnostics(runtime.diagnostics);
 	if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
@@ -657,9 +536,7 @@ export async function main(args: string[], options?: MainOptions) {
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {
 		const interactiveMode = new InteractiveMode(runtime, {
-			migratedProviders,
 			modelFallbackMessage,
-			autoTrustOnReloadCwd,
 			initialMessage,
 			initialImages,
 			initialMessages: parsed.messages,

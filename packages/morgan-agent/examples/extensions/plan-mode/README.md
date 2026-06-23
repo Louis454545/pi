@@ -4,12 +4,12 @@ Read-only exploration mode for safe code analysis.
 
 ## Features
 
-- **Read-only tools**: Restricts available tools to read, bash, grep, find, ls, question
+- **Read-only tools**: Restricts available tools to read, bash, question
 - **Bash allowlist**: Only read-only bash commands are allowed
 - **Plan extraction**: Extracts numbered steps from `Plan:` sections
 - **Progress tracking**: Widget shows completion status during execution
 - **[DONE:n] markers**: Explicit step completion tracking
-- **Session persistence**: State survives session resume
+- **Global persistence**: State is stored in the global conversation
 
 ## Commands
 
@@ -51,7 +51,7 @@ Plan:
 
 Safe commands (allowed):
 - File inspection: `cat`, `head`, `tail`, `less`, `more`
-- Search: `grep`, `find`, `rg`, `fd`
+- Search: `rg`, `fd`, `grep`
 - Directory: `ls`, `pwd`, `tree`
 - Git read: `git status`, `git log`, `git diff`, `git branch`
 - Package info: `npm list`, `npm outdated`, `yarn info`

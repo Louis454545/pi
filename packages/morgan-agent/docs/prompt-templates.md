@@ -9,7 +9,6 @@ Prompt templates are Markdown snippets that expand into full prompts. Type `/nam
 Morgan loads prompt templates from:
 
 - Global: `~/.morgan/agent/prompts/*.md`
-- Project: `.morgan/prompts/*.md`
 - Packages: `prompts/` directories or `morgan.prompts` entries in `package.json`
 - Settings: `prompts` array with files or directories
 - CLI: `--prompt-template <path>` (repeatable)

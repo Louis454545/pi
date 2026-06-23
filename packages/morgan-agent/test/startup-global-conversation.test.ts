@@ -88,31 +88,17 @@ describe("startup global conversation", () => {
 		expect(secondHeader.cwd).toBe(firstHeader.cwd);
 	});
 
-	it("uses --cwd as the explicit working context", async () => {
-		const tempRoot = createTempDir();
-		const agentDir = join(tempRoot, "agent");
-		const workspace = join(tempRoot, "workspace");
-		const globalConversationFile = join(tempRoot, "sessions", "global", "conversation.jsonl");
-		mkdirSync(agentDir, { recursive: true });
-		mkdirSync(workspace, { recursive: true });
-
-		const result = await runCli(["--cwd", "workspace", "--model", "missing-model", "-p", "hi"], tempRoot, agentDir);
-		expect(result.code).toBe(1);
-		expect(readHeader(globalConversationFile)).toMatchObject({ type: "session", cwd: resolve(workspace) });
-	});
-
-	it("loads home project settings for the default home working context", async () => {
+	it("loads the configured global conversation directory", async () => {
 		const tempRoot = createTempDir();
 		const agentDir = join(tempRoot, "agent");
 		const homeDir = join(tempRoot, "home");
 		const launchDir = join(tempRoot, "launch");
-		const homeMorganDir = join(homeDir, ".morgan");
 		const configuredSessionDir = join(tempRoot, "configured-sessions");
 		const configuredConversationFile = join(configuredSessionDir, "global", "conversation.jsonl");
 		mkdirSync(agentDir, { recursive: true });
-		mkdirSync(homeMorganDir, { recursive: true });
+		mkdirSync(homeDir, { recursive: true });
 		mkdirSync(launchDir, { recursive: true });
-		writeFileSync(join(homeMorganDir, "settings.json"), JSON.stringify({ sessionDir: configuredSessionDir }));
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ sessionDir: configuredSessionDir }));
 
 		const result = await runCli(["--model", "missing-model", "-p", "hi"], launchDir, agentDir, homeDir);
 		expect(result.code).toBe(1);

@@ -40,7 +40,6 @@ This is a test skill.
 
 	it("should discover skills by default and expose them on session.skills", async () => {
 		const { session } = await createAgentSession({
-			cwd: tempDir,
 			agentDir: tempDir,
 			sessionManager: SessionManager.inMemory(),
 		});
@@ -56,7 +55,6 @@ This is a test skill.
 			getSkills: () => ({ skills: [], diagnostics: [] }),
 			getPrompts: () => ({ prompts: [], diagnostics: [] }),
 			getThemes: () => ({ themes: [], diagnostics: [] }),
-			getAgentsFiles: () => ({ agentsFiles: [] }),
 			getSystemPrompt: () => undefined,
 			getAppendSystemPrompt: () => [],
 			extendResources: () => {},
@@ -64,7 +62,6 @@ This is a test skill.
 		};
 
 		const { session } = await createAgentSession({
-			cwd: tempDir,
 			agentDir: tempDir,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,
@@ -89,7 +86,6 @@ This is a test skill.
 			getSkills: () => ({ skills: [customSkill], diagnostics: [] }),
 			getPrompts: () => ({ prompts: [], diagnostics: [] }),
 			getThemes: () => ({ themes: [], diagnostics: [] }),
-			getAgentsFiles: () => ({ agentsFiles: [] }),
 			getSystemPrompt: () => undefined,
 			getAppendSystemPrompt: () => [],
 			extendResources: () => {},
@@ -97,7 +93,6 @@ This is a test skill.
 		};
 
 		const { session } = await createAgentSession({
-			cwd: tempDir,
 			agentDir: tempDir,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,

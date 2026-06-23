@@ -53,7 +53,6 @@ describe("regression #2835: tool allowlists filter extension tools", () => {
 		await resourceLoader.reload();
 
 		const { session } = await createAgentSession({
-			cwd: tempDir,
 			agentDir,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,

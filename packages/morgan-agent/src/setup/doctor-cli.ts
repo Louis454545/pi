@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import chalk from "chalk";
 import { APP_NAME, getAgentDir, getSettingsPath } from "../config.ts";
 import { AuthStorage } from "../core/auth-storage.ts";
@@ -83,7 +84,7 @@ export async function handleDoctorCommand(
 	const agentDir = getAgentDir();
 	const authStorage = AuthStorage.create();
 	const modelRegistry = ModelRegistry.create(authStorage);
-	const settingsManager = SettingsManager.create(process.cwd(), agentDir, { includeProjectSettings: false });
+	const settingsManager = SettingsManager.create(homedir(), agentDir);
 	const diagnostics = await collectSetupDiagnostics({
 		agentDir,
 		authStorage,

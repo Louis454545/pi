@@ -14,7 +14,7 @@ process.env.MORGAN_AGENT = "true";
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 // Configure undici's global dispatcher before provider SDKs issue requests.
-// Runtime settings are applied once SettingsManager has loaded global/project settings.
+// Runtime settings are applied once SettingsManager has loaded global settings.
 configureHttpDispatcher();
 
 main(process.argv.slice(2));

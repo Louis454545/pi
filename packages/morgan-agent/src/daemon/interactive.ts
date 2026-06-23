@@ -32,7 +32,6 @@ import { SettingsManager } from "../core/settings-manager.ts";
 import type { TruncationResult } from "../core/tools/truncate.ts";
 import { AssistantMessageComponent } from "../modes/interactive/components/assistant-message.ts";
 import { BashExecutionComponent } from "../modes/interactive/components/bash-execution.ts";
-import { BranchSummaryMessageComponent } from "../modes/interactive/components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "../modes/interactive/components/compaction-summary-message.ts";
 import { CustomEditor } from "../modes/interactive/components/custom-editor.ts";
 import { CustomMessageComponent } from "../modes/interactive/components/custom-message.ts";
@@ -239,13 +238,9 @@ class DaemonFooterComponent implements Component {
 
 	render(width: number): string[] {
 		const branch = this.footerData.getGitBranch();
-		const sessionName = this.state?.sessionName;
 		let pwd = this.formatCwdForFooter();
 		if (branch) {
 			pwd = `${pwd} (${branch})`;
-		}
-		if (sessionName) {
-			pwd = `${pwd} - ${sessionName}`;
 		}
 
 		const statsParts: string[] = [];
@@ -470,9 +465,8 @@ class DaemonInteractiveMode {
 	private editor: CustomEditor;
 	private footerDataProvider: FooterDataProvider;
 	private footer: DaemonFooterComponent;
-	private cwd = process.cwd();
+	private cwd = os.homedir();
 	private state: RpcSessionState | undefined;
-	private stats: SessionStats | undefined;
 	private availableModels: DaemonModelInfo[] = [];
 	private daemonCommands: RpcSlashCommand[] = [];
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -503,7 +497,7 @@ class DaemonInteractiveMode {
 
 	constructor(client: DaemonClient) {
 		this.client = client;
-		this.settingsManager = SettingsManager.create(process.cwd(), getAgentDir());
+		this.settingsManager = SettingsManager.create(os.homedir(), getAgentDir());
 		initTheme(this.settingsManager.getTheme(), true);
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 		this.keybindings = KeybindingsManager.create();
@@ -653,13 +647,6 @@ class DaemonInteractiveMode {
 		this.state = await this.client.getState();
 		this.footer.setState(this.state);
 		try {
-			this.stats = await this.client.getSessionStats();
-			this.footer.setStats(this.stats);
-		} catch {
-			this.stats = undefined;
-			this.footer.setStats(undefined);
-		}
-		try {
 			this.availableModels = await this.client.getAvailableModels();
 			const providers = new Set(this.availableModels.map((model) => model.provider));
 			this.footer.setAvailableProviderCount(providers.size);
@@ -793,13 +780,6 @@ class DaemonInteractiveMode {
 				this.chatContainer.addChild(component);
 				break;
 			}
-			case "branchSummary": {
-				this.chatContainer.addChild(new Spacer(1));
-				const component = new BranchSummaryMessageComponent(message, this.getMarkdownThemeWithSettings());
-				component.setExpanded(this.toolOutputExpanded);
-				this.chatContainer.addChild(component);
-				break;
-			}
 			case "user": {
 				const textContent = getUserMessageText(message);
 				if (!textContent) break;
@@ -833,8 +813,6 @@ class DaemonInteractiveMode {
 			case "toolResult":
 				break;
 			default: {
-				const _exhaustive: never = message;
-				void _exhaustive;
 				break;
 			}
 		}
@@ -894,14 +872,6 @@ class DaemonInteractiveMode {
 			await this.handleReloadCommand();
 			return;
 		}
-		if (text === "/session") {
-			await this.handleSessionCommand();
-			return;
-		}
-		if (text === "/name" || text.startsWith("/name ")) {
-			await this.handleNameCommand(text);
-			return;
-		}
 		if (text === "/export" || text.startsWith("/export ")) {
 			await this.handleExportCommand(text);
 			return;
@@ -918,11 +888,7 @@ class DaemonInteractiveMode {
 			this.handleHotkeysCommand();
 			return;
 		}
-		if (text === "/resume") {
-			this.showWarning("/resume is deprecated; the global conversation is continued by default.");
-			return;
-		}
-		if (text === "/settings" || text === "/tree") {
+		if (text === "/settings") {
 			this.showWarning(`${text} is not available through daemon attach yet`);
 			return;
 		}
@@ -1098,15 +1064,6 @@ class DaemonInteractiveMode {
 				this.steeringMessages = [...sessionEvent.steering];
 				this.followUpMessages = [...sessionEvent.followUp];
 				this.updatePendingMessagesDisplay();
-				break;
-
-			case "session_info_changed":
-				if (this.state) {
-					this.state = { ...this.state, sessionName: sessionEvent.name };
-					this.footer.setState(this.state);
-				}
-				this.updateTerminalTitle();
-				this.ui.requestRender();
 				break;
 
 			case "thinking_level_changed":
@@ -1526,57 +1483,10 @@ class DaemonInteractiveMode {
 		}
 	}
 
-	private async handleSessionCommand(): Promise<void> {
-		await this.refreshState();
-		const stats = this.stats;
-		const state = this.state;
-		if (!stats || !state) {
-			this.showWarning("Conversation information is unavailable");
-			return;
-		}
-		const info = [
-			theme.bold("Conversation Info"),
-			"",
-			`${theme.fg("dim", "Name:")} ${state.sessionName ?? "(unnamed)"}`,
-			`${theme.fg("dim", "File:")} ${stats.sessionFile ?? "In-memory"}`,
-			`${theme.fg("dim", "ID:")} ${stats.sessionId}`,
-			"",
-			theme.bold("Messages"),
-			`${theme.fg("dim", "User:")} ${stats.userMessages}`,
-			`${theme.fg("dim", "Assistant:")} ${stats.assistantMessages}`,
-			`${theme.fg("dim", "Tool Calls:")} ${stats.toolCalls}`,
-			`${theme.fg("dim", "Tool Results:")} ${stats.toolResults}`,
-			`${theme.fg("dim", "Total:")} ${stats.totalMessages}`,
-			"",
-			theme.bold("Tokens"),
-			`${theme.fg("dim", "Input:")} ${stats.tokens.input.toLocaleString()}`,
-			`${theme.fg("dim", "Output:")} ${stats.tokens.output.toLocaleString()}`,
-			`${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}`,
-		].join("\n");
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info, 1, 0));
-		this.ui.requestRender();
-	}
-
-	private async handleNameCommand(text: string): Promise<void> {
-		const name = text.replace(/^\/name\s*/, "").trim();
-		if (!name) {
-			this.showStatus(`Conversation name: ${this.state?.sessionName ?? "(unnamed)"}`);
-			return;
-		}
-		try {
-			await this.client.setSessionName(name);
-			await this.refreshState();
-			this.showStatus(`Conversation name set: ${name}`);
-		} catch (error: unknown) {
-			this.showError(error);
-		}
-	}
-
 	private async handleExportCommand(text: string): Promise<void> {
 		const outputPath = getPathCommandArgument(text, "/export");
 		try {
-			const result = await this.client.exportHtml(outputPath);
+			const result = await this.client.exportJsonl(outputPath);
 			this.showStatus(`Conversation exported to: ${result.path}`);
 		} catch (error: unknown) {
 			this.showError(error);
@@ -1721,7 +1631,7 @@ class DaemonInteractiveMode {
 			`| \`${keyText("app.thinking.cycle")}\` | Cycle thinking level |`,
 			`| \`${keyText("app.tools.expand")}\` | Toggle expanded output |`,
 			"",
-			"`/model`, `/reset`, `/compact`, `/session`, `/name`, `/export`, `/copy`, `/quit`",
+			"`/model`, `/reset`, `/compact`, `/export`, `/copy`, `/quit`",
 		].join("\n");
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new DynamicBorder());
@@ -1760,7 +1670,7 @@ class DaemonInteractiveMode {
 		const tmpFile = path.join(os.tmpdir(), `morgan-daemon-editor-${Date.now()}.md`);
 		fs.writeFileSync(tmpFile, this.editor.getText(), "utf8");
 		this.ui.stop();
-		process.stdout.write(`Launching external editor: ${editorCommand}\nPi will resume when the editor exits.\n`);
+		process.stdout.write(`Launching external editor: ${editorCommand}\nMorgan will resume when the editor exits.\n`);
 		const [command, ...args] = editorCommand.split(" ");
 		const status = await new Promise<number | null>((resolve) => {
 			const proc = spawn(command, [...args, tmpFile], { stdio: "inherit", shell: process.platform === "win32" });
@@ -1851,10 +1761,7 @@ class DaemonInteractiveMode {
 
 	private updateTerminalTitle(): void {
 		const cwdBasename = path.basename(this.cwd);
-		const sessionName = this.state?.sessionName;
-		this.ui.terminal.setTitle(
-			sessionName ? `${APP_TITLE} daemon - ${sessionName} - ${cwdBasename}` : `${APP_TITLE} daemon - ${cwdBasename}`,
-		);
+		this.ui.terminal.setTitle(`${APP_TITLE} daemon - ${cwdBasename}`);
 	}
 
 	private registerSignalHandlers(): void {

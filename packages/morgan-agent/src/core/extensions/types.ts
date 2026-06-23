@@ -49,13 +49,7 @@ import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
-import type {
-	BranchSummaryEntry,
-	CompactionEntry,
-	ReadonlySessionManager,
-	SessionEntry,
-	SessionManager,
-} from "../session-manager.ts";
+import type { CompactionEntry, ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
@@ -65,12 +59,6 @@ import type {
 	BashToolDetails,
 	BashToolInput,
 	EditToolInput,
-	FindToolDetails,
-	FindToolInput,
-	GrepToolDetails,
-	GrepToolInput,
-	LsToolDetails,
-	LsToolInput,
 	ReadToolDetails,
 	ReadToolInput,
 	WriteToolInput,
@@ -314,8 +302,6 @@ export interface ExtensionContext {
 	model: Model<any> | undefined;
 	/** Whether the agent is idle (not streaming) */
 	isIdle(): boolean;
-	/** Whether project-local trust is active for this context. */
-	isProjectTrusted(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
 	signal: AbortSignal | undefined;
 	/** Abort the current agent operation */
@@ -412,39 +398,19 @@ export interface ExtensionCommandContext extends ExtensionContext {
 	/** Wait for the agent to finish streaming */
 	waitForIdle(): Promise<void>;
 
-	/** Archive and reset the global conversation, optionally with initialization. */
+	/** Reset the global conversation. */
 	newSession(options?: {
-		parentSession?: string;
-		setup?: (sessionManager: SessionManager) => Promise<void>;
 		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 	}): Promise<{ cancelled: boolean }>;
-
-	/** Fork from a specific entry, creating a new session file. */
-	fork(
-		entryId: string,
-		options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
-	): Promise<{ cancelled: boolean }>;
-
-	/** Navigate to a different point in the session tree. */
-	navigateTree(
-		targetId: string,
-		options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
-	): Promise<{ cancelled: boolean }>;
-
-	/** Switch to a different session file. */
-	switchSession(
-		sessionPath: string,
-		options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
-	): Promise<{ cancelled: boolean }>;
 
 	/** Reload extensions, skills, prompts, and themes. */
 	reload(): Promise<void>;
 }
 
 /**
- * Fresh command-capable context bound to the replacement session after a session switch.
+ * Fresh command-capable context bound to the reset conversation.
  *
- * This is passed to `withSession()` callbacks on `newSession()`, `fork()`, and `switchSession()`.
+ * This is passed to `withSession()` callbacks on `newSession()`.
  */
 export interface ReplacedSessionContext extends ExtensionCommandContext {
 	sendMessage<T = unknown>(
@@ -517,7 +483,7 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	/** Controls whether ToolExecutionComponent renders the standard colored shell or the tool renders its own framing. */
 	renderShell?: "default" | "self";
 
-	/** Optional compatibility shim to prepare raw tool call arguments before schema validation. Must return an object conforming to TParams. */
+	/** Optional argument normalizer before schema validation. Must return an object conforming to TParams. */
 	prepareArguments?: (args: unknown) => Static<TParams>;
 
 	/**
@@ -569,30 +535,6 @@ export function defineTool<TParams extends TSchema, TDetails = unknown, TState =
 // Startup/Resource Events
 // ============================================================================
 
-export interface ProjectTrustEvent {
-	type: "project_trust";
-	cwd: string;
-}
-
-export type ProjectTrustEventDecision = "yes" | "no" | "undecided";
-
-export interface ProjectTrustEventResult {
-	trusted: ProjectTrustEventDecision;
-	remember?: boolean;
-}
-
-export interface ProjectTrustContext {
-	cwd: string;
-	mode: ExtensionMode;
-	hasUI: boolean;
-	ui: Pick<ExtensionUIContext, "select" | "confirm" | "input" | "notify">;
-}
-
-export type ProjectTrustHandler = (
-	event: ProjectTrustEvent,
-	ctx: ProjectTrustContext,
-) => Promise<ProjectTrustEventResult> | ProjectTrustEventResult;
-
 /** Fired after session_start to allow extensions to provide additional resource paths. */
 export interface ResourcesDiscoverEvent {
 	type: "resources_discover";
@@ -615,23 +557,9 @@ export interface ResourcesDiscoverResult {
 export interface SessionStartEvent {
 	type: "session_start";
 	/** Why this session start happened. */
-	reason: "startup" | "reload" | "new" | "resume" | "fork";
-	/** Previously active session file. Present for "new", "resume", and "fork". */
+	reason: "startup" | "reload" | "new";
+	/** Previously active session file. Present for reset. */
 	previousSessionFile?: string;
-}
-
-/** Fired before switching to another session (can be cancelled) */
-export interface SessionBeforeSwitchEvent {
-	type: "session_before_switch";
-	reason: "new" | "resume";
-	targetSessionFile?: string;
-}
-
-/** Fired before forking a session (can be cancelled) */
-export interface SessionBeforeForkEvent {
-	type: "session_before_fork";
-	entryId: string;
-	position: "before" | "at";
 }
 
 export type DreamCompactionReason = "manual" | "threshold" | "overflow";
@@ -661,51 +589,12 @@ export interface SessionDreamEvent {
 /** Fired before an extension runtime is torn down due to quit, reload, or session replacement. */
 export interface SessionShutdownEvent {
 	type: "session_shutdown";
-	reason: "quit" | "reload" | "new" | "resume" | "fork";
+	reason: "quit" | "reload" | "new";
 	/** Destination session file when shutting down due to session replacement. */
 	targetSessionFile?: string;
 }
 
-/** Preparation data for tree navigation */
-export interface TreePreparation {
-	targetId: string;
-	oldLeafId: string | null;
-	commonAncestorId: string | null;
-	entriesToSummarize: SessionEntry[];
-	userWantsSummary: boolean;
-	/** Custom instructions for summarization */
-	customInstructions?: string;
-	/** If true, customInstructions replaces the default prompt instead of being appended */
-	replaceInstructions?: boolean;
-	/** Label to attach to the branch summary entry */
-	label?: string;
-}
-
-/** Fired before navigating in the session tree (can be cancelled) */
-export interface SessionBeforeTreeEvent {
-	type: "session_before_tree";
-	preparation: TreePreparation;
-	signal: AbortSignal;
-}
-
-/** Fired after navigating in the session tree */
-export interface SessionTreeEvent {
-	type: "session_tree";
-	newLeafId: string | null;
-	oldLeafId: string | null;
-	summaryEntry?: BranchSummaryEntry;
-	fromExtension?: boolean;
-}
-
-export type SessionEvent =
-	| SessionStartEvent
-	| SessionBeforeSwitchEvent
-	| SessionBeforeForkEvent
-	| SessionBeforeDreamEvent
-	| SessionDreamEvent
-	| SessionShutdownEvent
-	| SessionBeforeTreeEvent
-	| SessionTreeEvent;
+export type SessionEvent = SessionStartEvent | SessionBeforeDreamEvent | SessionDreamEvent | SessionShutdownEvent;
 
 // ============================================================================
 // Agent Events
@@ -905,21 +794,6 @@ export interface WriteToolCallEvent extends ToolCallEventBase {
 	input: WriteToolInput;
 }
 
-export interface GrepToolCallEvent extends ToolCallEventBase {
-	toolName: "grep";
-	input: GrepToolInput;
-}
-
-export interface FindToolCallEvent extends ToolCallEventBase {
-	toolName: "find";
-	input: FindToolInput;
-}
-
-export interface LsToolCallEvent extends ToolCallEventBase {
-	toolName: "ls";
-	input: LsToolInput;
-}
-
 export interface CustomToolCallEvent extends ToolCallEventBase {
 	toolName: string;
 	input: Record<string, unknown>;
@@ -936,9 +810,6 @@ export type ToolCallEvent =
 	| ReadToolCallEvent
 	| EditToolCallEvent
 	| WriteToolCallEvent
-	| GrepToolCallEvent
-	| FindToolCallEvent
-	| LsToolCallEvent
 	| CustomToolCallEvent;
 
 interface ToolResultEventBase {
@@ -969,21 +840,6 @@ export interface WriteToolResultEvent extends ToolResultEventBase {
 	details: undefined;
 }
 
-export interface GrepToolResultEvent extends ToolResultEventBase {
-	toolName: "grep";
-	details: GrepToolDetails | undefined;
-}
-
-export interface FindToolResultEvent extends ToolResultEventBase {
-	toolName: "find";
-	details: FindToolDetails | undefined;
-}
-
-export interface LsToolResultEvent extends ToolResultEventBase {
-	toolName: "ls";
-	details: LsToolDetails | undefined;
-}
-
 export interface CustomToolResultEvent extends ToolResultEventBase {
 	toolName: string;
 	details: unknown;
@@ -995,9 +851,6 @@ export type ToolResultEvent =
 	| ReadToolResultEvent
 	| EditToolResultEvent
 	| WriteToolResultEvent
-	| GrepToolResultEvent
-	| FindToolResultEvent
-	| LsToolResultEvent
 	| CustomToolResultEvent;
 
 // Type guards for ToolResultEvent
@@ -1012,15 +865,6 @@ export function isEditToolResult(e: ToolResultEvent): e is EditToolResultEvent {
 }
 export function isWriteToolResult(e: ToolResultEvent): e is WriteToolResultEvent {
 	return e.toolName === "write";
-}
-export function isGrepToolResult(e: ToolResultEvent): e is GrepToolResultEvent {
-	return e.toolName === "grep";
-}
-export function isFindToolResult(e: ToolResultEvent): e is FindToolResultEvent {
-	return e.toolName === "find";
-}
-export function isLsToolResult(e: ToolResultEvent): e is LsToolResultEvent {
-	return e.toolName === "ls";
 }
 
 /**
@@ -1047,9 +891,6 @@ export function isToolCallEventType(toolName: "bash", event: ToolCallEvent): eve
 export function isToolCallEventType(toolName: "read", event: ToolCallEvent): event is ReadToolCallEvent;
 export function isToolCallEventType(toolName: "edit", event: ToolCallEvent): event is EditToolCallEvent;
 export function isToolCallEventType(toolName: "write", event: ToolCallEvent): event is WriteToolCallEvent;
-export function isToolCallEventType(toolName: "grep", event: ToolCallEvent): event is GrepToolCallEvent;
-export function isToolCallEventType(toolName: "find", event: ToolCallEvent): event is FindToolCallEvent;
-export function isToolCallEventType(toolName: "ls", event: ToolCallEvent): event is LsToolCallEvent;
 export function isToolCallEventType<TName extends string, TInput extends Record<string, unknown>>(
 	toolName: TName,
 	event: ToolCallEvent,
@@ -1060,7 +901,6 @@ export function isToolCallEventType(toolName: string, event: ToolCallEvent): boo
 
 /** Union of all event types */
 export type ExtensionEvent =
-	| ProjectTrustEvent
 	| ResourcesDiscoverEvent
 	| SessionEvent
 	| ContextEvent
@@ -1125,32 +965,9 @@ export interface BeforeAgentStartEventResult {
 	systemPrompt?: string;
 }
 
-export interface SessionBeforeSwitchResult {
-	cancel?: boolean;
-}
-
-export interface SessionBeforeForkResult {
-	cancel?: boolean;
-	skipConversationRestore?: boolean;
-}
-
 export interface SessionBeforeDreamResult {
 	cancel?: boolean;
 	additionalInstructions?: string;
-}
-
-export interface SessionBeforeTreeResult {
-	cancel?: boolean;
-	summary?: {
-		summary: string;
-		details?: unknown;
-	};
-	/** Override custom instructions for summarization */
-	customInstructions?: string;
-	/** Override whether customInstructions replaces the default prompt */
-	replaceInstructions?: boolean;
-	/** Override label to attach to the branch summary entry */
-	label?: string;
 }
 
 // ============================================================================
@@ -1205,22 +1022,14 @@ export interface ExtensionAPI {
 	// Event Subscription
 	// =========================================================================
 
-	on(event: "project_trust", handler: ProjectTrustHandler): void;
 	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
-	on(
-		event: "session_before_switch",
-		handler: ExtensionHandler<SessionBeforeSwitchEvent, SessionBeforeSwitchResult>,
-	): void;
-	on(event: "session_before_fork", handler: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>): void;
 	on(
 		event: "session_before_dream",
 		handler: ExtensionHandler<SessionBeforeDreamEvent, SessionBeforeDreamResult>,
 	): void;
 	on(event: "session_dream", handler: ExtensionHandler<SessionDreamEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
-	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
-	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
 	on(
 		event: "before_provider_request",
@@ -1318,19 +1127,6 @@ export interface ExtensionAPI {
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
 	appendEntry<T = unknown>(customType: string, data?: T): void;
-
-	// =========================================================================
-	// Session Metadata
-	// =========================================================================
-
-	/** Set the session display name (shown in session selector). */
-	setSessionName(name: string): void;
-
-	/** Get the current session name, if set. */
-	getSessionName(): string | undefined;
-
-	/** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
-	setLabel(entryId: string, label: string | undefined): void;
 
 	/** Execute a shell command. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
@@ -1543,10 +1339,6 @@ export type SendUserMessageHandler = (
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
 
-export type SetSessionNameHandler = (name: string) => void;
-
-export type GetSessionNameHandler = () => string | undefined;
-
 export type GetActiveToolsHandler = () => string[];
 
 /** Tool info with name, description, parameter schema, prompt guidelines, and source metadata. */
@@ -1567,8 +1359,6 @@ export type SetModelHandler = (model: Model<any>) => Promise<boolean>;
 export type GetThinkingLevelHandler = () => ThinkingLevel;
 
 export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
-
-export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 
 /**
  * Shared state created by loader, used during registration and runtime.
@@ -1600,9 +1390,6 @@ export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
 	sendUserMessage: SendUserMessageHandler;
 	appendEntry: AppendEntryHandler;
-	setSessionName: SetSessionNameHandler;
-	getSessionName: GetSessionNameHandler;
-	setLabel: SetLabelHandler;
 	getActiveTools: GetActiveToolsHandler;
 	getAllTools: GetAllToolsHandler;
 	setActiveTools: SetActiveToolsHandler;
@@ -1620,7 +1407,6 @@ export interface ExtensionActions {
 export interface ExtensionContextActions {
 	getModel: () => Model<any> | undefined;
 	isIdle: () => boolean;
-	isProjectTrusted: () => boolean;
 	getSignal: () => AbortSignal | undefined;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
@@ -1638,22 +1424,8 @@ export interface ExtensionContextActions {
 export interface ExtensionCommandContextActions {
 	waitForIdle: () => Promise<void>;
 	newSession: (options?: {
-		parentSession?: string;
-		setup?: (sessionManager: SessionManager) => Promise<void>;
 		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 	}) => Promise<{ cancelled: boolean }>;
-	fork: (
-		entryId: string,
-		options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
-	) => Promise<{ cancelled: boolean }>;
-	navigateTree: (
-		targetId: string,
-		options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
-	) => Promise<{ cancelled: boolean }>;
-	switchSession: (
-		sessionPath: string,
-		options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
-	) => Promise<{ cancelled: boolean }>;
 	reload: () => Promise<void>;
 }
 

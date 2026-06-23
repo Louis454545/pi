@@ -38,14 +38,10 @@ import type {
 	InputEvent,
 	InputEventResult,
 	InputSource,
-	LoadExtensionsResult,
 	MessageEndEvent,
 	MessageEndEventResult,
 	MessageRenderer,
 	ProactiveTriggerEvent,
-	ProjectTrustContext,
-	ProjectTrustEvent,
-	ProjectTrustEventResult,
 	ProviderConfig,
 	RegisteredCommand,
 	RegisteredTool,
@@ -55,9 +51,6 @@ import type {
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
 	SessionBeforeDreamResult,
-	SessionBeforeForkResult,
-	SessionBeforeSwitchResult,
-	SessionBeforeTreeResult,
 	SessionShutdownEvent,
 	ToolCallEvent,
 	ToolCallEventResult,
@@ -133,7 +126,6 @@ interface BeforeAgentStartCombinedResult {
 type RunnerEmitEvent = Exclude<
 	ExtensionEvent,
 	| ToolCallEvent
-	| ProjectTrustEvent
 	| ToolResultEvent
 	| UserBashEvent
 	| ContextEvent
@@ -144,26 +136,13 @@ type RunnerEmitEvent = Exclude<
 	| InputEvent
 >;
 
-type SessionBeforeEvent = Extract<
-	RunnerEmitEvent,
-	{ type: "session_before_switch" | "session_before_fork" | "session_before_dream" | "session_before_tree" }
->;
+type SessionBeforeEvent = Extract<RunnerEmitEvent, { type: "session_before_dream" }>;
 
-type SessionBeforeEventResult =
-	| SessionBeforeSwitchResult
-	| SessionBeforeForkResult
-	| SessionBeforeDreamResult
-	| SessionBeforeTreeResult;
+type SessionBeforeEventResult = SessionBeforeDreamResult;
 
-type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "session_before_switch" }
-	? SessionBeforeSwitchResult | undefined
-	: TEvent extends { type: "session_before_fork" }
-		? SessionBeforeForkResult | undefined
-		: TEvent extends { type: "session_before_dream" }
-			? SessionBeforeDreamResult | undefined
-			: TEvent extends { type: "session_before_tree" }
-				? SessionBeforeTreeResult | undefined
-				: undefined;
+type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "session_before_dream" }
+	? SessionBeforeDreamResult | undefined
+	: undefined;
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
 
@@ -190,25 +169,8 @@ interface StartedTrigger {
 }
 
 export type NewSessionHandler = (options?: {
-	parentSession?: string;
-	setup?: (sessionManager: SessionManager) => Promise<void>;
 	withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 }) => Promise<{ cancelled: boolean }>;
-
-export type ForkHandler = (
-	entryId: string,
-	options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
-) => Promise<{ cancelled: boolean }>;
-
-export type NavigateTreeHandler = (
-	targetId: string,
-	options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
-) => Promise<{ cancelled: boolean }>;
-
-export type SwitchSessionHandler = (
-	sessionPath: string,
-	options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
-) => Promise<{ cancelled: boolean }>;
 
 export type ReloadHandler = () => Promise<void>;
 
@@ -229,38 +191,6 @@ export async function emitSessionShutdownEvent(
 	}
 	await extensionRunner.stopTriggers(event.reason);
 	return emitted;
-}
-
-export async function emitProjectTrustEvent(
-	extensionsResult: LoadExtensionsResult,
-	event: ProjectTrustEvent,
-	ctx: ProjectTrustContext,
-): Promise<{ result?: ProjectTrustEventResult; errors: ExtensionError[] }> {
-	const errors: ExtensionError[] = [];
-	for (const ext of extensionsResult.extensions) {
-		// A single extension may register multiple handlers for the same event.
-		// The first project_trust handler that returns yes/no wins; undecided falls through.
-		const handlers = ext.handlers.get("project_trust");
-		if (!handlers || handlers.length === 0) continue;
-
-		for (const handler of handlers) {
-			try {
-				const handlerResult = (await handler(event, ctx)) as ProjectTrustEventResult;
-				if (handlerResult.trusted === "undecided") {
-					continue;
-				}
-				return { result: handlerResult, errors };
-			} catch (error) {
-				errors.push({
-					extensionPath: ext.path,
-					event: event.type,
-					error: error instanceof Error ? error.message : String(error),
-					stack: error instanceof Error ? error.stack : undefined,
-				});
-			}
-		}
-	}
-	return { errors };
 }
 
 const noOpUIContext: ExtensionUIContext = {
@@ -307,7 +237,6 @@ export class ExtensionRunner {
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
 	private getModel: () => Model<any> | undefined = () => undefined;
 	private isIdleFn: () => boolean = () => true;
-	private isProjectTrustedFn: () => boolean = () => true;
 	private getSignalFn: () => AbortSignal | undefined = () => undefined;
 	private waitForIdleFn: () => Promise<void> = async () => {};
 	private abortFn: () => void = () => {};
@@ -317,9 +246,6 @@ export class ExtensionRunner {
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
-	private forkHandler: ForkHandler = async () => ({ cancelled: false });
-	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
-	private switchSessionHandler: SwitchSessionHandler = async () => ({ cancelled: false });
 	private reloadHandler: ReloadHandler = async () => {};
 	private shutdownHandler: ShutdownHandler = () => {};
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
@@ -355,9 +281,6 @@ export class ExtensionRunner {
 		this.runtime.sendMessage = actions.sendMessage;
 		this.runtime.sendUserMessage = actions.sendUserMessage;
 		this.runtime.appendEntry = actions.appendEntry;
-		this.runtime.setSessionName = actions.setSessionName;
-		this.runtime.getSessionName = actions.getSessionName;
-		this.runtime.setLabel = actions.setLabel;
 		this.runtime.getActiveTools = actions.getActiveTools;
 		this.runtime.getAllTools = actions.getAllTools;
 		this.runtime.setActiveTools = actions.setActiveTools;
@@ -370,7 +293,6 @@ export class ExtensionRunner {
 		// Context actions (required)
 		this.getModel = contextActions.getModel;
 		this.isIdleFn = contextActions.isIdle;
-		this.isProjectTrustedFn = contextActions.isProjectTrusted;
 		this.getSignalFn = contextActions.getSignal;
 		this.abortFn = contextActions.abort;
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
@@ -421,18 +343,12 @@ export class ExtensionRunner {
 		if (actions) {
 			this.waitForIdleFn = actions.waitForIdle;
 			this.newSessionHandler = actions.newSession;
-			this.forkHandler = actions.fork;
-			this.navigateTreeHandler = actions.navigateTree;
-			this.switchSessionHandler = actions.switchSession;
 			this.reloadHandler = actions.reload;
 			return;
 		}
 
 		this.waitForIdleFn = async () => {};
 		this.newSessionHandler = async () => ({ cancelled: false });
-		this.forkHandler = async () => ({ cancelled: false });
-		this.navigateTreeHandler = async () => ({ cancelled: false });
-		this.switchSessionHandler = async () => ({ cancelled: false });
 		this.reloadHandler = async () => {};
 	}
 
@@ -547,7 +463,7 @@ export class ExtensionRunner {
 	}
 
 	invalidate(
-		message = "This extension ctx is stale after session replacement or reload. Do not use a captured morgan or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+		message = "This extension ctx is stale after conversation reset or reload. After ctx.newSession(), continue work through withSession. After ctx.reload(), do not use the old ctx.",
 	): void {
 		if (!this.staleMessage) {
 			this.staleMessage = message;
@@ -946,10 +862,6 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.isIdleFn();
 			},
-			isProjectTrusted: () => {
-				runner.assertActive();
-				return runner.isProjectTrustedFn();
-			},
 			get signal() {
 				runner.assertActive();
 				return runner.getSignalFn();
@@ -1001,18 +913,6 @@ export class ExtensionRunner {
 			this.assertActive();
 			return this.newSessionHandler(options);
 		};
-		context.fork = (entryId, options) => {
-			this.assertActive();
-			return this.forkHandler(entryId, options);
-		};
-		context.navigateTree = (targetId, options) => {
-			this.assertActive();
-			return this.navigateTreeHandler(targetId, options);
-		};
-		context.switchSession = (sessionPath, options) => {
-			this.assertActive();
-			return this.switchSessionHandler(sessionPath, options);
-		};
 		context.reload = () => {
 			this.assertActive();
 			return this.reloadHandler();
@@ -1021,12 +921,7 @@ export class ExtensionRunner {
 	}
 
 	private isSessionBeforeEvent(event: RunnerEmitEvent): event is SessionBeforeEvent {
-		return (
-			event.type === "session_before_switch" ||
-			event.type === "session_before_fork" ||
-			event.type === "session_before_dream" ||
-			event.type === "session_before_tree"
-		);
+		return event.type === "session_before_dream";
 	}
 
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {

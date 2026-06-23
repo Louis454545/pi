@@ -20,7 +20,6 @@ Morgan loads themes from:
 
 - Built-in: `dark`, `light`
 - Global: `~/.morgan/agent/themes/*.json`
-- Project: `.morgan/themes/*.json`
 - Packages: `themes/` directories or `morgan.themes` entries in `package.json`
 - Settings: `themes` array with files or directories
 - CLI: `--theme <path>` (repeatable)

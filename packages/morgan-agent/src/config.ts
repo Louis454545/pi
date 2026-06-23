@@ -440,21 +440,6 @@ export function getThemesDir(): string {
 	return join(packageDir, srcOrDist, "modes", "interactive", "theme");
 }
 
-/**
- * Get path to HTML export template directory (shipped with package)
- * - For Bun binary: export-html/ next to executable
- * - For Node.js (dist/): dist/core/export-html/
- * - For tsx (src/): src/core/export-html/
- */
-export function getExportTemplateDir(): string {
-	if (isBunBinary) {
-		return join(getPackageDir(), "export-html");
-	}
-	const packageDir = getPackageDir();
-	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
-	return join(packageDir, srcOrDist, "core", "export-html");
-}
-
 /** Get path to package.json */
 export function getPackageJsonPath(): string {
 	return join(getPackageDir(), "package.json");
@@ -575,19 +560,10 @@ export const VERSION: string = pkg.version || "0.0.0";
 
 // e.g., MORGAN_AGENT_DIR
 export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_AGENT_DIR`;
-export const ENV_SESSION_DIR = `${APP_NAME.toUpperCase()}_SESSION_DIR`;
 export const ENV_GLOBAL_CONVERSATION_LOCK_HELD = `${APP_NAME.toUpperCase()}_GLOBAL_CONVERSATION_LOCK_HELD`;
 
 export function expandTildePath(path: string): string {
 	return normalizePath(path);
-}
-
-const DEFAULT_SHARE_VIEWER_URL = "https://morgan.dev/session/";
-
-/** Get the share viewer URL for a gist ID */
-export function getShareViewerUrl(gistId: string): string {
-	const baseUrl = process.env.MORGAN_SHARE_VIEWER_URL || DEFAULT_SHARE_VIEWER_URL;
-	return `${baseUrl}#${gistId}`;
 }
 
 // =============================================================================

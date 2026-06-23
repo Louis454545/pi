@@ -17,7 +17,7 @@ import {
 // Or define custom skills inline
 const customSkill: Skill = {
 	name: "my-skill",
-	description: "Custom project instructions",
+	description: "Custom global instructions",
 	filePath: "/virtual/SKILL.md",
 	baseDir: "/virtual",
 	sourceInfo: createSyntheticSourceInfo("/virtual/SKILL.md", { source: "sdk" }),
@@ -37,7 +37,7 @@ const loader = new DefaultResourceLoader({
 });
 await loader.reload();
 
-// Discover all skills from cwd/.morgan/skills, ~/.morgan/agent/skills, etc.
+// Discover global skills from ~/.morgan/agent/skills.
 const { skills: allSkills, diagnostics } = loader.getSkills();
 console.log(
 	"Discovered skills:",

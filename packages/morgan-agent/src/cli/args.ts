@@ -4,7 +4,7 @@
 
 import type { ThinkingLevel } from "@earendil-works/morgan-agent-core";
 import chalk from "chalk";
-import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
+import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR } from "../config.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
 
 export type Mode = "text" | "json" | "rpc";
@@ -15,18 +15,10 @@ export interface Args {
 	apiKey?: string;
 	appendSystemPrompt?: string[];
 	thinking?: ThinkingLevel;
-	continue?: boolean;
-	resume?: boolean;
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
-	name?: string;
 	noSession?: boolean;
-	session?: string;
-	sessionId?: string;
-	fork?: string;
-	sessionDir?: string;
-	cwd?: string;
 	models?: string[];
 	tools?: string[];
 	excludeTools?: string[];
@@ -42,11 +34,9 @@ export interface Args {
 	noPromptTemplates?: boolean;
 	themes?: string[];
 	noThemes?: boolean;
-	noContextFiles?: boolean;
 	listModels?: string | true;
 	offline?: boolean;
 	verbose?: boolean;
-	projectTrustOverride?: boolean;
 	messages: string[];
 	fileArgs: string[];
 	/** Unknown flags (potentially extension flags) - map of flag name to value */
@@ -80,10 +70,6 @@ export function parseArgs(args: string[]): Args {
 			if (mode === "text" || mode === "json" || mode === "rpc") {
 				result.mode = mode;
 			}
-		} else if (arg === "--continue" || arg === "-c") {
-			result.continue = true;
-		} else if (arg === "--resume" || arg === "-r") {
-			result.resume = true;
 		} else if (arg === "--provider" && i + 1 < args.length) {
 			result.provider = args[++i];
 		} else if (arg === "--model" && i + 1 < args.length) {
@@ -93,24 +79,8 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--append-system-prompt" && i + 1 < args.length) {
 			result.appendSystemPrompt = result.appendSystemPrompt ?? [];
 			result.appendSystemPrompt.push(args[++i]);
-		} else if (arg === "--name" || arg === "-n") {
-			if (i + 1 < args.length) {
-				result.name = args[++i];
-			} else {
-				result.diagnostics.push({ type: "error", message: "--name requires a value" });
-			}
 		} else if (arg === "--no-session") {
 			result.noSession = true;
-		} else if (arg === "--session" && i + 1 < args.length) {
-			result.session = args[++i];
-		} else if (arg === "--session-id" && i + 1 < args.length) {
-			result.sessionId = args[++i];
-		} else if (arg === "--fork" && i + 1 < args.length) {
-			result.fork = args[++i];
-		} else if (arg === "--session-dir" && i + 1 < args.length) {
-			result.sessionDir = args[++i];
-		} else if (arg === "--cwd" && i + 1 < args.length) {
-			result.cwd = args[++i];
 		} else if (arg === "--models" && i + 1 < args.length) {
 			result.models = args[++i].split(",").map((s) => s.trim());
 		} else if (arg === "--no-tools" || arg === "-nt") {
@@ -166,8 +136,6 @@ export function parseArgs(args: string[]): Args {
 			result.noPromptTemplates = true;
 		} else if (arg === "--no-themes") {
 			result.noThemes = true;
-		} else if (arg === "--no-context-files" || arg === "-nc") {
-			result.noContextFiles = true;
 		} else if (arg === "--list-models") {
 			// Check if next arg is a search pattern (not a flag or file arg)
 			if (i + 1 < args.length && !args[i + 1].startsWith("-") && !args[i + 1].startsWith("@")) {
@@ -177,10 +145,6 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--verbose") {
 			result.verbose = true;
-		} else if (arg === "--approve" || arg === "-a") {
-			result.projectTrustOverride = true;
-		} else if (arg === "--no-approve" || arg === "-na") {
-			result.projectTrustOverride = false;
 		} else if (arg === "--offline") {
 			result.offline = true;
 		} else if (arg.startsWith("@")) {
@@ -244,7 +208,6 @@ ${chalk.bold("Options:")}
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
   --mode <mode>                  Output mode: text (default), json, or rpc
   --print, -p                    Non-interactive mode: process prompt and exit
-  --cwd <path>                   Set explicit working context for tools and project resources
   --no-session                   Don't save conversation history (ephemeral)
   --models <patterns>            Comma-separated model patterns for Ctrl+P cycling
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
@@ -263,12 +226,9 @@ ${chalk.bold("Options:")}
   --no-prompt-templates, -np     Disable prompt template discovery and loading
   --theme <path>                 Load a theme file or directory (can be used multiple times)
   --no-themes                    Disable theme discovery and loading
-  --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
-  --export <file>                Export conversation JSONL to HTML and exit
+  --export <file.jsonl>          Export the global conversation as JSONL and exit
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
-  --approve, -a                  Trust project-local files for this run
-  --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as MORGAN_OFFLINE=1)
   --help, -h                     Show this help
   --version, -v                  Show version number
@@ -295,9 +255,6 @@ ${chalk.bold("Examples:")}
   # Multiple messages (interactive)
   ${APP_NAME} "Read package.json" "What dependencies do we have?"
 
-  # Use an explicit working context
-  ${APP_NAME} --cwd . "Review this project"
-
   # Use different model
   ${APP_NAME} --provider openai --model gpt-4o-mini "Help me refactor this code"
 
@@ -320,14 +277,13 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} --thinking high "Solve this complex problem"
 
   # Read-only mode (no file modifications possible)
-  ${APP_NAME} --tools read,grep,find,ls -p "Review the code in src/"
+  ${APP_NAME} --tools read,bash -p "Review the code in src/"
 
   # Disable one tool while keeping the rest available
   ${APP_NAME} --exclude-tools ask_question
 
-  # Export a conversation file to HTML
-  ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/sessions/global/conversation.jsonl
-  ${APP_NAME} --export session.jsonl output.html
+  # Export the global conversation to JSONL
+  ${APP_NAME} --export conversation.jsonl
 
 ${chalk.bold("Environment Variables:")}
   ANTHROPIC_API_KEY                - Anthropic Claude API key
@@ -369,19 +325,14 @@ ${chalk.bold("Environment Variables:")}
   AWS_BEARER_TOKEN_BEDROCK         - Bedrock API key (bearer token)
   AWS_REGION                       - AWS region for Amazon Bedrock (e.g., us-east-1)
   ${ENV_AGENT_DIR.padEnd(32)} - Config directory (default: ~/${CONFIG_DIR_NAME}/agent)
-  ${ENV_SESSION_DIR.padEnd(32)} - Conversation storage directory
   MORGAN_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)
   MORGAN_OFFLINE                       - Disable startup network operations when set to 1/true/yes
   MORGAN_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no
-  MORGAN_SHARE_VIEWER_URL              - Base URL for /share command (default: https://morgan.dev/session/)
 
 ${chalk.bold("Built-in Tool Names:")}
   read   - Read file contents
   bash   - Execute bash commands
   edit   - Edit files with find/replace
   write  - Write files (creates/overwrites)
-  grep   - Search file contents (read-only, off by default)
-  find   - Find files by glob pattern (read-only, off by default)
-  ls     - List directory contents (read-only, off by default)
 `);
 }

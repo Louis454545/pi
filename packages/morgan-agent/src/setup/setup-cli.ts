@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import type { ThinkingLevel } from "@earendil-works/morgan-agent-core";
 import { setKeybindings } from "@earendil-works/morgan-tui";
 import chalk from "chalk";
@@ -295,7 +296,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupWiza
 	const agentDir = getAgentDir();
 	const authStorage = AuthStorage.create();
 	const modelRegistry = ModelRegistry.create(authStorage);
-	const settingsManager = SettingsManager.create(process.cwd(), agentDir, { includeProjectSettings: false });
+	const settingsManager = SettingsManager.create(homedir(), agentDir);
 	initTheme(settingsManager.getTheme(), !options.yes);
 	setKeybindings(KeybindingsManager.create());
 	const prompter = options.yes

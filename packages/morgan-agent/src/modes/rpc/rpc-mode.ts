@@ -321,22 +321,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			commandContextActions: {
 				waitForIdle: () => session.agent.waitForIdle(),
 				newSession: async (options) => runtimeHost.newSession(options),
-				fork: async (entryId, forkOptions) => {
-					const result = await runtimeHost.fork(entryId, forkOptions);
-					return { cancelled: result.cancelled };
-				},
-				navigateTree: async (targetId, options) => {
-					const result = await session.navigateTree(targetId, {
-						summarize: options?.summarize,
-						customInstructions: options?.customInstructions,
-						replaceInstructions: options?.replaceInstructions,
-						label: options?.label,
-					});
-					return { cancelled: result.cancelled };
-				},
-				switchSession: async (sessionPath, options) => {
-					return runtimeHost.switchSession(sessionPath, options);
-				},
 				reload: async () => {
 					await session.reload();
 				},
@@ -435,8 +419,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "new_session": {
-				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
-				const result = await runtimeHost.newSession(options);
+				const result = await runtimeHost.newSession();
 				if (!result.cancelled) {
 					await rebindSession();
 				}
@@ -457,7 +440,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					followUpMode: session.followUpMode,
 					sessionFile: session.sessionFile,
 					sessionId: session.sessionId,
-					sessionName: session.sessionName,
 					autoCompactionEnabled: session.autoCompactionEnabled,
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
@@ -575,62 +557,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// =================================================================
 			// Session
 			// =================================================================
-
-			case "get_session_stats": {
-				const stats = session.getSessionStats();
-				return success(id, "get_session_stats", stats);
-			}
-
-			case "export_html": {
-				const path = await session.exportToHtml(command.outputPath);
-				return success(id, "export_html", { path });
-			}
-
-			case "switch_session": {
-				const result = await runtimeHost.switchSession(command.sessionPath);
-				if (!result.cancelled) {
-					await rebindSession();
-				}
-				return success(id, "switch_session", result);
-			}
-
-			case "fork": {
-				const result = await runtimeHost.fork(command.entryId);
-				if (!result.cancelled) {
-					await rebindSession();
-				}
-				return success(id, "fork", { text: result.selectedText, cancelled: result.cancelled });
-			}
-
-			case "clone": {
-				const leafId = session.sessionManager.getLeafId();
-				if (!leafId) {
-					return error(id, "clone", "Cannot clone session: no current entry selected");
-				}
-				const result = await runtimeHost.fork(leafId, { position: "at" });
-				if (!result.cancelled) {
-					await rebindSession();
-				}
-				return success(id, "clone", { cancelled: result.cancelled });
-			}
-
-			case "get_fork_messages": {
-				const messages = session.getUserMessagesForForking();
-				return success(id, "get_fork_messages", { messages });
+			case "export_jsonl": {
+				const path = session.exportToJsonl(command.outputPath);
+				return success(id, "export_jsonl", { path });
 			}
 
 			case "get_last_assistant_text": {
 				const text = session.getLastAssistantText();
 				return success(id, "get_last_assistant_text", { text });
-			}
-
-			case "set_session_name": {
-				const name = command.name.trim();
-				if (!name) {
-					return error(id, "set_session_name", "Conversation name cannot be empty");
-				}
-				session.setSessionName(name);
-				return success(id, "set_session_name");
 			}
 
 			case "reload": {

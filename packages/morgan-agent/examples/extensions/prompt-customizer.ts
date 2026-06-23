@@ -8,7 +8,7 @@
  * are currently active, respecting whatever the user has configured.
  *
  * Usage:
- * 1. Copy this file to ~/.morgan/agent/extensions/ or your project's .morgan/extensions/
+ * 1. Copy this file to ~/.morgan/agent/extensions/
  * 2. Use the extension — it automatically adapts to your active tools and skills
  */
 
@@ -73,7 +73,7 @@ function mergeWithUserAppend(options: BuildSystemPromptOptions): string {
 ## Extension-Added Context
 
 This prompt includes tool guidance and skill information loaded dynamically.
-If you have additional requirements, configure them via --append-system-prompt or project context files.
+If you have additional requirements, configure them globally or pass --append-system-prompt.
 `;
 
 	if (userAppend) {

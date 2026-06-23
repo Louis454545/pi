@@ -8,7 +8,7 @@ import { createAgentSession, SessionManager, SettingsManager } from "@earendil-w
 
 const cwd = process.cwd();
 
-// Load current settings (merged global + project)
+// Load current global settings
 const settingsManagerFromDisk = SettingsManager.create(cwd);
 console.log("Current settings:", JSON.stringify(settingsManagerFromDisk.getGlobalSettings(), null, 2));
 

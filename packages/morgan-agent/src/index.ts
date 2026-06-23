@@ -27,13 +27,9 @@ export {
 } from "./core/auth-storage.ts";
 // Compaction
 export {
-	type BranchPreparation,
-	type BranchSummaryResult,
-	type CollectEntriesResult,
 	type CompactionResult,
 	type CutPointResult,
 	calculateContextTokens,
-	collectEntriesForBranchSummary,
 	createDreamCompactionPrompt,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateTokens,
@@ -41,10 +37,7 @@ export {
 	finalizeDreamCompaction,
 	findCutPoint,
 	findTurnStartIndex,
-	type GenerateBranchSummaryOptions,
-	generateBranchSummary,
 	getLastAssistantUsage,
-	prepareBranchEntries,
 	serializeConversation,
 	shouldCompact,
 } from "./core/compaction/index.ts";
@@ -87,22 +80,14 @@ export type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
-	FindToolCallEvent,
-	GrepToolCallEvent,
 	InputEvent,
 	InputEventResult,
 	InputSource,
 	KeybindingsManager,
 	LoadExtensionsResult,
-	LsToolCallEvent,
 	MessageRenderer,
 	MessageRenderOptions,
 	ProactiveTriggerEvent,
-	ProjectTrustContext,
-	ProjectTrustEvent,
-	ProjectTrustEventDecision,
-	ProjectTrustEventResult,
-	ProjectTrustHandler,
 	ProviderConfig,
 	ProviderModelConfig,
 	ReadToolCallEvent,
@@ -111,13 +96,9 @@ export type {
 	RegisteredTrigger,
 	ResolvedCommand,
 	SessionBeforeDreamEvent,
-	SessionBeforeForkEvent,
-	SessionBeforeSwitchEvent,
-	SessionBeforeTreeEvent,
 	SessionDreamEvent,
 	SessionShutdownEvent,
 	SessionStartEvent,
-	SessionTreeEvent,
 	SlashCommandInfo,
 	SlashCommandSource,
 	SourceInfo,
@@ -152,9 +133,6 @@ export {
 	ExtensionRunner,
 	isBashToolResult,
 	isEditToolResult,
-	isFindToolResult,
-	isGrepToolResult,
-	isLsToolResult,
 	isReadToolResult,
 	isToolCallEventType,
 	isWriteToolResult,
@@ -175,7 +153,7 @@ export type {
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
 export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
-export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
+export { DefaultResourceLoader } from "./core/resource-loader.ts";
 // SDK for programmatic usage
 export {
 	AgentSessionRuntime,
@@ -194,9 +172,6 @@ export {
 	createAgentSessionServices,
 	createBashTool,
 	createEditTool,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
 	createMonitorTool,
 	// Tool factories (for custom cwd)
 	createMorganTools,
@@ -208,7 +183,6 @@ export {
 	type PromptTemplate,
 } from "./core/sdk.ts";
 export {
-	type BranchSummaryEntry,
 	buildSessionContext,
 	type CompactionEntry,
 	CURRENT_SESSION_VERSION,
@@ -217,27 +191,21 @@ export {
 	type FileEntry,
 	getLatestCompactionEntry,
 	type ModelChangeEntry,
-	migrateSessionEntries,
-	type NewSessionOptions,
 	parseSessionEntries,
 	type SessionContext,
 	type SessionEntry,
 	type SessionEntryBase,
 	type SessionHeader,
-	type SessionInfo,
-	type SessionInfoEntry,
 	SessionManager,
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
 } from "./core/session-manager.ts";
 export {
 	type CompactionSettings,
-	type DefaultProjectTrust,
 	type ImageSettings,
 	type PackageSource,
 	type RetrySettings,
 	SettingsManager,
-	type SettingsManagerCreateOptions,
 } from "./core/settings-manager.ts";
 // Skills
 export {
@@ -260,10 +228,7 @@ export {
 	type BashToolOptions,
 	createBashToolDefinition,
 	createEditToolDefinition,
-	createFindToolDefinition,
-	createGrepToolDefinition,
 	createLocalBashOperations,
-	createLsToolDefinition,
 	createMonitorToolDefinition,
 	createReadToolDefinition,
 	createReloadToolDefinition,
@@ -275,19 +240,7 @@ export {
 	type EditToolDetails,
 	type EditToolInput,
 	type EditToolOptions,
-	type FindOperations,
-	type FindToolDetails,
-	type FindToolInput,
-	type FindToolOptions,
 	formatSize,
-	type GrepOperations,
-	type GrepToolDetails,
-	type GrepToolInput,
-	type GrepToolOptions,
-	type LsOperations,
-	type LsToolDetails,
-	type LsToolInput,
-	type LsToolOptions,
 	type MonitorToolDetails,
 	type MonitorToolInput,
 	type MonitorToolOptions,
@@ -305,20 +258,12 @@ export {
 	type TruncationOptions,
 	type TruncationResult,
 	truncateHead,
-	truncateLine,
 	truncateTail,
 	type WriteOperations,
 	type WriteToolInput,
 	type WriteToolOptions,
 	withFileMutationQueue,
 } from "./core/tools/index.ts";
-export {
-	hasTrustRequiringProjectResources,
-	type ProjectTrustDecision,
-	ProjectTrustStore,
-	type ProjectTrustStoreEntry,
-	type ProjectTrustUpdate,
-} from "./core/trust-manager.ts";
 export { DaemonClient, type DaemonClientOptions } from "./daemon/client.ts";
 export type { DaemonStatus } from "./daemon/protocol.ts";
 // Main entry point
@@ -342,11 +287,9 @@ export {
 } from "./modes/index.ts";
 // UI components for extensions
 export {
-	ArminComponent,
 	AssistantMessageComponent,
 	BashExecutionComponent,
 	BorderedLoader,
-	BranchSummaryMessageComponent,
 	CompactionSummaryMessageComponent,
 	CustomEditor,
 	CustomMessageComponent,
@@ -360,10 +303,8 @@ export {
 	LoginDialogComponent,
 	ModelSelectorComponent,
 	OAuthSelectorComponent,
-	type RenderDiffOptions,
 	rawKeyHint,
 	renderDiff,
-	SessionSelectorComponent,
 	type SettingsCallbacks,
 	type SettingsConfig,
 	SettingsSelectorComponent,
@@ -373,10 +314,8 @@ export {
 	ThinkingSelectorComponent,
 	ToolExecutionComponent,
 	type ToolExecutionOptions,
-	TreeSelectorComponent,
 	truncateToVisualLines,
 	UserMessageComponent,
-	UserMessageSelectorComponent,
 	type VisualTruncateResult,
 } from "./modes/interactive/components/index.ts";
 // Theme utilities for custom tools and extensions

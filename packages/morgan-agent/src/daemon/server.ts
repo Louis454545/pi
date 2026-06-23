@@ -4,19 +4,10 @@ import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { parseArgs } from "../cli/args.ts";
-import {
-	APP_NAME,
-	ENV_GLOBAL_CONVERSATION_LOCK_HELD,
-	ENV_SESSION_DIR,
-	expandTildePath,
-	getAgentDir,
-	isBunBinary,
-} from "../config.ts";
+import { APP_NAME, ENV_GLOBAL_CONVERSATION_LOCK_HELD, getAgentDir, isBunBinary } from "../config.ts";
 import { acquireGlobalConversationLock } from "../core/session-manager.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
-import { runMigrations } from "../migrations.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "../modes/rpc/jsonl.ts";
-import { resolvePath } from "../utils/paths.ts";
 import type { DaemonPaths } from "./paths.ts";
 import { getDaemonPaths } from "./paths.ts";
 import type { DaemonAdminCommand, DaemonAdminResponse, DaemonStatus } from "./protocol.ts";
@@ -65,14 +56,8 @@ const RPC_COMMAND_TYPES = new Set<string>([
 	"abort_retry",
 	"bash",
 	"abort_bash",
-	"get_session_stats",
-	"export_html",
-	"switch_session",
-	"fork",
-	"clone",
-	"get_fork_messages",
+	"export_jsonl",
 	"get_last_assistant_text",
-	"set_session_name",
 	"get_messages",
 	"get_commands",
 ]);
@@ -142,7 +127,7 @@ function createRpcInvocation(agentArgs: string[]): { command: string; args: stri
 function spawnRpcAgent(agentArgs: string[], env: NodeJS.ProcessEnv): ChildProcessWithoutNullStreams {
 	const invocation = createRpcInvocation(agentArgs);
 	return spawn(invocation.command, invocation.args, {
-		cwd: process.cwd(),
+		cwd: homedir(),
 		env,
 		stdio: ["pipe", "pipe", "pipe"],
 		windowsHide: true,
@@ -155,21 +140,11 @@ async function acquireDaemonGlobalConversationLock(agentArgs: string[]): Promise
 		return undefined;
 	}
 
-	const launchCwd = process.cwd();
 	const agentDir = getAgentDir();
-	const workingContextCwd = parsed.cwd !== undefined ? resolvePath(parsed.cwd, launchCwd) : undefined;
-	const cwd = workingContextCwd ?? homedir();
-	const includeProjectResources = true;
-	runMigrations(workingContextCwd);
+	const cwd = homedir();
 
-	const settingsManager = SettingsManager.create(cwd, agentDir, {
-		includeProjectSettings: includeProjectResources,
-	});
-	const envSessionDir = process.env[ENV_SESSION_DIR];
-	const sessionDir =
-		(parsed.sessionDir ? resolvePath(parsed.sessionDir, launchCwd) : undefined) ??
-		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
-		settingsManager.getSessionDir();
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	const sessionDir = settingsManager.getSessionDir();
 
 	return acquireGlobalConversationLock(agentDir, sessionDir);
 }
@@ -263,7 +238,7 @@ export async function runDaemonServer(options: DaemonServerOptions = {}): Promis
 		const status: DaemonStatus = {
 			pid: process.pid,
 			socketPath: paths.socketPath,
-			cwd: process.cwd(),
+			cwd: homedir(),
 			startedAt,
 			uptimeMs: Date.now() - startedAtMs,
 		};
@@ -530,7 +505,7 @@ export async function runDaemonServer(options: DaemonServerOptions = {}): Promis
 		version: 1,
 		pid: process.pid,
 		socketPath: paths.socketPath,
-		cwd: process.cwd(),
+		cwd: homedir(),
 		startedAt,
 	} as const;
 	writeDaemonState(paths, child.pid === undefined ? state : { ...state, childPid: child.pid });

@@ -65,12 +65,12 @@ describe("canonicalizePath", () => {
 describe("getCwdRelativePath", () => {
 	it("keeps cwd-relative names that start with dots", () => {
 		const cwd = join(tmpdir(), "morgan-paths-cwd");
-		expect(getCwdRelativePath(join(cwd, "..config", "AGENTS.md"), cwd)).toBe(join("..config", "AGENTS.md"));
+		expect(getCwdRelativePath(join(cwd, "..config", "NOTES.md"), cwd)).toBe(join("..config", "NOTES.md"));
 	});
 
 	it("rejects parent-directory traversals", () => {
 		const cwd = join(tmpdir(), "morgan-paths-cwd");
-		expect(getCwdRelativePath(join(cwd, "..", "AGENTS.md"), cwd)).toBeUndefined();
+		expect(getCwdRelativePath(join(cwd, "..", "NOTES.md"), cwd)).toBeUndefined();
 	});
 });
 

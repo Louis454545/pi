@@ -7,7 +7,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/morgan-agent-core";
 import type { ImageContent } from "@earendil-works/morgan-ai";
-import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -345,54 +344,11 @@ export class RpcClient {
 	}
 
 	/**
-	 * Get session statistics.
-	 */
-	async getSessionStats(): Promise<SessionStats> {
-		const response = await this.send({ type: "get_session_stats" });
-		return this.getData(response);
-	}
-
-	/**
 	 * Export conversation to HTML.
 	 */
-	async exportHtml(outputPath?: string): Promise<{ path: string }> {
-		const response = await this.send({ type: "export_html", outputPath });
+	async exportJsonl(outputPath?: string): Promise<{ path: string }> {
+		const response = await this.send({ type: "export_jsonl", outputPath });
 		return this.getData(response);
-	}
-
-	/**
-	 * Switch to a different session file.
-	 * @returns Object with `cancelled: true` if an extension cancelled the switch
-	 */
-	async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
-		const response = await this.send({ type: "switch_session", sessionPath });
-		return this.getData(response);
-	}
-
-	/**
-	 * Fork from a specific message.
-	 * @returns Object with `text` (the message text) and `cancelled` (if extension cancelled)
-	 */
-	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
-		const response = await this.send({ type: "fork", entryId });
-		return this.getData(response);
-	}
-
-	/**
-	 * Clone the current active branch into a new session.
-	 * @returns Object with `cancelled: true` if an extension cancelled the clone
-	 */
-	async clone(): Promise<{ cancelled: boolean }> {
-		const response = await this.send({ type: "clone" });
-		return this.getData(response);
-	}
-
-	/**
-	 * Get messages available for forking.
-	 */
-	async getForkMessages(): Promise<Array<{ entryId: string; text: string }>> {
-		const response = await this.send({ type: "get_fork_messages" });
-		return this.getData<{ messages: Array<{ entryId: string; text: string }> }>(response).messages;
 	}
 
 	/**
@@ -401,13 +357,6 @@ export class RpcClient {
 	async getLastAssistantText(): Promise<string | null> {
 		const response = await this.send({ type: "get_last_assistant_text" });
 		return this.getData<{ text: string | null }>(response).text;
-	}
-
-	/**
-	 * Set the session display name.
-	 */
-	async setSessionName(name: string): Promise<void> {
-		await this.send({ type: "set_session_name", name });
 	}
 
 	/**

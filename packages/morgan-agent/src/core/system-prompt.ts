@@ -131,13 +131,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	};
 
 	const hasBash = tools.includes("bash");
-	const hasGrep = tools.includes("grep");
-	const hasFind = tools.includes("find");
-	const hasLs = tools.includes("ls");
 	const hasRead = tools.includes("read");
 
 	// File exploration guidelines
-	if (hasBash && !hasGrep && !hasFind && !hasLs) {
+	if (hasBash) {
 		addGuideline("Use bash for file operations like ls, rg, find");
 	}
 
@@ -177,9 +174,7 @@ When authoring a skill, make it operational, not vague. Include a specific trigg
 
 Create Morgan-owned resources in Morgan-owned locations:
 - Global personal skills: ~/.morgan/agent/skills/<skill-name>/SKILL.md
-- Project skills: <current working context>/.morgan/skills/<skill-name>/SKILL.md
 - Global personal extensions: ~/.morgan/agent/extensions/<extension-name>.ts or ~/.morgan/agent/extensions/<extension-name>/index.ts
-- Project extensions: <current working context>/.morgan/extensions/<extension-name>.ts or <current working context>/.morgan/extensions/<extension-name>/index.ts
 - Global proactive trigger extensions: ~/.morgan/agent/extensions/triggers/<trigger-id>/index.ts
 
 Do not create an extension for every task; use extensions only when the capability should persist as executable/runtime behavior, run proactively, or be reused across sessions.

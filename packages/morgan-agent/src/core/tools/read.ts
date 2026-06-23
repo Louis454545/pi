@@ -10,7 +10,6 @@ import { keyHint, keyText } from "../../modes/interactive/components/keybinding-
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
 import { formatDimensionNote, resizeImage } from "../../utils/image-resize.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
-import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
@@ -30,11 +29,9 @@ export interface ReadToolDetails {
 }
 
 interface CompactReadClassification {
-	kind: "docs" | "resource" | "skill";
+	kind: "docs" | "skill";
 	label: string;
 }
-
-const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
 
 /**
  * Pluggable operations for the read tool.
@@ -129,10 +126,6 @@ function getCompactReadClassification(
 
 	const docsClassification = getMorganDocsClassification(absolutePath);
 	if (docsClassification) return docsClassification;
-
-	if (COMPACT_RESOURCE_FILE_NAMES.has(fileName)) {
-		return { kind: "resource", label: formatPathRelativeToCwdOrAbsolute(absolutePath, cwd) };
-	}
 
 	return undefined;
 }

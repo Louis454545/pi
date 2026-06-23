@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import ignore from "ignore";
 import { basename, dirname, join, relative, resolve, sep } from "path";
-import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
+import { getAgentDir } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
@@ -139,12 +139,6 @@ function createSkillSourceInfo(filePath: string, baseDir: string, source: string
 			return createSyntheticSourceInfo(filePath, {
 				source: "local",
 				scope: "user",
-				baseDir,
-			});
-		case "project":
-			return createSyntheticSourceInfo(filePath, {
-				source: "local",
-				scope: "project",
 				baseDir,
 			});
 		case "path":
@@ -370,8 +364,6 @@ function escapeXml(str: string): string {
 }
 
 export interface LoadSkillsOptions {
-	/** Working directory for project-local skills. */
-	cwd: string;
 	/** Agent config directory for global skills. */
 	agentDir: string;
 	/** Explicit skill paths (files or directories) */
@@ -388,7 +380,6 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 	const { agentDir, skillPaths, includeDefaults } = options;
 
 	// Resolve agentDir - if not provided, use default from config
-	const resolvedCwd = resolvePath(options.cwd);
 	const resolvedAgentDir = resolvePath(agentDir ?? getAgentDir());
 
 	const skillMap = new Map<string, Skill>();
@@ -429,11 +420,9 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 
 	if (includeDefaults) {
 		addSkills(loadSkillsFromDirInternal(join(resolvedAgentDir, "skills"), "user", true));
-		addSkills(loadSkillsFromDirInternal(resolve(resolvedCwd, CONFIG_DIR_NAME, "skills"), "project", true));
 	}
 
 	const userSkillsDir = join(resolvedAgentDir, "skills");
-	const projectSkillsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "skills");
 
 	const isUnderPath = (target: string, root: string): boolean => {
 		const normalizedRoot = resolve(root);
@@ -444,16 +433,15 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 		return target.startsWith(prefix);
 	};
 
-	const getSource = (resolvedPath: string): "user" | "project" | "path" => {
+	const getSource = (resolvedPath: string): "user" | "path" => {
 		if (!includeDefaults) {
 			if (isUnderPath(resolvedPath, userSkillsDir)) return "user";
-			if (isUnderPath(resolvedPath, projectSkillsDir)) return "project";
 		}
 		return "path";
 	};
 
 	for (const rawPath of skillPaths) {
-		const resolvedPath = resolvePath(rawPath, resolvedCwd, { trim: true });
+		const resolvedPath = resolvePath(rawPath, resolvedAgentDir, { trim: true });
 		if (!existsSync(resolvedPath)) {
 			allDiagnostics.push({ type: "warning", message: "skill path does not exist", path: resolvedPath });
 			continue;

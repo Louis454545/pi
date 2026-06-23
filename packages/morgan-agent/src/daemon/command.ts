@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
+import { homedir } from "node:os";
 import chalk from "chalk";
 import { APP_NAME } from "../config.ts";
 import { sleep } from "../utils/sleep.ts";
@@ -217,7 +218,7 @@ async function startDaemon(agentArgs: string[]): Promise<void> {
 	const logFd = openSync(paths.logFile, "a", 0o600);
 	try {
 		const child = spawn(invocation.command, invocation.args, {
-			cwd: process.cwd(),
+			cwd: homedir(),
 			env: process.env,
 			stdio: ["ignore", logFd, logFd],
 			detached: true,

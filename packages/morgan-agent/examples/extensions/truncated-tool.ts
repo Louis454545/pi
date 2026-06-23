@@ -10,8 +10,7 @@
  * 3. Inform the LLM where to find the complete output
  * 4. Custom rendering of tool calls and results
  *
- * The `rg` tool here wraps ripgrep with proper truncation. Compare this to the
- * built-in `grep` tool in src/core/tools/grep.ts for a more complete implementation.
+ * The `rg` tool here wraps ripgrep with proper truncation.
  */
 
 import { mkdtemp, writeFile } from "node:fs/promises";

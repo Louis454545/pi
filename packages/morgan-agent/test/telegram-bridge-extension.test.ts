@@ -69,7 +69,7 @@ describe("telegram bridge extension", () => {
 	}
 
 	async function loadBridgeExtension() {
-		const settingsManager = SettingsManager.create(tempDir, agentDir, { includeProjectSettings: false });
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
 		const loader = new DefaultResourceLoader({ cwd: tempDir, agentDir, settingsManager });
 		await loader.reload();
 		const extension = loader

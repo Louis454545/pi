@@ -345,42 +345,6 @@ describe("AgentSession proactive triggers", () => {
 		expect(harness.eventsOfType("proactive_trigger_event")[0]?.notification.triggerName).toBe("rpc");
 	});
 
-	it("does not load project-local trigger extensions without explicit project resources", async () => {
-		const tempDir = createTempDir();
-		tempDirs.push(tempDir);
-		const agentDir = join(tempDir, "agent");
-		const localExtensionsDir = join(tempDir, ".morgan", "extensions");
-		mkdirSync(localExtensionsDir, { recursive: true });
-		writeFileSync(
-			join(localExtensionsDir, "trigger.ts"),
-			`
-				export default function(morgan) {
-					morgan.registerTrigger({ name: "project", start: () => {} });
-				}
-			`,
-		);
-
-		const disabledLoader = new DefaultResourceLoader({
-			cwd: tempDir,
-			agentDir,
-			includeProjectResources: false,
-		});
-		await disabledLoader.reload();
-		expect(disabledLoader.getExtensions().extensions.flatMap((extension) => [...extension.triggers.keys()])).toEqual(
-			[],
-		);
-
-		const enabledLoader = new DefaultResourceLoader({
-			cwd: tempDir,
-			agentDir,
-			includeProjectResources: true,
-		});
-		await enabledLoader.reload();
-		expect(enabledLoader.getExtensions().extensions.flatMap((extension) => [...extension.triggers.keys()])).toEqual([
-			"project",
-		]);
-	});
-
 	it("discovers triggers from normal configured extension locations", async () => {
 		const tempDir = createTempDir();
 		tempDirs.push(tempDir);
