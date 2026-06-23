@@ -40,6 +40,24 @@ function contextHasMonitorEvent(context: Context): boolean {
 	return contextHasXmlTag(context, "<monitor-event>");
 }
 
+function getLastUserText(context: Context): string {
+	for (let index = context.messages.length - 1; index >= 0; index--) {
+		const message = context.messages[index];
+		if (!message || message.role !== "user") {
+			continue;
+		}
+		const content = message.content;
+		if (typeof content === "string") {
+			return content;
+		}
+		return content
+			.filter((part): part is { type: "text"; text: string } => part.type === "text")
+			.map((part) => part.text)
+			.join("\n");
+	}
+	return "";
+}
+
 function contextHasXmlTag(context: Context, tag: string): boolean {
 	return context.messages.some((message) => {
 		if (message.role !== "user") {
@@ -135,7 +153,7 @@ describe("AgentSession background bash tasks", () => {
 				fauxToolCall(
 					"monitor",
 					{
-						command: "sleep 0.05; printf 'server ready\\n'; sleep 0.2",
+						command: "sleep 0.05; printf 'server ready\\n'; sleep 0.8",
 						description: "dev server",
 					},
 					{ id: "monitor-tool-call" },
@@ -168,6 +186,99 @@ describe("AgentSession background bash tasks", () => {
 		expect(monitorFinal?.notification.status).toBe("completed");
 		expect(monitorFinal?.notification.summary).toContain('Monitor command "dev server" completed');
 		expect(eventReachedModel).toBe(true);
+		expect(finalNotificationReachedModel).toBe(true);
+	});
+
+	it("coalesces bursty monitor output before starting idle turns", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const monitorTurnTexts: string[] = [];
+		let finalNotificationReachedModel = false;
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall(
+					"monitor",
+					{
+						command:
+							"printf 'message one\\n'; sleep 0.15; printf 'message two\\n'; sleep 0.15; printf 'message three\\n'; sleep 0.7",
+						description: "message stream",
+					},
+					{ id: "monitor-burst-tool-call" },
+				),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("monitor started"),
+			(context) => {
+				const lastUserText = getLastUserText(context);
+				if (lastUserText.includes("<monitor-event>")) {
+					monitorTurnTexts.push(lastUserText);
+				}
+				return fauxAssistantMessage("saw monitor burst");
+			},
+			(context) => {
+				const lastUserText = getLastUserText(context);
+				if (lastUserText.includes("<monitor-event>")) {
+					monitorTurnTexts.push(lastUserText);
+				}
+				finalNotificationReachedModel = lastUserText.includes("<task-notification>");
+				return fauxAssistantMessage("saw monitor completion");
+			},
+		]);
+
+		await harness.session.prompt("start a bursty monitored command");
+		await harness.session.waitForBackgroundTasks();
+
+		const monitorEvents = harness.eventsOfType("monitor_event");
+		expect(monitorEvents).toHaveLength(3);
+		expect(monitorTurnTexts).toHaveLength(1);
+		expect(monitorTurnTexts[0]).toContain("<event>message one</event>");
+		expect(monitorTurnTexts[0]).toContain("<event>message two</event>");
+		expect(monitorTurnTexts[0]).toContain("<event>message three</event>");
+		expect(finalNotificationReachedModel).toBe(true);
+	});
+
+	it("queues monitor events that arrive while a monitor turn is running", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const monitorTurnTexts: string[] = [];
+		let finalNotificationReachedModel = false;
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall(
+					"monitor",
+					{
+						command: "printf 'message one\\n'; sleep 0.8; printf 'message two\\n'; sleep 0.8",
+						description: "message stream",
+					},
+					{ id: "monitor-queued-tool-call" },
+				),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("monitor started"),
+			(context) => {
+				monitorTurnTexts.push(getLastUserText(context));
+				return fauxAssistantMessage(fauxToolCall("bash", { command: "sleep 1" }, { id: "busy-tool-call" }), {
+					stopReason: "toolUse",
+				});
+			},
+			(context) => {
+				monitorTurnTexts.push(getLastUserText(context));
+				return fauxAssistantMessage("saw queued monitor event");
+			},
+			(context) => {
+				finalNotificationReachedModel = getLastUserText(context).includes("<task-notification>");
+				return fauxAssistantMessage("saw monitor completion");
+			},
+		]);
+
+		await harness.session.prompt("start a monitored command and stay busy");
+		await harness.session.waitForBackgroundTasks();
+
+		expect(monitorTurnTexts).toHaveLength(2);
+		expect(monitorTurnTexts[0]).toContain("<event>message one</event>");
+		expect(monitorTurnTexts[1]).toContain("<event>message two</event>");
 		expect(finalNotificationReachedModel).toBe(true);
 	});
 

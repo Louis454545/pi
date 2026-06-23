@@ -11,9 +11,11 @@ describe("background tool instructions", () => {
 		expect(definition.description).toContain("extra context, diagnosis, verification, or explicit user requests");
 		expect(definition.description).toContain("do not repeatedly read or poll that output file");
 		expect(definition.description).toContain("preferably unbuffered");
-		expect(definition.description).toContain("avoid raw log streams");
+		expect(definition.description).toContain("batch bursts before emitting them");
+		expect(definition.description).toContain("filter duplicates");
+		expect(definition.description).toContain("one actionable group rather than one line per incoming message");
 		expect(definition.description).toContain("stop or replace it with a better filtered monitor");
-		expect(definition.promptSnippet).toContain("do not replace them with output-file polling");
+		expect(definition.promptSnippet).toContain("batch bursty meaningful events");
 	});
 
 	test("distinguishes background bash completion from live monitor events", () => {

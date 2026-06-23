@@ -60,9 +60,9 @@ export function createMonitorToolDefinition(
 		name: "monitor",
 		label: "monitor",
 		description:
-			"Run a command in the background and treat complete stdout and stderr lines as live events that can trigger agent turns. Output is also written to a file for extra context, diagnosis, verification, or explicit user requests, but after starting a monitor do not repeatedly read or poll that output file to do the monitor's job. Use deliberately filtered, preferably unbuffered commands for session-local watchers or processes whose meaningful new lines require contextual evaluation while they are still running; avoid raw log streams, routine logs, heartbeats, and unchanged state. If a monitor is too noisy, silent, incomplete, or watching the wrong signal, stop or replace it with a better filtered monitor and continue.",
+			"Run a command in the background and treat complete stdout and stderr lines as live events that can trigger agent turns. Output is also written to a file for extra context, diagnosis, verification, or explicit user requests, but after starting a monitor do not repeatedly read or poll that output file to do the monitor's job. Use deliberately filtered, preferably unbuffered commands for session-local watchers or processes whose meaningful new lines require contextual evaluation while they are still running. Adapt the command to the signal: batch bursts before emitting them, filter duplicates, routine logs, heartbeats, unchanged state, and weak signals, and emit concise contextual groups instead of raw streams. For example, a message-like event source should collect closely related new messages and emit one actionable group rather than one line per incoming message. If a monitor is too noisy, silent, incomplete, or watching the wrong signal, stop or replace it with a better filtered monitor and continue.",
 		promptSnippet:
-			"Run quiet live watchers whose meaningful lines trigger agent turns; do not replace them with output-file polling",
+			"Run quiet filtered watchers; batch bursty meaningful events before triggering turns; do not replace them with output-file polling",
 		parameters: monitorSchema,
 		async execute(toolCallId, { command, timeout, description }: MonitorToolInput) {
 			if (!startMonitorTask) {

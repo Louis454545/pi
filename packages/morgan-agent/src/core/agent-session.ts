@@ -296,6 +296,8 @@ const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const DREAM_RESTRICTED_TOOL_MESSAGE =
 	"Dreaming is restricted to reading context and writing only the compaction summary file or memory snapshot.";
+const MONITOR_EVENT_QUIET_MS = 500;
+const MONITOR_EVENT_MAX_DELAY_MS = 2_000;
 
 function escapeXml(value: string): string {
 	return value
@@ -350,6 +352,22 @@ function formatProactiveTriggerEventXml(event: ProactiveTriggerEvent): string {
 	return lines.join("\n");
 }
 
+function mergeMonitorEventNotifications(notifications: MonitorEventNotification[]): MonitorEventNotification[] {
+	const merged = new Map<string, MonitorEventNotification>();
+	for (const notification of notifications) {
+		const key = `${notification.taskId}\0${notification.toolUseId ?? ""}\0${notification.outputFile}`;
+		const existing = merged.get(key);
+		if (!existing) {
+			merged.set(key, { ...notification, events: [...notification.events] });
+			continue;
+		}
+		existing.events.push(...notification.events);
+		const count = existing.events.length;
+		existing.summary = `Monitor emitted ${count} event${count === 1 ? "" : "s"}`;
+	}
+	return Array.from(merged.values());
+}
+
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -390,6 +408,9 @@ export class AgentSession {
 	private _subagentManager: SubagentManager;
 	private _subagentParent: SubagentParentBridge | undefined;
 	private _taskNotificationContinuation: Promise<void> = Promise.resolve();
+	private _pendingMonitorEventNotifications: MonitorEventNotification[] = [];
+	private _monitorEventQuietHandle: NodeJS.Timeout | undefined = undefined;
+	private _monitorEventMaxHandle: NodeJS.Timeout | undefined = undefined;
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -865,6 +886,8 @@ export class AgentSession {
 			this.abortRetry();
 			this.abortCompaction();
 			this.abortBash();
+			this._clearMonitorEventFlushTimers();
+			this._pendingMonitorEventNotifications = [];
 			this._backgroundTaskManager.dispose();
 			this._subagentManager.dispose();
 			this.agent.abort();
@@ -2839,9 +2862,11 @@ export class AgentSession {
 	async waitForSubagents(): Promise<void> {
 		while (this._subagentManager.hasRunning()) {
 			await this._subagentManager.waitForAll();
+			this._flushPendingMonitorEventNotifications();
 			await this._taskNotificationContinuation;
 			await this.agent.waitForIdle();
 		}
+		this._flushPendingMonitorEventNotifications();
 		await this._taskNotificationContinuation;
 		await this.agent.waitForIdle();
 	}
@@ -2869,9 +2894,11 @@ export class AgentSession {
 	async waitForBackgroundTasks(): Promise<void> {
 		while (this._backgroundTaskManager.hasRunningTasks()) {
 			await this._backgroundTaskManager.waitForAll();
+			this._flushPendingMonitorEventNotifications();
 			await this._taskNotificationContinuation;
 			await this.agent.waitForIdle();
 		}
+		this._flushPendingMonitorEventNotifications();
 		await this._taskNotificationContinuation;
 		await this.agent.waitForIdle();
 	}
@@ -2885,7 +2912,7 @@ export class AgentSession {
 	private _handleMonitorEvent(notification: MonitorEventNotification): void {
 		const xml = formatMonitorEventXml(notification);
 		this._emit({ type: "monitor_event", notification, xml });
-		this._queueNotificationMessage("monitor_event", xml, notification);
+		this._queueMonitorEventNotification(notification);
 	}
 
 	private _handleSubagentNotification(notification: SubagentNotification): void {
@@ -2898,6 +2925,48 @@ export class AgentSession {
 		const xml = formatProactiveTriggerEventXml(event);
 		this._emit({ type: "proactive_trigger_event", notification: event, xml });
 		this._queueNotificationMessage("proactive_trigger_event", xml, event);
+	}
+
+	private _queueMonitorEventNotification(notification: MonitorEventNotification): void {
+		this._pendingMonitorEventNotifications.push(notification);
+		this._scheduleMonitorEventFlush();
+	}
+
+	private _scheduleMonitorEventFlush(): void {
+		if (this._monitorEventQuietHandle) {
+			clearTimeout(this._monitorEventQuietHandle);
+		}
+		this._monitorEventQuietHandle = setTimeout(() => {
+			this._flushPendingMonitorEventNotifications();
+		}, MONITOR_EVENT_QUIET_MS);
+
+		this._monitorEventMaxHandle ??= setTimeout(() => {
+			this._flushPendingMonitorEventNotifications();
+		}, MONITOR_EVENT_MAX_DELAY_MS);
+	}
+
+	private _clearMonitorEventFlushTimers(): void {
+		if (this._monitorEventQuietHandle) {
+			clearTimeout(this._monitorEventQuietHandle);
+			this._monitorEventQuietHandle = undefined;
+		}
+		if (this._monitorEventMaxHandle) {
+			clearTimeout(this._monitorEventMaxHandle);
+			this._monitorEventMaxHandle = undefined;
+		}
+	}
+
+	private _flushPendingMonitorEventNotifications(): void {
+		if (this._pendingMonitorEventNotifications.length === 0) {
+			this._clearMonitorEventFlushTimers();
+			return;
+		}
+		this._clearMonitorEventFlushTimers();
+		const notifications = this._pendingMonitorEventNotifications;
+		this._pendingMonitorEventNotifications = [];
+		for (const notification of mergeMonitorEventNotifications(notifications)) {
+			this._queueNotificationMessage("monitor_event", formatMonitorEventXml(notification), notification);
+		}
 	}
 
 	private _queueNotificationMessage<TDetails>(customType: string, xml: string, details: TDetails): void {
