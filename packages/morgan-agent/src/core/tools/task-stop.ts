@@ -47,8 +47,8 @@ export function createTaskStopToolDefinition(
 		name: "task_stop",
 		label: "task_stop",
 		description:
-			"Stop a running background task by task id, or a running subagent by task id or name. Returns a clear status.",
-		promptSnippet: "Stop running background tasks or subagents",
+			"Stop a running background task or monitor by task id, or a running subagent by task id or name. Use this to replace a bad monitor or cancel work that no longer matches the objective. Returns a clear status.",
+		promptSnippet: "Stop running background tasks, monitors, or subagents",
 		parameters: taskStopSchema,
 		async execute(_toolCallId, { task_id }: TaskStopToolInput) {
 			if (!options?.stopTask) {

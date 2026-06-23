@@ -60,8 +60,9 @@ export function createMonitorToolDefinition(
 		name: "monitor",
 		label: "monitor",
 		description:
-			"Run a command in the background and treat complete stdout and stderr lines as live events that can trigger agent turns. Output is also written to a file. Use deliberately filtered, unbuffered commands for long-running watchers or processes whose new lines require contextual evaluation while they are still running; avoid routine logs, heartbeats, and unchanged state.",
-		promptSnippet: "Run quiet background watchers whose meaningful output lines trigger agent turns",
+			"Run a command in the background and treat complete stdout and stderr lines as live events that can trigger agent turns. Output is also written to a file for extra context, diagnosis, verification, or explicit user requests, but after starting a monitor do not repeatedly read or poll that output file to do the monitor's job. Use deliberately filtered, preferably unbuffered commands for session-local watchers or processes whose meaningful new lines require contextual evaluation while they are still running; avoid raw log streams, routine logs, heartbeats, and unchanged state. If a monitor is too noisy, silent, incomplete, or watching the wrong signal, stop or replace it with a better filtered monitor and continue.",
+		promptSnippet:
+			"Run quiet live watchers whose meaningful lines trigger agent turns; do not replace them with output-file polling",
 		parameters: monitorSchema,
 		async execute(toolCallId, { command, timeout, description }: MonitorToolInput) {
 			if (!startMonitorTask) {

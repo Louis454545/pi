@@ -31,6 +31,7 @@
 - Strengthened reload tool prompt guidance so agents call it autonomously after changing slash commands, extensions, skills, themes, keybindings, prompts, or loaded project instructions.
 - Rendered built-in task, monitor, and subagent notifications in structured TUI cards instead of raw XML.
 - Strengthened agent guidance to reuse existing capabilities, complete ordinary human-delegated work, recover from implementation difficulties without permission loops, preserve contextual model judgment in automations, factor costly repeated work, prefer quiet event-driven monitoring, and maintain contextually valuable proactive information and reminders.
+- Clarified built-in monitor and background task tool instructions so agents use monitors as live event sources without replacing them with output-file polling.
 
 ### Fixed
 
