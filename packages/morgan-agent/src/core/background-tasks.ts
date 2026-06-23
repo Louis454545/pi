@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, openSync, writeSync } from "node:fs";
+import { closeSync, constants, openSync, unlinkSync, writeSync } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,10 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../utils/shell.ts";
+import { OutputAccumulator } from "./tools/output-accumulator.ts";
+import type { TruncationResult } from "./tools/truncate.ts";
+
+const PROMOTABLE_FOREGROUND_STDIO_GRACE_MS = 100;
 
 export type BackgroundTaskFinalStatus = "completed" | "failed" | "stopped" | "timed_out";
 export type BackgroundTaskProcessState = "running" | "stopping" | "exited";
@@ -46,6 +50,34 @@ export interface BackgroundTaskStartResult {
 	message: string;
 }
 
+export interface PromotableBashOutputSnapshot {
+	content: string;
+	truncation: TruncationResult;
+	fullOutputPath: string;
+	lastLineBytes: number;
+}
+
+export interface PromotableBashTaskCompletion {
+	task: BackgroundTaskRecord;
+	output: PromotableBashOutputSnapshot;
+}
+
+export interface PromotableBashTaskPromotion {
+	taskId: string;
+	outputFile: string;
+	output: PromotableBashOutputSnapshot;
+	message: string;
+}
+
+export interface PromotableBashTaskHandle {
+	taskId: string;
+	outputFile: string;
+	completion: Promise<PromotableBashTaskCompletion>;
+	promotion: Promise<PromotableBashTaskPromotion>;
+	promote(): PromotableBashTaskPromotion | undefined;
+	stop(): void;
+}
+
 export interface BackgroundTaskNotification {
 	taskId: string;
 	toolUseId: string | undefined;
@@ -70,13 +102,21 @@ type ManagedTask = BackgroundTaskRecord & {
 	child: ChildProcess;
 	completion: Promise<BackgroundTaskRecord>;
 	resolveCompletion: (record: BackgroundTaskRecord) => void;
+	promoted: Promise<PromotableBashTaskPromotion>;
+	resolvePromoted: (promotion: PromotableBashTaskPromotion) => void;
 	timeoutHandle: NodeJS.Timeout | undefined;
 	notify: boolean;
+	visible: boolean;
+	promotable: boolean;
+	promotedToBackground: boolean;
 	monitor: boolean;
 	decoder: InstanceType<typeof TextDecoder>;
 	lineBuffer: string;
 	pendingMonitorEvents: string[];
 	monitorFlushHandle: NodeJS.Timeout | undefined;
+	output: OutputAccumulator;
+	onOutput?: (chunk: Buffer) => void;
+	foregroundExitFinalizeHandle: NodeJS.Timeout | undefined;
 };
 
 export type StopBackgroundTaskResult =
@@ -160,17 +200,63 @@ export class BackgroundTaskManager {
 	}
 
 	async startBash(input: BackgroundTaskStartInput): Promise<BackgroundTaskStartResult> {
-		return await this.startCommand(input, { monitor: false });
+		const task = await this.startCommand(input, { monitor: false, notify: true, visible: true, promotable: false });
+		return {
+			taskId: task.taskId,
+			outputFile: task.outputFile,
+			message: `Background command "${input.description}" started. The user and agent will be notified when the task finishes.`,
+		};
 	}
 
 	async startMonitor(input: BackgroundTaskStartInput): Promise<BackgroundTaskStartResult> {
-		return await this.startCommand(input, { monitor: true });
+		const task = await this.startCommand(input, { monitor: true, notify: true, visible: true, promotable: false });
+		return {
+			taskId: task.taskId,
+			outputFile: task.outputFile,
+			message: `Monitor command "${input.description}" started. Output lines will be surfaced as events, and the user and agent will be notified when the monitor finishes.`,
+		};
+	}
+
+	async startPromotableBash(
+		input: BackgroundTaskStartInput,
+		onOutput?: (chunk: Buffer) => void,
+	): Promise<PromotableBashTaskHandle> {
+		const task = await this.startCommand(input, {
+			monitor: false,
+			notify: false,
+			visible: false,
+			promotable: true,
+			onOutput,
+		});
+		return {
+			taskId: task.taskId,
+			outputFile: task.outputFile,
+			completion: task.completion.then((completed) => ({
+				task: completed,
+				output: this.snapshotOutput(task),
+			})),
+			promotion: task.promoted,
+			promote: () => this.promoteTask(task),
+			stop: () => this.stopManagedTask(task, "stopped"),
+		};
+	}
+
+	promoteForegroundBashTasks(): void {
+		for (const task of this.tasks.values()) {
+			this.promoteTask(task);
+		}
 	}
 
 	private async startCommand(
 		input: BackgroundTaskStartInput,
-		options: { monitor: boolean },
-	): Promise<BackgroundTaskStartResult> {
+		options: {
+			monitor: boolean;
+			notify: boolean;
+			visible: boolean;
+			promotable: boolean;
+			onOutput?: (chunk: Buffer) => void;
+		},
+	): Promise<ManagedTask> {
 		if (this.disposed) {
 			throw new Error("Cannot start background task after session disposal");
 		}
@@ -199,6 +285,10 @@ export class BackgroundTaskManager {
 		const completion = new Promise<BackgroundTaskRecord>((resolve) => {
 			resolveCompletion = resolve;
 		});
+		let resolvePromoted: (promotion: PromotableBashTaskPromotion) => void = () => {};
+		const promoted = new Promise<PromotableBashTaskPromotion>((resolve) => {
+			resolvePromoted = resolve;
+		});
 		const outputStream = openSync(outputFile, "a");
 		const task: ManagedTask = {
 			taskId,
@@ -214,27 +304,70 @@ export class BackgroundTaskManager {
 			child,
 			completion,
 			resolveCompletion,
+			promoted,
+			resolvePromoted,
 			timeoutHandle: undefined,
-			notify: true,
+			notify: options.notify,
+			visible: options.visible,
+			promotable: options.promotable,
+			promotedToBackground: false,
 			monitor: options.monitor,
 			decoder: new TextDecoder(),
 			lineBuffer: "",
 			pendingMonitorEvents: [],
 			monitorFlushHandle: undefined,
+			output: new OutputAccumulator({ persistFullOutput: false, tempFilePrefix: "morgan-background" }),
+			onOutput: options.onOutput,
+			foregroundExitFinalizeHandle: undefined,
 		};
 		this.tasks.set(taskId, task);
+		let stdoutEnded = child.stdout === null;
+		let stderrEnded = child.stderr === null;
+		let foregroundExitCode: number | undefined;
+		let foregroundExitStatus: BackgroundTaskFinalStatus | undefined;
+
+		const inferFinalStatus = (code: number | null): BackgroundTaskFinalStatus =>
+			task.finalStatus === "stopped" || task.finalStatus === "timed_out"
+				? task.finalStatus
+				: code === 0
+					? "completed"
+					: "failed";
+
+		const finalizeForegroundExit = () => {
+			if (foregroundExitStatus === undefined || task.promotedToBackground || task.processState === "exited") {
+				return;
+			}
+			this.finalizeTask(task, foregroundExitCode, foregroundExitStatus, outputStream, { destroyStdio: true });
+		};
+
+		const maybeFinalizeForegroundExit = () => {
+			if (foregroundExitStatus === undefined || task.promotedToBackground || task.processState === "exited") {
+				return;
+			}
+			if (stdoutEnded && stderrEnded) {
+				finalizeForegroundExit();
+			}
+		};
 
 		child.stdout?.on("data", (chunk: Buffer) => {
-			this.writeOutput(outputStream, chunk);
+			this.appendOutput(task, outputStream, chunk);
 			if (options.monitor) {
 				this.appendMonitorChunk(task, chunk);
 			}
 		});
+		child.stdout?.once("end", () => {
+			stdoutEnded = true;
+			maybeFinalizeForegroundExit();
+		});
 		child.stderr?.on("data", (chunk: Buffer) => {
-			this.writeOutput(outputStream, chunk);
+			this.appendOutput(task, outputStream, chunk);
 			if (options.monitor) {
 				this.appendMonitorChunk(task, chunk);
 			}
+		});
+		child.stderr?.once("end", () => {
+			stderrEnded = true;
+			maybeFinalizeForegroundExit();
 		});
 
 		if (input.timeout !== undefined && input.timeout > 0) {
@@ -246,23 +379,26 @@ export class BackgroundTaskManager {
 		child.once("error", () => {
 			this.finalizeTask(task, undefined, "failed", outputStream);
 		});
+		child.once("exit", (code) => {
+			if (!task.promotable || task.promotedToBackground) {
+				return;
+			}
+			task.promotable = false;
+			foregroundExitCode = code ?? undefined;
+			foregroundExitStatus = inferFinalStatus(code);
+			maybeFinalizeForegroundExit();
+			if (task.processState !== "exited") {
+				task.foregroundExitFinalizeHandle = setTimeout(
+					finalizeForegroundExit,
+					PROMOTABLE_FOREGROUND_STDIO_GRACE_MS,
+				);
+			}
+		});
 		child.once("close", (code) => {
-			const inferredStatus =
-				task.finalStatus === "stopped" || task.finalStatus === "timed_out"
-					? task.finalStatus
-					: code === 0
-						? "completed"
-						: "failed";
-			this.finalizeTask(task, code ?? undefined, inferredStatus, outputStream);
+			this.finalizeTask(task, code ?? undefined, inferFinalStatus(code), outputStream);
 		});
 
-		return {
-			taskId,
-			outputFile,
-			message: options.monitor
-				? `Monitor command "${input.description}" started. Output lines will be surfaced as events, and the user and agent will be notified when the monitor finishes.`
-				: `Background command "${input.description}" started. The user and agent will be notified when the task finishes.`,
-		};
+		return task;
 	}
 
 	getTask(taskId: string): BackgroundTaskRecord | undefined {
@@ -279,7 +415,7 @@ export class BackgroundTaskManager {
 
 	async stopTask(taskId: string): Promise<StopBackgroundTaskResult> {
 		const task = this.tasks.get(taskId);
-		if (!task) {
+		if (!task || !task.visible) {
 			return { status: "not_found", taskId };
 		}
 		if (task.processState === "exited") {
@@ -300,14 +436,49 @@ export class BackgroundTaskManager {
 
 	dispose(): void {
 		this.disposed = true;
-		for (const task of this.getRunningManagedTasks()) {
+		for (const task of this.getRunningManagedTasks({ includeHidden: true })) {
 			task.notify = false;
 			this.stopManagedTask(task, "stopped");
 		}
 	}
 
-	private getRunningManagedTasks(): ManagedTask[] {
-		return Array.from(this.tasks.values()).filter((task) => task.processState !== "exited");
+	private getRunningManagedTasks(options?: { includeHidden?: boolean }): ManagedTask[] {
+		return Array.from(this.tasks.values()).filter(
+			(task) => task.processState !== "exited" && (options?.includeHidden || task.visible),
+		);
+	}
+
+	private promoteTask(task: ManagedTask): PromotableBashTaskPromotion | undefined {
+		if (
+			!task.promotable ||
+			task.promotedToBackground ||
+			task.finalStatus !== undefined ||
+			task.processState !== "running"
+		) {
+			return undefined;
+		}
+		task.promotedToBackground = true;
+		task.visible = true;
+		task.notify = true;
+		task.onOutput = undefined;
+		const promotion = {
+			taskId: task.taskId,
+			outputFile: task.outputFile,
+			output: this.snapshotOutput(task),
+			message: `Background command "${task.description}" started. The user and agent will be notified when the task finishes.`,
+		};
+		task.resolvePromoted(promotion);
+		return promotion;
+	}
+
+	private snapshotOutput(task: ManagedTask): PromotableBashOutputSnapshot {
+		const snapshot = task.output.snapshot({ persistIfTruncated: false });
+		return {
+			content: snapshot.content,
+			truncation: snapshot.truncation,
+			fullOutputPath: task.outputFile,
+			lastLineBytes: task.output.getLastLineBytes(),
+		};
 	}
 
 	private appendMonitorChunk(task: ManagedTask, chunk: Buffer): void {
@@ -371,12 +542,18 @@ export class BackgroundTaskManager {
 		});
 	}
 
-	private writeOutput(fd: number, chunk: Buffer): void {
+	private appendOutput(task: ManagedTask, fd: number, chunk: Buffer): void {
 		try {
 			writeSync(fd, chunk);
 		} catch {
 			// Ignore output persistence errors; the task lifecycle still completes.
 		}
+		try {
+			task.output.append(chunk);
+		} catch {
+			// Ignore output snapshot errors; the task output file is still authoritative.
+		}
+		task.onOutput?.(chunk);
 	}
 
 	private stopManagedTask(task: ManagedTask, status: "stopped" | "timed_out"): void {
@@ -395,6 +572,7 @@ export class BackgroundTaskManager {
 		exitCode: number | undefined,
 		status: BackgroundTaskFinalStatus,
 		outputFd: number,
+		options?: { destroyStdio?: boolean },
 	): void {
 		if (task.processState === "exited") {
 			return;
@@ -403,6 +581,13 @@ export class BackgroundTaskManager {
 		task.exitCode = exitCode;
 		task.finalStatus = task.finalStatus ?? status;
 		task.endedAt = Date.now();
+		task.onOutput = undefined;
+		task.output.finish();
+		void task.output.closeTempFile();
+		if (task.foregroundExitFinalizeHandle) {
+			clearTimeout(task.foregroundExitFinalizeHandle);
+			task.foregroundExitFinalizeHandle = undefined;
+		}
 		this.finishMonitorEvents(task);
 		if (task.timeoutHandle) {
 			clearTimeout(task.timeoutHandle);
@@ -416,6 +601,10 @@ export class BackgroundTaskManager {
 		} catch {
 			// Ignore close errors.
 		}
+		if (options?.destroyStdio) {
+			task.child.stdout?.destroy();
+			task.child.stderr?.destroy();
+		}
 		task.resolveCompletion(task);
 		if (task.notify) {
 			this.onNotification({
@@ -426,6 +615,14 @@ export class BackgroundTaskManager {
 				summary: summaryForTask(task),
 				exitCode: task.exitCode,
 			});
+		}
+		if (!task.visible && !task.promotedToBackground) {
+			this.tasks.delete(task.taskId);
+			try {
+				unlinkSync(task.outputFile);
+			} catch {
+				// Ignore cleanup errors for hidden foreground task output.
+			}
 		}
 	}
 }

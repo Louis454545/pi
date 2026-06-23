@@ -15,6 +15,7 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
+import type { PromotableBashOutputSnapshot, PromotableBashTaskHandle } from "../background-tasks.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
@@ -155,6 +156,10 @@ export interface BashBackgroundTaskStartResult {
 }
 
 export type BashBackgroundTaskStarter = (input: BashBackgroundTaskStartInput) => Promise<BashBackgroundTaskStartResult>;
+export type BashPromotableTaskStarter = (
+	input: BashBackgroundTaskStartInput,
+	onOutput?: (chunk: Buffer) => void,
+) => Promise<PromotableBashTaskHandle>;
 
 function resolveSpawnContext(command: string, cwd: string, spawnHook?: BashSpawnHook): BashSpawnContext {
 	const baseContext: BashSpawnContext = { command, cwd, env: { ...getShellEnv() } };
@@ -172,6 +177,8 @@ export interface BashToolOptions {
 	spawnHook?: BashSpawnHook;
 	/** Starts a session-managed background task. */
 	startBackgroundTask?: BashBackgroundTaskStarter;
+	/** Starts a session-managed foreground task that can be promoted to background. */
+	startPromotableTask?: BashPromotableTaskStarter;
 }
 
 const BASH_PREVIEW_LINES = 5;
@@ -297,9 +304,11 @@ export function createBashToolDefinition(
 	options?: BashToolOptions,
 ): ToolDefinition<typeof bashSchema, BashToolDetails | undefined, BashRenderState> {
 	const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
+	const usesCustomOperations = options?.operations !== undefined;
 	const commandPrefix = options?.commandPrefix;
 	const spawnHook = options?.spawnHook;
 	const startBackgroundTask = options?.startBackgroundTask;
+	const startPromotableTask = options?.startPromotableTask;
 	return {
 		name: "bash",
 		label: "bash",
@@ -397,16 +406,23 @@ export function createBashToolDefinition(
 				scheduleOutputUpdate();
 			};
 
-			const finishOutput = async () => {
+			const finishOutput = async (options?: { deleteTempFile?: boolean; persistIfTruncated?: boolean }) => {
 				output.finish();
 				clearUpdateTimer();
 				emitOutputUpdate();
-				const snapshot = output.snapshot({ persistIfTruncated: true });
-				await output.closeTempFile();
+				const snapshot = output.snapshot({ persistIfTruncated: options?.persistIfTruncated ?? true });
+				if (options?.deleteTempFile) {
+					await output.deleteTempFile();
+				} else {
+					await output.closeTempFile();
+				}
 				return snapshot;
 			};
 
-			const formatOutput = (snapshot: Awaited<ReturnType<typeof finishOutput>>, emptyText = "(no output)") => {
+			const formatOutput = (
+				snapshot: Awaited<ReturnType<typeof finishOutput>> | PromotableBashOutputSnapshot,
+				emptyText = "(no output)",
+			) => {
 				const truncation = snapshot.truncation;
 				let text = snapshot.content || emptyText;
 				let details: BashToolDetails | undefined;
@@ -415,7 +431,9 @@ export function createBashToolDefinition(
 					const startLine = truncation.totalLines - truncation.outputLines + 1;
 					const endLine = truncation.totalLines;
 					if (truncation.lastLinePartial) {
-						const lastLineSize = formatSize(output.getLastLineBytes());
+						const lastLineBytes =
+							"lastLineBytes" in snapshot ? snapshot.lastLineBytes : output.getLastLineBytes();
+						const lastLineSize = formatSize(lastLineBytes);
 						text += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). Full output: ${snapshot.fullOutputPath}]`;
 					} else if (truncation.truncatedBy === "lines") {
 						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${snapshot.fullOutputPath}]`;
@@ -429,6 +447,81 @@ export function createBashToolDefinition(
 			const appendStatus = (text: string, status: string) => `${text ? `${text}\n\n` : ""}${status}`;
 
 			try {
+				if (startPromotableTask && !usesCustomOperations) {
+					const task = await startPromotableTask(
+						{
+							...spawnContext,
+							toolUseId: _toolCallId,
+							description: description?.trim() || command,
+							timeout,
+							displayCommand: command,
+						},
+						handleData,
+					);
+					const stopTask = () => task.stop();
+					if (signal) {
+						if (signal.aborted) {
+							stopTask();
+						} else {
+							signal.addEventListener("abort", stopTask, { once: true });
+						}
+					}
+					try {
+						const outcome = await Promise.race([
+							task.completion.then((completion) => ({ type: "completion" as const, completion })),
+							task.promotion.then((promotion) => ({ type: "promotion" as const, promotion })),
+						]);
+						if (outcome.type === "promotion") {
+							const snapshot = await finishOutput({ deleteTempFile: true, persistIfTruncated: false });
+							const fallbackOutput = { ...snapshot, fullOutputPath: outcome.promotion.outputFile };
+							const promotedOutput = outcome.promotion.output.content
+								? outcome.promotion.output
+								: fallbackOutput;
+							const { text: partialText, details } = formatOutput(promotedOutput, "(no output yet)");
+							const status = [
+								"Command is continuing in background.",
+								`Task id: ${outcome.promotion.taskId}`,
+								`Output file: ${outcome.promotion.outputFile}`,
+							].join("\n");
+							return {
+								content: [{ type: "text", text: appendStatus(partialText, status) }],
+								details: {
+									...details,
+									backgroundTask: {
+										taskId: outcome.promotion.taskId,
+										outputFile: outcome.promotion.outputFile,
+									},
+									fullOutputPath: outcome.promotion.outputFile,
+								},
+							};
+						}
+
+						const snapshot = await finishOutput();
+						const { text: outputText, details } = formatOutput(snapshot);
+						switch (outcome.completion.task.finalStatus) {
+							case "completed":
+								return { content: [{ type: "text", text: outputText }], details };
+							case "failed":
+								if (outcome.completion.task.exitCode !== undefined) {
+									throw new Error(
+										appendStatus(outputText, `Command exited with code ${outcome.completion.task.exitCode}`),
+									);
+								}
+								throw new Error(appendStatus(outputText, "Command failed"));
+							case "timed_out":
+								throw new Error(appendStatus(outputText, `Command timed out after ${timeout} seconds`));
+							case "stopped":
+								throw new Error(
+									appendStatus(outputText, signal?.aborted ? "Command aborted" : "Command stopped"),
+								);
+							default:
+								throw new Error(appendStatus(outputText, "Command finished without a final status"));
+						}
+					} finally {
+						signal?.removeEventListener("abort", stopTask);
+					}
+				}
+
 				let exitCode: number | null;
 				try {
 					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {

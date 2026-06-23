@@ -1414,6 +1414,7 @@ export class AgentSession {
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
 	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
+		this._promoteForegroundBashTasks();
 		this._steeringMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -1431,6 +1432,7 @@ export class AgentSession {
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
 	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
+		this._promoteForegroundBashTasks();
 		this._followUpMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -1475,6 +1477,9 @@ export class AgentSession {
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
 	): Promise<void> {
+		if (this.isStreaming) {
+			this._promoteForegroundBashTasks();
+		}
 		const appMessage = {
 			role: "custom" as const,
 			customType: message.customType,
@@ -2573,6 +2578,20 @@ export class AgentSession {
 								timeout: input.timeout,
 								shellPath,
 							}),
+						startPromotableTask: async (input, onOutput) =>
+							await this.startPromotableBashTask(
+								{
+									toolUseId: input.toolUseId,
+									command: input.command,
+									displayCommand: input.displayCommand,
+									description: input.description,
+									cwd: input.cwd,
+									env: input.env,
+									timeout: input.timeout,
+									shellPath,
+								},
+								onOutput,
+							),
 					},
 					reload: { scheduleReload: () => this._scheduleReloadAfterToolTurn() },
 					taskStop: { stopTask: async (taskId) => await this.stopTask(taskId) },
@@ -2875,6 +2894,10 @@ export class AgentSession {
 		return await this._backgroundTaskManager.startBash(input);
 	}
 
+	async startPromotableBashTask(input: BackgroundTaskStartInput, onOutput?: (chunk: Buffer) => void) {
+		return await this._backgroundTaskManager.startPromotableBash(input, onOutput);
+	}
+
 	async startMonitorTask(input: BackgroundTaskStartInput): Promise<BackgroundTaskStartResult> {
 		return await this._backgroundTaskManager.startMonitor(input);
 	}
@@ -2904,27 +2927,35 @@ export class AgentSession {
 	}
 
 	private _handleBackgroundTaskNotification(notification: BackgroundTaskNotification): void {
+		this._promoteForegroundBashTasks();
 		const xml = formatTaskNotificationXml(notification);
 		this._emit({ type: "task_notification", notification, xml });
 		this._queueNotificationMessage("task_notification", xml, notification);
 	}
 
 	private _handleMonitorEvent(notification: MonitorEventNotification): void {
+		this._promoteForegroundBashTasks();
 		const xml = formatMonitorEventXml(notification);
 		this._emit({ type: "monitor_event", notification, xml });
 		this._queueMonitorEventNotification(notification);
 	}
 
 	private _handleSubagentNotification(notification: SubagentNotification): void {
+		this._promoteForegroundBashTasks();
 		const xml = formatSubagentNotificationXml(notification);
 		this._emit({ type: "subagent_notification", notification, xml });
 		this._queueNotificationMessage("subagent_notification", xml, notification);
 	}
 
 	handleProactiveTriggerEvent(event: ProactiveTriggerEvent): void {
+		this._promoteForegroundBashTasks();
 		const xml = formatProactiveTriggerEventXml(event);
 		this._emit({ type: "proactive_trigger_event", notification: event, xml });
 		this._queueNotificationMessage("proactive_trigger_event", xml, event);
+	}
+
+	private _promoteForegroundBashTasks(): void {
+		this._backgroundTaskManager.promoteForegroundBashTasks();
 	}
 
 	private _queueMonitorEventNotification(notification: MonitorEventNotification): void {
