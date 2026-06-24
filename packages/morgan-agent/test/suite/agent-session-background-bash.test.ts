@@ -270,6 +270,46 @@ describe("AgentSession background bash tasks", () => {
 		expect(elapsedMs).toBeLessThan(1500);
 	});
 
+	it("does not promote foreground bash for custom messages delivered next turn", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		let bashOutput = "";
+		let backgroundTaskIds: string[] = [];
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall(
+					"bash",
+					{
+						command: "printf 'before next turn\\n'; sleep 0.8; printf 'after next turn\\n'",
+						description: "next turn custom message bash",
+					},
+					{ id: "next-turn-custom-bash-tool-call" },
+				),
+				{ stopReason: "toolUse" },
+			),
+			(context) => {
+				bashOutput = getBashToolResultTexts(context).join("\n");
+				backgroundTaskIds = getBackgroundTaskIds(context);
+				return fauxAssistantMessage("saw next-turn custom bash");
+			},
+		]);
+
+		const sawBashUpdate = waitForBashUpdateContaining(harness, "before next turn");
+		const promptPromise = harness.session.prompt("run bash while a next-turn custom message arrives");
+		await sawBashUpdate;
+		await harness.session.sendCustomMessage(
+			{ customType: "next-turn", content: "carry this later", display: true, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+		await promptPromise;
+
+		expect(bashOutput).toContain("before next turn");
+		expect(bashOutput).toContain("after next turn");
+		expect(backgroundTaskIds).toEqual([]);
+		expect(harness.eventsOfType("task_notification")).toHaveLength(0);
+	});
+
 	it("promotes foreground bash when a proactive notification arrives", async () => {
 		let emit: TriggerEmit | undefined;
 		const harness = await createHarness({
@@ -529,6 +569,44 @@ describe("AgentSession background bash tasks", () => {
 		expect(monitorFinal?.notification.summary).toContain('Monitor command "dev server" completed');
 		expect(eventReachedModel).toBe(true);
 		expect(finalNotificationReachedModel).toBe(true);
+	});
+
+	it("delivers pending monitor events before monitor completion notifications", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const notificationTurnTexts: string[] = [];
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall(
+					"monitor",
+					{
+						command: "printf 'fast event\\n'",
+						description: "fast monitor",
+					},
+					{ id: "monitor-fast-tool-call" },
+				),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("monitor started"),
+			(context) => {
+				notificationTurnTexts.push(getLastUserText(context));
+				return fauxAssistantMessage("saw fast monitor event");
+			},
+			(context) => {
+				notificationTurnTexts.push(getLastUserText(context));
+				return fauxAssistantMessage("saw fast monitor completion");
+			},
+		]);
+
+		await harness.session.prompt("start a fast monitor");
+		await harness.session.waitForBackgroundTasks();
+
+		expect(notificationTurnTexts[0]).toContain("<monitor-event>");
+		expect(notificationTurnTexts[0]).toContain("<event>fast event</event>");
+		expect(notificationTurnTexts[0]).not.toContain("<task-notification>");
+		expect(notificationTurnTexts[1]).toContain("<task-notification>");
+		expect(notificationTurnTexts[1]).toContain("Monitor command &quot;fast monitor&quot; completed");
 	});
 
 	it("coalesces bursty monitor output before starting idle turns", async () => {

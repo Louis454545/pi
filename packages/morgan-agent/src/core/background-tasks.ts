@@ -85,6 +85,7 @@ export interface BackgroundTaskNotification {
 	status: BackgroundTaskFinalStatus;
 	summary: string;
 	exitCode: number | undefined;
+	monitor: boolean;
 }
 
 export interface MonitorEventNotification {
@@ -614,6 +615,7 @@ export class BackgroundTaskManager {
 				status: task.finalStatus,
 				summary: summaryForTask(task),
 				exitCode: task.exitCode,
+				monitor: task.monitor,
 			});
 		}
 		if (!task.visible && !task.promotedToBackground) {

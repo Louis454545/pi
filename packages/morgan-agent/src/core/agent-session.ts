@@ -1477,7 +1477,7 @@ export class AgentSession {
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
 	): Promise<void> {
-		if (this.isStreaming) {
+		if (this.isStreaming && options?.deliverAs !== "nextTurn") {
 			this._promoteForegroundBashTasks();
 		}
 		const appMessage = {
@@ -2928,6 +2928,9 @@ export class AgentSession {
 
 	private _handleBackgroundTaskNotification(notification: BackgroundTaskNotification): void {
 		this._promoteForegroundBashTasks();
+		if (notification.monitor) {
+			this._flushPendingMonitorEventNotifications();
+		}
 		const xml = formatTaskNotificationXml(notification);
 		this._emit({ type: "task_notification", notification, xml });
 		this._queueNotificationMessage("task_notification", xml, notification);
