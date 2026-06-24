@@ -2,6 +2,7 @@
 
 - [Quickstart](quickstart.md)
 - [Usage](usage.md)
+- [Daemon](daemon.md)
 - [Global conversation](sessions.md)
 - [Settings](settings.md)
 - [Extensions](extensions.md)

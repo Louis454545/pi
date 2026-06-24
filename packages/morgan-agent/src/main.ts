@@ -13,7 +13,14 @@ import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
-import { ENV_GLOBAL_CONVERSATION_LOCK_HELD, getAgentDir, getPackageDir, getSettingsPath, VERSION } from "./config.ts";
+import {
+	APP_NAME,
+	ENV_GLOBAL_CONVERSATION_LOCK_HELD,
+	getAgentDir,
+	getPackageDir,
+	getSettingsPath,
+	VERSION,
+} from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
@@ -31,7 +38,10 @@ import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import { acquireGlobalConversationLock, exportSessionToJsonl, SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
+import { DaemonClient } from "./daemon/client.ts";
 import { handleDaemonCommand } from "./daemon/command.ts";
+import { runDaemonInteractiveMode } from "./daemon/interactive.ts";
+import { ensureDaemonStarted } from "./daemon/launcher.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
@@ -122,6 +132,114 @@ export function shouldRunStartupSetup(
 		!parsed.export &&
 		!existsSync(settingsPath)
 	);
+}
+
+export function getDaemonIncompatibleReason(parsed: Args): string | undefined {
+	if (parsed.offline) {
+		return "offline mode is per-invocation and cannot be applied to the daemon";
+	}
+	if (parsed.provider || parsed.model || parsed.apiKey || parsed.thinking || parsed.models) {
+		return "model, provider, API key, thinking, and model-scope flags configure daemon startup state";
+	}
+	if (parsed.appendSystemPrompt && parsed.appendSystemPrompt.length > 0) {
+		return "append-system-prompt changes the daemon runtime prompt";
+	}
+	if (parsed.tools || parsed.excludeTools || parsed.noTools || parsed.noBuiltinTools) {
+		return "tool allow/deny flags change daemon runtime tools";
+	}
+	if (
+		parsed.extensions ||
+		parsed.noExtensions ||
+		parsed.skills ||
+		parsed.noSkills ||
+		parsed.promptTemplates ||
+		parsed.noPromptTemplates ||
+		parsed.themes ||
+		parsed.noThemes
+	) {
+		return "resource flags change daemon-loaded extensions, skills, prompts, or themes";
+	}
+	if (parsed.unknownFlags.size > 0) {
+		return "extension flags must be applied when starting the daemon";
+	}
+	return undefined;
+}
+
+function shouldRouteToDaemon(appMode: AppMode, parsed: Args, settingsManager: SettingsManager): boolean {
+	if (!settingsManager.getDaemonEnabled()) {
+		return false;
+	}
+	if (process.env[ENV_GLOBAL_CONVERSATION_LOCK_HELD] === "1") {
+		return false;
+	}
+	if (isTruthyEnvFlag(process.env.MORGAN_STARTUP_BENCHMARK)) {
+		return false;
+	}
+	if (appMode !== "interactive" && appMode !== "print") {
+		return false;
+	}
+	if (parsed.noSession || parsed.help || parsed.version || parsed.listModels !== undefined || parsed.export) {
+		return false;
+	}
+	if (parsed.mode === "json" || parsed.mode === "rpc") {
+		return false;
+	}
+	return true;
+}
+
+async function sendDaemonPrompts(
+	client: DaemonClient,
+	initialMessage: string | undefined,
+	initialImages: ImageContent[] | undefined,
+	messages: string[],
+): Promise<string | null> {
+	const promptTimeoutMs = 24 * 60 * 60 * 1000;
+	let lastText: string | null = null;
+	if (initialMessage) {
+		lastText = await client.promptAndWaitText(initialMessage, initialImages, promptTimeoutMs);
+	}
+	for (const message of messages) {
+		lastText = await client.promptAndWaitText(message, undefined, promptTimeoutMs);
+	}
+	return lastText;
+}
+
+async function runDaemonStartup(
+	parsed: Args,
+	appMode: AppMode,
+	settingsManager: SettingsManager,
+	stdinContent?: string,
+): Promise<void> {
+	const { initialMessage, initialImages } = await prepareInitialMessage(
+		parsed,
+		settingsManager.getImageAutoResize(),
+		stdinContent,
+	);
+	if (appMode === "print" && !initialMessage && parsed.messages.length === 0) {
+		return;
+	}
+	await ensureDaemonStarted();
+	if (appMode === "interactive") {
+		await runDaemonInteractiveMode({ initialMessage, initialImages, initialMessages: parsed.messages });
+		return;
+	}
+
+	const client = new DaemonClient({ requestTimeoutMs: 300000 });
+	try {
+		await client.connect();
+		const lastText = await sendDaemonPrompts(client, initialMessage, initialImages, parsed.messages);
+		if (lastText) {
+			process.stdout.write(`${lastText}\n`);
+		}
+		return;
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(chalk.red(`Error: ${message}`));
+		process.exitCode = 1;
+		return;
+	} finally {
+		client.close();
+	}
 }
 
 async function prepareInitialMessage(
@@ -350,10 +468,6 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
-	const shouldTakeOverStdout = appMode !== "interactive" && !isPlainRuntimeMetadataCommand(parsed);
-	if (shouldTakeOverStdout) {
-		takeOverStdout();
-	}
 
 	if (shouldRunStartupSetup(appMode, parsed)) {
 		try {
@@ -370,6 +484,33 @@ export async function main(args: string[], options?: MainOptions) {
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
+	if (shouldRouteToDaemon(appMode, parsed, startupSettingsManager)) {
+		const incompatibleReason = getDaemonIncompatibleReason(parsed);
+		if (incompatibleReason) {
+			console.error(
+				chalk.red(`Error: these options cannot be applied to an already-running daemon: ${incompatibleReason}.`),
+			);
+			console.error(
+				chalk.dim(
+					`Restart the daemon with "${APP_NAME} daemon restart -- <agent options>" or disable daemon startup in settings.`,
+				),
+			);
+			process.exit(1);
+		}
+
+		let stdinContent: string | undefined;
+		if (appMode !== "interactive") {
+			stdinContent = await readPipedStdin();
+		}
+		await runDaemonStartup(parsed, appMode, startupSettingsManager, stdinContent);
+		return;
+	}
+
+	const shouldTakeOverStdout = appMode !== "interactive" && !isPlainRuntimeMetadataCommand(parsed);
+	if (shouldTakeOverStdout) {
+		takeOverStdout();
+	}
+
 	const sessionDir = startupSettingsManager.getSessionDir();
 	const shouldUsePersistentGlobalConversation =
 		!parsed.noSession &&

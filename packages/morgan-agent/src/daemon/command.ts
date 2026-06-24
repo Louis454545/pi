@@ -2,8 +2,10 @@ import { spawn } from "node:child_process";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { homedir } from "node:os";
 import chalk from "chalk";
-import { APP_NAME } from "../config.ts";
+import { APP_NAME, getAgentDir } from "../config.ts";
+import { SettingsManager } from "../core/settings-manager.ts";
 import { sleep } from "../utils/sleep.ts";
+import { disableDaemonAutostart, enableDaemonAutostart, getDaemonAutostartStatus } from "./autostart.ts";
 import { DaemonClient } from "./client.ts";
 import { runDaemonInteractiveMode } from "./interactive.ts";
 import { getDaemonPaths } from "./paths.ts";
@@ -17,6 +19,7 @@ export type DaemonCommand =
 	| { type: "run"; agentArgs: string[] }
 	| { type: "stop" }
 	| { type: "status" }
+	| { type: "autostart"; action: "enable" | "disable" | "status" }
 	| { type: "restart"; agentArgs: string[] }
 	| { type: "prompt"; message: string | undefined }
 	| { type: "attach" }
@@ -27,6 +30,7 @@ function printDaemonHelp(): void {
   ${APP_NAME} daemon start [-- <agent options>]
   ${APP_NAME} daemon stop
   ${APP_NAME} daemon status
+  ${APP_NAME} daemon autostart enable|disable|status
   ${APP_NAME} daemon restart [-- <agent options>]
   ${APP_NAME} daemon prompt <message>
   ${APP_NAME} daemon attach
@@ -35,6 +39,7 @@ Commands:
   start      Start a background agent daemon exposing the RPC protocol locally
   stop       Stop the running daemon
   status     Show daemon process and socket information
+  autostart  Enable, disable, or inspect launch-at-login integration
   restart    Restart the daemon
   prompt     Send one prompt to the daemon and print the last assistant response
   attach     Open the interactive TUI connected to the daemon
@@ -89,6 +94,14 @@ export function parseDaemonCommand(args: string[]): DaemonCommand | undefined {
 				return { type: "error", message: "connect does not accept arguments" };
 			}
 			return { type: "attach" };
+
+		case "autostart": {
+			const action = rest[0];
+			if (rest.length !== 1 || (action !== "enable" && action !== "disable" && action !== "status")) {
+				return { type: "error", message: "autostart requires enable, disable, or status" };
+			}
+			return { type: "autostart", action };
+		}
 
 		case "prompt":
 			return { type: "prompt", message: rest.length > 0 ? rest.join(" ") : undefined };
@@ -250,6 +263,19 @@ function printStatus(status: DaemonStatus | undefined): void {
 	console.log(`started: ${status.startedAt}`);
 }
 
+async function printAutostartStatus(): Promise<void> {
+	const status = await getDaemonAutostartStatus();
+	if (!status.supported) {
+		console.log(status.message);
+		return;
+	}
+	console.log(`${APP_NAME} daemon autostart is ${status.enabled ? "enabled" : "disabled"} (${status.provider})`);
+	console.log(`path: ${status.path}`);
+	if (status.message) {
+		console.log(chalk.yellow(`Warning: ${status.message}`));
+	}
+}
+
 async function runPrompt(messageArg: string | undefined): Promise<void> {
 	const stdinMessage = messageArg ? undefined : await readPipedStdin();
 	const message = messageArg ?? stdinMessage;
@@ -340,6 +366,43 @@ export async function handleDaemonCommand(args: string[]): Promise<boolean> {
 
 		case "status":
 			printStatus(await tryGetDaemonStatus());
+			await printAutostartStatus();
+			return true;
+
+		case "autostart":
+			try {
+				if (command.action === "enable") {
+					const status = await enableDaemonAutostart();
+					if (!status.supported) {
+						console.error(chalk.red(status.message));
+						process.exitCode = 1;
+					} else {
+						const settingsManager = SettingsManager.create(homedir(), getAgentDir());
+						settingsManager.setDaemonEnabled(true);
+						settingsManager.setDaemonStartAtLogin(true);
+						settingsManager.setDaemonAutostartProvider(status.provider);
+						await settingsManager.flush();
+						console.log(`${APP_NAME} daemon autostart enabled (${status.provider})`);
+						console.log(chalk.dim(`path: ${status.path}`));
+					}
+				} else if (command.action === "disable") {
+					const status = await disableDaemonAutostart();
+					if (!status.supported) {
+						console.error(chalk.red(status.message));
+						process.exitCode = 1;
+					} else {
+						const settingsManager = SettingsManager.create(homedir(), getAgentDir());
+						settingsManager.setDaemonStartAtLogin(false);
+						settingsManager.setDaemonAutostartProvider(status.provider);
+						await settingsManager.flush();
+						console.log(`${APP_NAME} daemon autostart disabled (${status.provider})`);
+					}
+				} else {
+					await printAutostartStatus();
+				}
+			} catch (error: unknown) {
+				reportDaemonCommandError(error);
+			}
 			return true;
 
 		case "prompt":

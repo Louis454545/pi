@@ -331,6 +331,11 @@ export class DaemonClient {
 	}
 
 	async promptAndWaitText(message: string, images?: ImageContent[], timeoutMs = 60000): Promise<string | null> {
+		await this.promptAndWait(message, images, timeoutMs);
+		return await this.getLastAssistantText();
+	}
+
+	async promptAndWait(message: string, images?: ImageContent[], timeoutMs = 60000): Promise<void> {
 		const id = this.createRequestId();
 		const wait = this.waitForDaemonPromptDone(id, timeoutMs);
 		try {
@@ -339,7 +344,6 @@ export class DaemonClient {
 				throw new Error(response.error);
 			}
 			await wait.promise;
-			return await this.getLastAssistantText();
 		} catch (error: unknown) {
 			wait.cancel();
 			throw error;

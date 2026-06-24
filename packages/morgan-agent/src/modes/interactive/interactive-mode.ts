@@ -73,6 +73,7 @@ import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
+import { disableDaemonAutostart, enableDaemonAutostart, getDaemonAutostartProvider } from "../../daemon/autostart.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
@@ -3763,6 +3764,9 @@ export class InteractiveMode {
 			const selector = new SettingsSelectorComponent(
 				{
 					autoCompact: this.session.autoCompactionEnabled,
+					daemonEnabled: this.settingsManager.getDaemonEnabled(),
+					daemonStartAtLogin: this.settingsManager.getDaemonStartAtLogin(),
+					daemonAutostartSupported: getDaemonAutostartProvider() !== undefined,
 					showImages: this.settingsManager.getShowImages(),
 					imageWidthCells: this.settingsManager.getImageWidthCells(),
 					autoResizeImages: this.settingsManager.getImageAutoResize(),
@@ -3791,6 +3795,29 @@ export class InteractiveMode {
 					onAutoCompactChange: (enabled) => {
 						this.session.setAutoCompactionEnabled(enabled);
 						this.footer.setAutoCompactEnabled(enabled);
+					},
+					onDaemonEnabledChange: (enabled) => {
+						this.settingsManager.setDaemonEnabled(enabled);
+						this.showStatus(`Daemon by default: ${enabled ? "enabled" : "disabled"}`);
+					},
+					onDaemonStartAtLoginChange: (enabled) => {
+						void (async () => {
+							try {
+								const status = enabled ? await enableDaemonAutostart() : await disableDaemonAutostart();
+								if (!status.supported) {
+									this.settingsManager.setDaemonStartAtLogin(false);
+									this.settingsManager.setDaemonAutostartProvider(undefined);
+									this.showWarning(status.message);
+									return;
+								}
+								this.settingsManager.setDaemonStartAtLogin(enabled);
+								this.settingsManager.setDaemonAutostartProvider(status.provider);
+								await this.settingsManager.flush();
+								this.showStatus(`Daemon at login: ${enabled ? "enabled" : "disabled"}`);
+							} catch (error: unknown) {
+								this.showError(error instanceof Error ? error.message : String(error));
+							}
+						})();
 					},
 					onShowImagesChange: (enabled) => {
 						this.settingsManager.setShowImages(enabled);

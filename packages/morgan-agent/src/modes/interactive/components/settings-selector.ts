@@ -33,6 +33,9 @@ const THINKING_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 
 export interface SettingsConfig {
 	autoCompact: boolean;
+	daemonEnabled: boolean;
+	daemonStartAtLogin: boolean;
+	daemonAutostartSupported: boolean;
 	showImages: boolean;
 	imageWidthCells: number;
 	autoResizeImages: boolean;
@@ -60,6 +63,8 @@ export interface SettingsConfig {
 
 export interface SettingsCallbacks {
 	onAutoCompactChange: (enabled: boolean) => void;
+	onDaemonEnabledChange: (enabled: boolean) => void;
+	onDaemonStartAtLoginChange: (enabled: boolean) => void;
 	onShowImagesChange: (enabled: boolean) => void;
 	onImageWidthCellsChange: (width: number) => void;
 	onAutoResizeImagesChange: (enabled: boolean) => void;
@@ -216,6 +221,13 @@ export class SettingsSelectorComponent extends Container {
 				values: ["true", "false"],
 			},
 			{
+				id: "daemon-enabled",
+				label: "Daemon by default",
+				description: "Start or reuse the background daemon for normal Morgan launches",
+				currentValue: config.daemonEnabled ? "true" : "false",
+				values: ["true", "false"],
+			},
+			{
 				id: "steering-mode",
 				label: "Steering mode",
 				description:
@@ -342,6 +354,18 @@ export class SettingsSelectorComponent extends Container {
 		];
 
 		// Only show image toggle if terminal supports it
+		if (config.daemonAutostartSupported) {
+			const daemonIndex = items.findIndex((item) => item.id === "daemon-enabled");
+			items.splice(daemonIndex + 1, 0, {
+				id: "daemon-start-at-login",
+				label: "Daemon at login",
+				description: "Start the Morgan daemon automatically at login",
+				currentValue: config.daemonStartAtLogin ? "true" : "false",
+				values: ["true", "false"],
+			});
+		}
+
+		// Only show image toggle if terminal supports it
 		if (supportsImages) {
 			// Insert after autocompact
 			items.splice(1, 0, {
@@ -450,6 +474,12 @@ export class SettingsSelectorComponent extends Container {
 				switch (id) {
 					case "autocompact":
 						callbacks.onAutoCompactChange(newValue === "true");
+						break;
+					case "daemon-enabled":
+						callbacks.onDaemonEnabledChange(newValue === "true");
+						break;
+					case "daemon-start-at-login":
+						callbacks.onDaemonStartAtLoginChange(newValue === "true");
 						break;
 					case "show-images":
 						callbacks.onShowImagesChange(newValue === "true");

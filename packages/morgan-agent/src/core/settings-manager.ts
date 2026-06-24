@@ -53,6 +53,13 @@ export interface WarningSettings {
 }
 
 export type TransportSetting = Transport;
+export type DaemonAutostartProviderSetting = "systemd" | "launchd";
+
+export interface DaemonSettings {
+	enabled?: boolean; // default: true - normal morgan launches use the daemon
+	startAtLogin?: boolean; // default: false
+	autostartProvider?: DaemonAutostartProviderSetting;
+}
 
 /**
  * Package source for npm/git packages.
@@ -105,6 +112,7 @@ export interface Settings {
 	sessionDir?: string; // Custom global conversation storage directory
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
+	daemon?: DaemonSettings;
 }
 
 /** Deep merge runtime overrides into global settings. */
@@ -806,6 +814,45 @@ export class SettingsManager {
 	setWarnings(warnings: WarningSettings): void {
 		this.globalSettings.warnings = { ...warnings };
 		this.markModified("warnings");
+		this.save();
+	}
+
+	getDaemonEnabled(): boolean {
+		return this.settings.daemon?.enabled ?? true;
+	}
+
+	setDaemonEnabled(enabled: boolean): void {
+		if (!this.globalSettings.daemon) {
+			this.globalSettings.daemon = {};
+		}
+		this.globalSettings.daemon.enabled = enabled;
+		this.markModified("daemon", "enabled");
+		this.save();
+	}
+
+	getDaemonStartAtLogin(): boolean {
+		return this.settings.daemon?.startAtLogin ?? false;
+	}
+
+	setDaemonStartAtLogin(enabled: boolean): void {
+		if (!this.globalSettings.daemon) {
+			this.globalSettings.daemon = {};
+		}
+		this.globalSettings.daemon.startAtLogin = enabled;
+		this.markModified("daemon", "startAtLogin");
+		this.save();
+	}
+
+	getDaemonAutostartProvider(): DaemonAutostartProviderSetting | undefined {
+		return this.settings.daemon?.autostartProvider;
+	}
+
+	setDaemonAutostartProvider(provider: DaemonAutostartProviderSetting | undefined): void {
+		if (!this.globalSettings.daemon) {
+			this.globalSettings.daemon = {};
+		}
+		this.globalSettings.daemon.autostartProvider = provider;
+		this.markModified("daemon", "autostartProvider");
 		this.save();
 	}
 }

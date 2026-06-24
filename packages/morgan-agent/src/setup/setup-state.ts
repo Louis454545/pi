@@ -1,11 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-export type SetupStep = "authModel" | "communication" | "skills" | "browser";
-export type SetupProfile = "recommended" | "custom";
+export type SetupStep = "authModel" | "communication" | "skills" | "browser" | "daemon";
+export type SetupProfile = "custom";
 export type SetupResumeChoice = "resume" | "start-over" | "skip";
 export type BrowserSetupChoice = "install" | "later" | "skip";
 export type CommunicationSetupChoice = "tui" | "telegram";
+export type DaemonAutostartSetupChoice = "enable" | "disable" | "skip";
 
 export interface SetupState {
 	version: 1;
@@ -13,6 +14,7 @@ export interface SetupState {
 	completedSteps: SetupStep[];
 	browserChoice?: BrowserSetupChoice;
 	communicationChoice?: CommunicationSetupChoice;
+	daemonAutostartChoice?: DaemonAutostartSetupChoice;
 }
 
 const SETUP_STATE_FILE = "setup-state.json";
@@ -22,18 +24,25 @@ function emptyState(): SetupState {
 }
 
 function parseSetupState(content: string): SetupState | undefined {
-	const parsed = JSON.parse(content) as Partial<SetupState>;
+	const parsed = JSON.parse(content) as Partial<SetupState> & { profile?: string };
 	if (parsed.version !== 1 || !Array.isArray(parsed.completedSteps)) {
 		return undefined;
 	}
 	return {
 		version: 1,
-		profile: parsed.profile,
+		profile: parsed.profile === "custom" || parsed.profile === "recommended" ? "custom" : undefined,
 		completedSteps: parsed.completedSteps.filter((step): step is SetupStep => {
-			return step === "authModel" || step === "communication" || step === "skills" || step === "browser";
+			return (
+				step === "authModel" ||
+				step === "communication" ||
+				step === "skills" ||
+				step === "browser" ||
+				step === "daemon"
+			);
 		}),
 		browserChoice: parsed.browserChoice,
 		communicationChoice: parsed.communicationChoice,
+		daemonAutostartChoice: parsed.daemonAutostartChoice,
 	};
 }
 

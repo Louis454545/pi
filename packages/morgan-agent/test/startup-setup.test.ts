@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { ENV_AGENT_DIR } from "../src/config.ts";
 import { isStdoutTakenOver, restoreStdout } from "../src/core/output-guard.ts";
-import { main, shouldRunStartupSetup } from "../src/main.ts";
+import { getDaemonIncompatibleReason, main, shouldRunStartupSetup } from "../src/main.ts";
 
 describe("startup setup gate", () => {
 	let tempDir: string;
@@ -38,6 +38,10 @@ describe("startup setup gate", () => {
 		expect(shouldRunStartupSetup("print", parseArgs(["--print", "hello"]), settingsPath)).toBe(false);
 		expect(shouldRunStartupSetup("json", parseArgs(["--mode", "json"]), settingsPath)).toBe(false);
 		expect(shouldRunStartupSetup("rpc", parseArgs(["--mode", "rpc"]), settingsPath)).toBe(false);
+	});
+
+	it("keeps offline mode out of daemon startup", () => {
+		expect(getDaemonIncompatibleReason(parseArgs(["--offline", "-p", "hello"]))).toContain("offline mode");
 	});
 
 	it("exports without startup setup or stdout takeover", async () => {

@@ -22,6 +22,7 @@ import type {
 class FakePrompter implements SetupPrompter {
 	readonly messages: string[] = [];
 	readonly oauthLogins: string[] = [];
+	readonly selectMessages: string[] = [];
 	private readonly selections: string[];
 	private readonly inputs: string[];
 	private readonly confirmations: boolean[];
@@ -52,7 +53,8 @@ class FakePrompter implements SetupPrompter {
 		return value;
 	}
 
-	async select<T extends string>(_message: string, options: SelectOption<T>[]): Promise<T> {
+	async select<T extends string>(message: string, options: SelectOption<T>[]): Promise<T> {
+		this.selectMessages.push(message);
 		const value = this.selections.shift();
 		if (value === undefined) {
 			return options[0].id;
@@ -161,7 +163,7 @@ describe("setup wizard", () => {
 	it("stores API key defaults and installs the managed browser harness", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
 		const prompter = new FakePrompter(
-			["custom", "api-key", "anthropic", "claude-opus-4-8", "medium", "tui", "install"],
+			["api-key", "anthropic", "claude-opus-4-8", "medium", "tui", "skip", "install"],
 			["sk-test"],
 		);
 		const browserRunner = new FakeBrowserRunner(true);
@@ -197,7 +199,7 @@ describe("setup wizard", () => {
 
 	it("keeps Morgan setup successful when browser doctor is pending", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["recommended", "skip", "install"]);
+		const prompter = new FakePrompter(["custom", "skip", "tui", "skip", "install"]);
 		const browserRunner = new FakeBrowserRunner(true, [0, 7]);
 
 		const result = await runSetupWizard({
@@ -216,7 +218,7 @@ describe("setup wizard", () => {
 
 	it("can skip browser harness setup", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["custom", "skip", "tui", "skip"]);
+		const prompter = new FakePrompter(["custom", "skip", "tui", "skip", "skip"]);
 		const browserRunner = new FakeBrowserRunner(true);
 
 		const result = await runSetupWizard({
@@ -233,9 +235,31 @@ describe("setup wizard", () => {
 		expect(prompter.messages).toContain("Browser: skipped");
 	});
 
+	it("skips daemon autostart prompt on unsupported platforms", async () => {
+		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
+		const prompter = new FakePrompter(["custom", "skip", "tui", "skip"]);
+		const browserRunner = new FakeBrowserRunner(true);
+
+		const result = await runSetupWizard({
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			prompter,
+			browserRunner,
+			daemonAutostartRunner: { platform: "win32" },
+		});
+
+		expect(result.daemon.status).toBe("skipped");
+		expect(result.browser.status).toBe("skipped");
+		expect(settingsManager.getDaemonEnabled()).toBe(true);
+		expect(settingsManager.getDaemonStartAtLogin()).toBe(false);
+		expect(prompter.selectMessages).not.toContain("Start Morgan automatically at login?");
+	});
+
 	it("can defer browser harness setup", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["recommended", "skip", "later"]);
+		const prompter = new FakePrompter(["custom", "skip", "tui", "skip", "later"]);
 		const browserRunner = new FakeBrowserRunner(true);
 
 		const result = await runSetupWizard({
@@ -255,8 +279,8 @@ describe("setup wizard", () => {
 	it("resumes an incomplete setup state without storing secrets", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
 		const stateStore = new SetupStateStore(agentDir);
-		stateStore.save({ version: 1, profile: "recommended", completedSteps: ["authModel"] });
-		const prompter = new FakePrompter(["resume", "later"]);
+		stateStore.save({ version: 1, profile: "custom", completedSteps: ["authModel"] });
+		const prompter = new FakePrompter(["resume", "tui", "skip", "later"]);
 		const browserRunner = new FakeBrowserRunner(true);
 
 		const result = await runSetupWizard({
@@ -276,7 +300,7 @@ describe("setup wizard", () => {
 
 	it("logs in to subscription providers during setup", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["custom", "subscription", "anthropic", "claude-opus-4-8", "medium", "tui"]);
+		const prompter = new FakePrompter(["subscription", "anthropic", "claude-opus-4-8", "medium", "tui", "skip"]);
 		const browserRunner = new FakeBrowserRunner(true);
 
 		await runSetupWizard({
@@ -297,7 +321,7 @@ describe("setup wizard", () => {
 
 	it("installs an editable Telegram bridge when selected", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["custom", "skip", "telegram", "manual"], ["123456:token", "123,-456"]);
+		const prompter = new FakePrompter(["custom", "skip", "telegram", "manual", "skip"], ["123456:token", "123,-456"]);
 		const browserRunner = new FakeBrowserRunner(true);
 		const telegramClient = new FakeTelegramBridgeClient();
 		telegramClient.latestOffset = 99;
@@ -349,7 +373,7 @@ describe("setup wizard", () => {
 
 	it("pairs the Telegram allowlist with /start when available", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["custom", "skip", "telegram", "pair"], ["123456:token"]);
+		const prompter = new FakePrompter(["custom", "skip", "telegram", "pair", "skip"], ["123456:token"]);
 		const browserRunner = new FakeBrowserRunner(true);
 		const telegramClient = new FakeTelegramBridgeClient({
 			peer: { chatId: 555, userId: 777, offset: 12, label: "Louis" },
@@ -378,7 +402,7 @@ describe("setup wizard", () => {
 
 	it("asks before installing uv when it is missing", async () => {
 		const { agentDir, authStorage, modelRegistry, settingsManager } = createSetup();
-		const prompter = new FakePrompter(["recommended", "skip", "install"], [], [true]);
+		const prompter = new FakePrompter(["custom", "skip", "tui", "skip", "install"], [], [true]);
 		const browserRunner = new FakeBrowserRunner(false);
 
 		await runSetupWizard({
@@ -405,6 +429,7 @@ describe("setup wizard", () => {
 			await expect(handleSetupCommand(["setup", "--help"])).resolves.toEqual({ handled: true });
 			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
 			expect(stdout).toContain("morgan setup [--force] [--no-launch]");
+			expect(stdout).not.toContain("--profile");
 			expect(errorSpy).not.toHaveBeenCalled();
 			expect(process.exitCode).toBeUndefined();
 		} finally {
@@ -413,7 +438,7 @@ describe("setup wizard", () => {
 		}
 	});
 
-	it("runs recommended setup non-interactively", async () => {
+	it("runs setup non-interactively", async () => {
 		tempDir = mkdtempSync(join(tmpdir(), "morgan-setup-cli-"));
 		const agentDir = join(tempDir, "agent");
 		process.env[ENV_AGENT_DIR] = agentDir;
@@ -426,8 +451,6 @@ describe("setup wizard", () => {
 					"setup",
 					"--yes",
 					"--no-launch",
-					"--profile",
-					"recommended",
 					"--browser",
 					"later",
 					"--provider",

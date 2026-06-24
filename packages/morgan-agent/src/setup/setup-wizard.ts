@@ -4,6 +4,12 @@ import type { AuthStorage } from "../core/auth-storage.ts";
 import type { ModelRegistry } from "../core/model-registry.ts";
 import { defaultModelPerProvider } from "../core/model-resolver.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
+import {
+	type AutostartRunner,
+	disableDaemonAutostart,
+	enableDaemonAutostart,
+	getDaemonAutostartProvider,
+} from "../daemon/autostart.ts";
 import type { AuthSelectorProvider } from "../modes/interactive/components/oauth-selector.ts";
 import {
 	type BrowserHarnessRunner,
@@ -14,7 +20,7 @@ import type { SelectOption, SetupPrompter } from "./prompter.ts";
 import {
 	type BrowserSetupChoice,
 	type CommunicationSetupChoice,
-	type SetupProfile,
+	type DaemonAutostartSetupChoice,
 	type SetupResumeChoice,
 	SetupStateStore,
 	type SetupStep,
@@ -26,12 +32,11 @@ import {
 } from "./telegram-bridge-setup.ts";
 
 type AuthChoice = "api-key" | "subscription" | "skip";
-type SetupModeChoice = SetupProfile | "skip";
+type SetupStartChoice = "custom" | "skip";
 
 export interface SetupWizardOptions {
 	force?: boolean;
 	nonInteractive?: boolean;
-	profile?: SetupProfile;
 	authChoice?: AuthChoice;
 	provider?: string;
 	model?: string;
@@ -39,6 +44,7 @@ export interface SetupWizardOptions {
 	apiKey?: string;
 	communicationChoice?: CommunicationSetupChoice;
 	browserChoice?: BrowserSetupChoice;
+	daemonAutostartChoice?: DaemonAutostartSetupChoice;
 	agentDir: string;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
@@ -46,13 +52,20 @@ export interface SetupWizardOptions {
 	prompter: SetupPrompter;
 	browserRunner?: BrowserHarnessRunner;
 	telegramClient?: TelegramBridgeClient;
+	daemonAutostartRunner?: AutostartRunner;
 	setupStateStore?: SetupStateStore;
+}
+
+export interface DaemonSetupResult {
+	status: "ready" | "skipped" | "unsupported" | "error";
+	messages: string[];
 }
 
 export interface SetupWizardResult {
 	launchMorgan: boolean;
 	browser: BrowserHarnessSetupResult;
 	communication: TelegramBridgeSetupResult;
+	daemon: DaemonSetupResult;
 }
 
 function uniqueProviders(models: Model<Api>[]): string[] {
@@ -362,27 +375,105 @@ async function configureBrowserHarness(options: SetupWizardOptions): Promise<Bro
 	});
 }
 
+async function configureDaemon(options: SetupWizardOptions): Promise<DaemonSetupResult> {
+	options.settingsManager.setDaemonEnabled(true);
+	const provider = getDaemonAutostartProvider(options.daemonAutostartRunner?.platform);
+
+	if (!provider) {
+		options.settingsManager.setDaemonStartAtLogin(false);
+		options.settingsManager.setDaemonAutostartProvider(undefined);
+		await options.settingsManager.flush();
+		if (options.daemonAutostartChoice === "enable") {
+			return {
+				status: "unsupported",
+				messages: ["Daemon: enabled for normal launches. Login autostart is supported on Linux and macOS only."],
+			};
+		}
+		return {
+			status: "skipped",
+			messages: ["Daemon: enabled for normal launches. Login autostart is not available on this platform."],
+		};
+	}
+
+	if (options.nonInteractive && !options.daemonAutostartChoice) {
+		await options.settingsManager.flush();
+		return { status: "skipped", messages: ["Daemon: enabled for normal launches. Login autostart unchanged."] };
+	}
+
+	const choice =
+		options.daemonAutostartChoice ??
+		(await options.prompter.select<DaemonAutostartSetupChoice>(
+			"Start Morgan automatically at login?",
+			[
+				{ id: "enable", label: "Start at login" },
+				{ id: "disable", label: "Do not start at login" },
+				{ id: "skip", label: "Configure later" },
+			],
+			{ defaultId: "enable" },
+		));
+
+	if (choice === "enable") {
+		try {
+			const status = await enableDaemonAutostart({ runner: options.daemonAutostartRunner });
+			if (!status.supported) {
+				options.settingsManager.setDaemonStartAtLogin(false);
+				options.settingsManager.setDaemonAutostartProvider(undefined);
+				await options.settingsManager.flush();
+				return { status: "unsupported", messages: [`Daemon: ${status.message}`] };
+			}
+			options.settingsManager.setDaemonStartAtLogin(true);
+			options.settingsManager.setDaemonAutostartProvider(status.provider);
+			await options.settingsManager.flush();
+			return {
+				status: "ready",
+				messages: [`Daemon: enabled for normal launches and login startup (${status.provider}).`],
+			};
+		} catch (error: unknown) {
+			options.settingsManager.setDaemonStartAtLogin(false);
+			options.settingsManager.setDaemonAutostartProvider(undefined);
+			await options.settingsManager.flush();
+			const message = error instanceof Error ? error.message : String(error);
+			return { status: "error", messages: [`Daemon: login startup could not be enabled: ${message}`] };
+		}
+	}
+
+	if (choice === "disable") {
+		try {
+			await disableDaemonAutostart({ runner: options.daemonAutostartRunner });
+		} catch {
+			// Keep setup non-blocking when disabling an absent or broken login item.
+		}
+		options.settingsManager.setDaemonStartAtLogin(false);
+		options.settingsManager.setDaemonAutostartProvider(provider);
+		await options.settingsManager.flush();
+		return { status: "skipped", messages: ["Daemon: enabled for normal launches. Login startup disabled."] };
+	}
+
+	await options.settingsManager.flush();
+	return { status: "skipped", messages: ["Daemon: enabled for normal launches. Login startup not changed."] };
+}
+
 function reportSummary(
 	options: SetupWizardOptions,
 	browser: BrowserHarnessSetupResult,
 	communication: TelegramBridgeSetupResult,
+	daemon: DaemonSetupResult,
 ): void {
 	options.prompter.info("Setup summary:");
 	options.prompter.info(`Model: ${options.settingsManager.getDefaultProvider() ?? "not configured"}`);
 	options.prompter.info(`Communication: ${communication.status}`);
+	options.prompter.info(`Daemon: ${daemon.status}`);
 	options.prompter.info(`Browser: ${browser.status}`);
 }
 
-async function resolveSetupProfile(
-	options: SetupWizardOptions,
-	stateStore: SetupStateStore,
-): Promise<SetupProfile | "skip"> {
+async function resolveSetupStart(options: SetupWizardOptions, stateStore: SetupStateStore): Promise<SetupStartChoice> {
 	if (options.force || options.nonInteractive) {
 		stateStore.clear();
+		return "custom";
 	}
 
 	const savedState = !options.force && !options.nonInteractive ? stateStore.load() : undefined;
-	if (savedState && savedState.completedSteps.length > 0 && !options.profile) {
+	if (savedState && savedState.completedSteps.length > 0) {
 		const resumeChoice = await options.prompter.select<SetupResumeChoice>(
 			"Resume previous setup?",
 			[
@@ -397,22 +488,18 @@ async function resolveSetupProfile(
 		}
 		if (resumeChoice === "start-over") {
 			stateStore.clear();
-		} else if (savedState.profile) {
-			return savedState.profile;
+		} else {
+			return "custom";
 		}
 	}
 
-	return (
-		options.profile ??
-		(await options.prompter.select<SetupModeChoice>(
-			"Choose setup mode:",
-			[
-				{ id: "recommended", label: "Recommended" },
-				{ id: "custom", label: "Custom" },
-				{ id: "skip", label: "Skip for now" },
-			],
-			{ defaultId: "recommended" },
-		))
+	return await options.prompter.select<SetupStartChoice>(
+		"Run Morgan setup?",
+		[
+			{ id: "custom", label: "Start setup" },
+			{ id: "skip", label: "Skip for now" },
+		],
+		{ defaultId: "custom" },
 	);
 }
 
@@ -435,17 +522,18 @@ async function runSetupStep(
 
 export async function runSetupWizard(options: SetupWizardOptions): Promise<SetupWizardResult> {
 	const stateStore = options.setupStateStore ?? new SetupStateStore(options.agentDir);
-	const profile = await resolveSetupProfile(options, stateStore);
-	if (profile === "skip") {
+	const setupStart = await resolveSetupStart(options, stateStore);
+	if (setupStart === "skip") {
 		options.prompter.info("Skipped setup. Run `morgan setup` when you are ready.");
 		return {
 			launchMorgan: false,
 			browser: { status: "skipped", messages: ["Browser control: skipped."] },
 			communication: { status: "skipped", messages: ["Communication channel: skipped."] },
+			daemon: { status: "skipped", messages: ["Daemon: skipped."] },
 		};
 	}
 
-	stateStore.update((state) => ({ ...state, profile }));
+	stateStore.update((state) => ({ ...state, profile: "custom" }));
 
 	await runSetupStep(options, stateStore, "authModel", async () => {
 		await configureAuthAndModel(options);
@@ -453,10 +541,7 @@ export async function runSetupWizard(options: SetupWizardOptions): Promise<Setup
 
 	let communication: TelegramBridgeSetupResult = { status: "skipped", messages: ["Communication channel: TUI only."] };
 	await runSetupStep(options, stateStore, "communication", async () => {
-		communication =
-			profile === "recommended"
-				? { status: "skipped", messages: ["Communication channel: TUI only."] }
-				: await configureCommunicationBridge(options);
+		communication = await configureCommunicationBridge(options);
 		stateStore.update((state) => ({ ...state, communicationChoice: options.communicationChoice ?? "tui" }));
 	});
 	for (const message of communication.messages) {
@@ -471,6 +556,21 @@ export async function runSetupWizard(options: SetupWizardOptions): Promise<Setup
 		options.settingsManager.setEnableSkillCommands(true);
 		await options.settingsManager.flush();
 	});
+
+	let daemon: DaemonSetupResult = { status: "skipped", messages: ["Daemon: enabled for normal launches."] };
+	await runSetupStep(options, stateStore, "daemon", async () => {
+		daemon = await configureDaemon(options);
+		if (options.daemonAutostartChoice) {
+			stateStore.update((state) => ({ ...state, daemonAutostartChoice: options.daemonAutostartChoice }));
+		}
+	});
+	for (const message of daemon.messages) {
+		if (daemon.status === "ready" || daemon.status === "skipped") {
+			options.prompter.info(message);
+		} else {
+			options.prompter.warn(message);
+		}
+	}
 
 	let browser: BrowserHarnessSetupResult = { status: "skipped", messages: ["Browser control: skipped."] };
 	await runSetupStep(options, stateStore, "browser", async () => {
@@ -488,8 +588,8 @@ export async function runSetupWizard(options: SetupWizardOptions): Promise<Setup
 		}
 	}
 
-	reportSummary(options, browser, communication);
+	reportSummary(options, browser, communication, daemon);
 	options.prompter.info("Setup complete.");
 	stateStore.clear();
-	return { launchMorgan: true, browser, communication };
+	return { launchMorgan: true, browser, communication, daemon };
 }

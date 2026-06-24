@@ -10,7 +10,7 @@ import { ModelRegistry } from "../core/model-registry.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import { initTheme, stopThemeWatcher } from "../modes/interactive/theme/theme.ts";
 import { type SelectOption, SetupCancelledError, type SetupPrompter, TuiSetupPrompter } from "./prompter.ts";
-import type { BrowserSetupChoice, CommunicationSetupChoice, SetupProfile } from "./setup-state.ts";
+import type { BrowserSetupChoice, CommunicationSetupChoice, DaemonAutostartSetupChoice } from "./setup-state.ts";
 import { runSetupWizard, type SetupWizardResult } from "./setup-wizard.ts";
 
 export interface SetupCommandResult {
@@ -23,9 +23,9 @@ interface SetupCommandOptions {
 	noLaunch: boolean;
 	yes: boolean;
 	help: boolean;
-	profile?: SetupProfile;
 	browserChoice?: BrowserSetupChoice;
 	communicationChoice?: CommunicationSetupChoice;
+	daemonAutostartChoice?: DaemonAutostartSetupChoice;
 	provider?: string;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
@@ -38,9 +38,9 @@ interface SetupCommandOptions {
 export interface RunSetupOptions {
 	force?: boolean;
 	yes?: boolean;
-	profile?: SetupProfile;
 	browserChoice?: BrowserSetupChoice;
 	communicationChoice?: CommunicationSetupChoice;
+	daemonAutostartChoice?: DaemonAutostartSetupChoice;
 	provider?: string;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
@@ -57,9 +57,10 @@ Options:
   --force                         Re-run setup steps even when settings already exist
   --no-launch                     Do not start Morgan after setup
   --yes                           Run without interactive prompts when all values are provided
-  --profile recommended|custom    Choose setup profile
   --browser install|later|skip    Configure browser control
   --communication tui|telegram    Configure communication channel
+  --daemon-autostart enable|disable|skip
+                                  Configure launch-at-login on Linux/macOS
   --provider <id>                 Set default provider
   --model <id>                    Set default model
   --thinking <level>              Set thinking level: off, minimal, low, medium, high, xhigh
@@ -92,9 +93,9 @@ function parseSetupCommand(args: string[]): SetupCommandOptions | undefined {
 	let invalidOption: string | undefined;
 	let missingOptionValue: string | undefined;
 	let invalidValue: string | undefined;
-	let profile: SetupProfile | undefined;
 	let browserChoice: BrowserSetupChoice | undefined;
 	let communicationChoice: CommunicationSetupChoice | undefined;
+	let daemonAutostartChoice: DaemonAutostartSetupChoice | undefined;
 	let provider: string | undefined;
 	let model: string | undefined;
 	let thinkingLevel: ThinkingLevel | undefined;
@@ -110,16 +111,6 @@ function parseSetupCommand(args: string[]): SetupCommandOptions | undefined {
 			yes = true;
 		} else if (arg === "--help" || arg === "-h") {
 			help = true;
-		} else if (arg === "--profile") {
-			const result = readOptionValue(rest, index, arg);
-			index = result.nextIndex;
-			if (result.missing) {
-				missingOptionValue = missingOptionValue ?? result.missing;
-			} else if (result.value === "recommended" || result.value === "custom") {
-				profile = result.value;
-			} else {
-				invalidValue = invalidValue ?? `${arg} must be recommended or custom`;
-			}
 		} else if (arg === "--browser") {
 			const result = readOptionValue(rest, index, arg);
 			index = result.nextIndex;
@@ -139,6 +130,16 @@ function parseSetupCommand(args: string[]): SetupCommandOptions | undefined {
 				communicationChoice = result.value;
 			} else {
 				invalidValue = invalidValue ?? `${arg} must be tui or telegram`;
+			}
+		} else if (arg === "--daemon-autostart") {
+			const result = readOptionValue(rest, index, arg);
+			index = result.nextIndex;
+			if (result.missing) {
+				missingOptionValue = missingOptionValue ?? result.missing;
+			} else if (result.value === "enable" || result.value === "disable" || result.value === "skip") {
+				daemonAutostartChoice = result.value;
+			} else {
+				invalidValue = invalidValue ?? `${arg} must be enable, disable, or skip`;
 			}
 		} else if (arg === "--provider") {
 			const result = readOptionValue(rest, index, arg);
@@ -175,9 +176,9 @@ function parseSetupCommand(args: string[]): SetupCommandOptions | undefined {
 		noLaunch,
 		yes,
 		help,
-		profile,
 		browserChoice,
 		communicationChoice,
+		daemonAutostartChoice,
 		provider,
 		model,
 		thinkingLevel,
@@ -268,9 +269,9 @@ export async function handleSetupCommand(args: string[]): Promise<SetupCommandRe
 		result = await runSetup({
 			force: options.force,
 			yes: options.yes,
-			profile: options.profile,
 			browserChoice: options.browserChoice,
 			communicationChoice: options.communicationChoice,
+			daemonAutostartChoice: options.daemonAutostartChoice,
 			provider: options.provider,
 			model: options.model,
 			thinkingLevel: options.thinkingLevel,
@@ -309,7 +310,6 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupWiza
 		return await runSetupWizard({
 			force: options.force ?? false,
 			nonInteractive: options.yes,
-			profile: options.profile ?? (options.yes ? "recommended" : undefined),
 			authChoice,
 			provider: options.provider,
 			model: options.model,
@@ -317,6 +317,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupWiza
 			apiKey: options.apiKey,
 			communicationChoice: options.communicationChoice ?? (options.yes ? "tui" : undefined),
 			browserChoice: options.browserChoice ?? (options.yes ? "later" : undefined),
+			daemonAutostartChoice: options.daemonAutostartChoice,
 			agentDir,
 			authStorage,
 			modelRegistry,

@@ -2,8 +2,15 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentMessage } from "@earendil-works/morgan-agent-core";
-import type { AssistantMessage, Message } from "@earendil-works/morgan-ai";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/morgan-agent-core";
+import {
+	type AssistantMessage,
+	getProviders,
+	type ImageContent,
+	type Message,
+	type OAuthProviderId,
+	type OAuthSelectPrompt,
+} from "@earendil-works/morgan-ai";
 import {
 	CombinedAutocompleteProvider,
 	type Component,
@@ -22,12 +29,16 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/morgan-tui";
-import { APP_NAME, APP_TITLE, getAgentDir, VERSION } from "../config.ts";
+import { APP_NAME, APP_TITLE, getAgentDir, getAuthPath, getDocsPath, VERSION } from "../config.ts";
 import { type AgentSessionEvent, parseSkillBlock, type SessionStats } from "../core/agent-session.ts";
+import { AuthStorage } from "../core/auth-storage.ts";
 import type { BashResult } from "../core/bash-executor.ts";
 import { FooterDataProvider } from "../core/footer-data-provider.ts";
+import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../core/http-dispatcher.ts";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import { createCompactionSummaryMessage } from "../core/messages.ts";
+import { ModelRegistry } from "../core/model-registry.ts";
+import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../core/provider-display-names.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import type { TruncationResult } from "../core/tools/truncate.ts";
 import { AssistantMessageComponent } from "../modes/interactive/components/assistant-message.ts";
@@ -40,14 +51,19 @@ import { ExtensionEditorComponent } from "../modes/interactive/components/extens
 import { ExtensionInputComponent } from "../modes/interactive/components/extension-input.ts";
 import { ExtensionSelectorComponent } from "../modes/interactive/components/extension-selector.ts";
 import { keyText, rawKeyHint } from "../modes/interactive/components/keybinding-hints.ts";
+import { LoginDialogComponent } from "../modes/interactive/components/login-dialog.ts";
+import { type AuthSelectorProvider, OAuthSelectorComponent } from "../modes/interactive/components/oauth-selector.ts";
+import { SettingsSelectorComponent } from "../modes/interactive/components/settings-selector.ts";
 import { SkillInvocationMessageComponent } from "../modes/interactive/components/skill-invocation-message.ts";
 import { ToolExecutionComponent } from "../modes/interactive/components/tool-execution.ts";
 import { UserMessageComponent } from "../modes/interactive/components/user-message.ts";
 import {
+	getAvailableThemes,
 	getEditorTheme,
 	getMarkdownTheme,
 	initTheme,
 	onThemeChange,
+	setTheme,
 	stopThemeWatcher,
 	theme,
 } from "../modes/interactive/theme/theme.ts";
@@ -59,10 +75,16 @@ import type {
 } from "../modes/rpc/rpc-types.ts";
 import { copyToClipboard } from "../utils/clipboard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
+import { disableDaemonAutostart, enableDaemonAutostart, getDaemonAutostartProvider } from "./autostart.ts";
 import { DaemonClient } from "./client.ts";
 
 type DaemonModelInfo = Awaited<ReturnType<DaemonClient["getAvailableModels"]>>[number];
 type QueuedMessage = { text: string; mode: "steer" | "followUp" };
+export interface DaemonInteractiveStartupOptions {
+	initialMessage?: string;
+	initialImages?: ImageContent[];
+	initialMessages?: string[];
+}
 type ToolResultContentBlock = { type: string; text?: string; data?: string; mimeType?: string };
 type ToolResultPayload = {
 	content: ToolResultContentBlock[];
@@ -71,6 +93,10 @@ type ToolResultPayload = {
 };
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
+const STARTUP_PROMPT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+const BUILT_IN_MODEL_PROVIDERS = new Set<string>(getProviders());
+const BEDROCK_PROVIDER_ID = "amazon-bedrock";
+const ALL_THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 export const DAEMON_ATTACH_BUILT_IN_COMMANDS: Array<{ name: string; description: string }> = [
 	{ name: "quit", description: "Exit daemon attach" },
 	{ name: "reset", description: "Reset the global conversation" },
@@ -78,6 +104,9 @@ export const DAEMON_ATTACH_BUILT_IN_COMMANDS: Array<{ name: string; description:
 	{ name: "export", description: "Export daemon conversation to JSONL" },
 	{ name: "copy", description: "Copy last assistant response" },
 	{ name: "model", description: "Select or set daemon model" },
+	{ name: "settings", description: "Configure Morgan settings" },
+	{ name: "login", description: "Configure provider authentication" },
+	{ name: "logout", description: "Remove provider authentication" },
 	{ name: "reload", description: "Reload daemon resources" },
 	{ name: "hotkeys", description: "Show daemon attach shortcuts" },
 ];
@@ -92,6 +121,20 @@ function isDeadTerminalError(error: unknown): boolean {
 	}
 	const code = typeof error.code === "string" ? error.code : undefined;
 	return code !== undefined && DEAD_TERMINAL_ERROR_CODES.has(code);
+}
+
+function isApiKeyLoginProvider(
+	providerId: string,
+	oauthProviderIds: ReadonlySet<string>,
+	builtInProviderIds: ReadonlySet<string> = BUILT_IN_MODEL_PROVIDERS,
+): boolean {
+	if (BUILT_IN_PROVIDER_DISPLAY_NAMES[providerId]) {
+		return true;
+	}
+	if (builtInProviderIds.has(providerId)) {
+		return false;
+	}
+	return !oauthProviderIds.has(providerId);
 }
 
 function getRecordType(value: unknown): string | undefined {
@@ -200,6 +243,10 @@ export function getDaemonEscapeAction(
 		return "abort_bash";
 	}
 	return "clear";
+}
+
+export function getDaemonAvailableThinkingLevels(state: RpcSessionState | undefined): ThinkingLevel[] {
+	return state?.model?.reasoning ? ALL_THINKING_LEVELS : ["off"];
 }
 
 class DaemonFooterComponent implements Component {
@@ -451,7 +498,10 @@ class DaemonModelSelectorComponent extends Container {
 
 class DaemonInteractiveMode {
 	private client: DaemonClient;
+	private startupOptions: DaemonInteractiveStartupOptions;
 	private settingsManager: SettingsManager;
+	private authStorage: AuthStorage;
+	private modelRegistry: ModelRegistry;
 	private keybindings: KeybindingsManager;
 	private ui: TUI;
 	private headerContainer: Container;
@@ -493,9 +543,12 @@ class DaemonInteractiveMode {
 	private lastSigintTime = 0;
 	private bufferedEvents: unknown[] = [];
 
-	constructor(client: DaemonClient) {
+	constructor(client: DaemonClient, startupOptions: DaemonInteractiveStartupOptions = {}) {
 		this.client = client;
+		this.startupOptions = startupOptions;
 		this.settingsManager = SettingsManager.create(os.homedir(), getAgentDir());
+		this.authStorage = AuthStorage.create();
+		this.modelRegistry = ModelRegistry.create(this.authStorage);
 		initTheme(this.settingsManager.getTheme(), true);
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 		this.keybindings = KeybindingsManager.create();
@@ -539,10 +592,31 @@ class DaemonInteractiveMode {
 		for (const event of this.bufferedEvents.splice(0)) {
 			await this.handleEvent(event);
 		}
+		await this.sendStartupPrompts();
 
 		while (true) {
 			const userInput = await this.getUserInput();
 			await this.sendUserInput(userInput, "steer");
+		}
+	}
+
+	private async sendStartupPrompts(): Promise<void> {
+		const { initialMessage, initialImages, initialMessages } = this.startupOptions;
+		if (initialMessage) {
+			try {
+				await this.client.promptAndWait(initialMessage, initialImages, STARTUP_PROMPT_TIMEOUT_MS);
+			} catch (error: unknown) {
+				this.showError(error);
+			}
+		}
+		if (initialMessages) {
+			for (const message of initialMessages) {
+				try {
+					await this.client.promptAndWait(message, undefined, STARTUP_PROMPT_TIMEOUT_MS);
+				} catch (error: unknown) {
+					this.showError(error);
+				}
+			}
 		}
 	}
 
@@ -887,11 +961,19 @@ class DaemonInteractiveMode {
 			return;
 		}
 		if (text === "/settings") {
-			this.showWarning(`${text} is not available through daemon attach yet`);
+			this.showSettingsSelector();
 			return;
 		}
-		if (text === "/login" || text.startsWith("/login ") || text === "/logout" || text.startsWith("/logout ")) {
-			this.showWarning("Login commands must run in a regular interactive morgan session");
+		if (text === "/login") {
+			this.showOAuthSelector("login");
+			return;
+		}
+		if (text === "/logout") {
+			await this.showOAuthSelector("logout");
+			return;
+		}
+		if (text.startsWith("/login ") || text.startsWith("/logout ")) {
+			this.showWarning(`${text.split(/\s+/, 1)[0]} does not accept arguments`);
 			return;
 		}
 		if (text.startsWith("!")) {
@@ -1481,6 +1563,531 @@ class DaemonInteractiveMode {
 		}
 	}
 
+	private showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
+		const done = () => {
+			this.restoreEditorFocus();
+		};
+		const { component, focus } = create(done);
+		this.editorContainer.clear();
+		this.editorContainer.addChild(component);
+		this.ui.setFocus(focus);
+		this.ui.requestRender();
+	}
+
+	private showSettingsSelector(): void {
+		this.showSelector((done) => {
+			const selector = new SettingsSelectorComponent(
+				{
+					autoCompact: this.state?.autoCompactionEnabled ?? false,
+					daemonEnabled: this.settingsManager.getDaemonEnabled(),
+					daemonStartAtLogin: this.settingsManager.getDaemonStartAtLogin(),
+					daemonAutostartSupported: getDaemonAutostartProvider() !== undefined,
+					showImages: this.settingsManager.getShowImages(),
+					imageWidthCells: this.settingsManager.getImageWidthCells(),
+					autoResizeImages: this.settingsManager.getImageAutoResize(),
+					blockImages: this.settingsManager.getBlockImages(),
+					enableSkillCommands: this.settingsManager.getEnableSkillCommands(),
+					steeringMode: this.state?.steeringMode ?? "all",
+					followUpMode: this.state?.followUpMode ?? "all",
+					transport: this.settingsManager.getTransport(),
+					httpIdleTimeoutMs: this.settingsManager.getHttpIdleTimeoutMs(),
+					thinkingLevel: this.state?.thinkingLevel ?? "off",
+					availableThinkingLevels: getDaemonAvailableThinkingLevels(this.state),
+					currentTheme: this.settingsManager.getTheme() || "dark",
+					availableThemes: getAvailableThemes(),
+					hideThinkingBlock: this.hideThinkingBlock,
+					collapseChangelog: this.settingsManager.getCollapseChangelog(),
+					enableInstallTelemetry: this.settingsManager.getEnableInstallTelemetry(),
+					showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
+					editorPaddingX: this.settingsManager.getEditorPaddingX(),
+					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
+					quietStartup: this.settingsManager.getQuietStartup(),
+					clearOnShrink: this.settingsManager.getClearOnShrink(),
+					showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
+					warnings: this.settingsManager.getWarnings(),
+				},
+				{
+					onAutoCompactChange: (enabled) => {
+						void (async () => {
+							try {
+								await this.client.setAutoCompaction(enabled);
+								await this.refreshState();
+							} catch (error: unknown) {
+								this.showError(error);
+							}
+						})();
+					},
+					onDaemonEnabledChange: (enabled) => {
+						this.settingsManager.setDaemonEnabled(enabled);
+						this.showStatus(`Daemon by default: ${enabled ? "enabled" : "disabled"}`);
+					},
+					onDaemonStartAtLoginChange: (enabled) => {
+						void (async () => {
+							try {
+								const status = enabled ? await enableDaemonAutostart() : await disableDaemonAutostart();
+								if (!status.supported) {
+									this.settingsManager.setDaemonStartAtLogin(false);
+									this.settingsManager.setDaemonAutostartProvider(undefined);
+									this.showWarning(status.message);
+									return;
+								}
+								this.settingsManager.setDaemonStartAtLogin(enabled);
+								this.settingsManager.setDaemonAutostartProvider(status.provider);
+								await this.settingsManager.flush();
+								this.showStatus(`Daemon at login: ${enabled ? "enabled" : "disabled"}`);
+							} catch (error: unknown) {
+								this.showError(error);
+							}
+						})();
+					},
+					onShowImagesChange: (enabled) => {
+						this.settingsManager.setShowImages(enabled);
+						for (const child of this.chatContainer.children) {
+							if (child instanceof ToolExecutionComponent) {
+								child.setShowImages(enabled);
+							}
+						}
+					},
+					onImageWidthCellsChange: (width) => {
+						this.settingsManager.setImageWidthCells(width);
+						for (const child of this.chatContainer.children) {
+							if (child instanceof ToolExecutionComponent) {
+								child.setImageWidthCells(width);
+							}
+						}
+					},
+					onAutoResizeImagesChange: (enabled) => {
+						this.settingsManager.setImageAutoResize(enabled);
+					},
+					onBlockImagesChange: (blocked) => {
+						this.settingsManager.setBlockImages(blocked);
+					},
+					onEnableSkillCommandsChange: (enabled) => {
+						this.settingsManager.setEnableSkillCommands(enabled);
+						void this.handleReloadCommand();
+					},
+					onSteeringModeChange: (mode) => {
+						void (async () => {
+							try {
+								await this.client.setSteeringMode(mode);
+								await this.refreshState();
+							} catch (error: unknown) {
+								this.showError(error);
+							}
+						})();
+					},
+					onFollowUpModeChange: (mode) => {
+						void (async () => {
+							try {
+								await this.client.setFollowUpMode(mode);
+								await this.refreshState();
+							} catch (error: unknown) {
+								this.showError(error);
+							}
+						})();
+					},
+					onTransportChange: (transport) => {
+						this.settingsManager.setTransport(transport);
+						void this.handleReloadCommand();
+					},
+					onHttpIdleTimeoutMsChange: (timeoutMs) => {
+						this.settingsManager.setHttpIdleTimeoutMs(timeoutMs);
+						configureHttpDispatcher(timeoutMs);
+						this.showStatus(`HTTP idle timeout: ${formatHttpIdleTimeoutMs(timeoutMs)}`);
+						void this.handleReloadCommand();
+					},
+					onThinkingLevelChange: (level) => {
+						void (async () => {
+							try {
+								await this.client.setThinkingLevel(level);
+								await this.refreshState();
+							} catch (error: unknown) {
+								this.showError(error);
+							}
+						})();
+					},
+					onThemeChange: (themeName) => {
+						const result = setTheme(themeName, true);
+						this.settingsManager.setTheme(themeName);
+						this.ui.invalidate();
+						if (!result.success) {
+							this.showError(`Failed to load theme "${themeName}": ${result.error}\nFell back to dark theme.`);
+						}
+					},
+					onThemePreview: (themeName) => {
+						const result = setTheme(themeName, true);
+						if (result.success) {
+							this.ui.invalidate();
+							this.ui.requestRender();
+						}
+					},
+					onHideThinkingBlockChange: (hidden) => {
+						this.hideThinkingBlock = hidden;
+						this.settingsManager.setHideThinkingBlock(hidden);
+						void this.renderCurrentMessages().catch((error: unknown) => this.showError(error));
+					},
+					onCollapseChangelogChange: (collapsed) => {
+						this.settingsManager.setCollapseChangelog(collapsed);
+					},
+					onEnableInstallTelemetryChange: (enabled) => {
+						this.settingsManager.setEnableInstallTelemetry(enabled);
+					},
+					onShowHardwareCursorChange: (enabled) => {
+						this.settingsManager.setShowHardwareCursor(enabled);
+						this.ui.setShowHardwareCursor(enabled);
+					},
+					onEditorPaddingXChange: (padding) => {
+						this.settingsManager.setEditorPaddingX(padding);
+						this.editor.setPaddingX(padding);
+					},
+					onAutocompleteMaxVisibleChange: (maxVisible) => {
+						this.settingsManager.setAutocompleteMaxVisible(maxVisible);
+						this.editor.setAutocompleteMaxVisible(maxVisible);
+					},
+					onQuietStartupChange: (enabled) => {
+						this.settingsManager.setQuietStartup(enabled);
+					},
+					onClearOnShrinkChange: (enabled) => {
+						this.settingsManager.setClearOnShrink(enabled);
+						this.ui.setClearOnShrink(enabled);
+					},
+					onShowTerminalProgressChange: (enabled) => {
+						this.settingsManager.setShowTerminalProgress(enabled);
+					},
+					onWarningsChange: (warnings) => {
+						this.settingsManager.setWarnings(warnings);
+					},
+					onCancel: () => {
+						done();
+						this.ui.requestRender();
+					},
+				},
+			);
+			return { component: selector, focus: selector.getSettingsList() };
+		});
+	}
+
+	private getLoginProviderOptions(authType?: "oauth" | "api_key"): AuthSelectorProvider[] {
+		this.modelRegistry.refresh();
+		const oauthProviders = this.authStorage.getOAuthProviders();
+		const oauthProviderIds = new Set(oauthProviders.map((provider) => provider.id));
+		const options: AuthSelectorProvider[] = oauthProviders.map((provider) => ({
+			id: provider.id,
+			name: provider.name,
+			authType: "oauth",
+		}));
+
+		const modelProviders = new Set(this.modelRegistry.getAll().map((model) => model.provider));
+		for (const providerId of modelProviders) {
+			if (!isApiKeyLoginProvider(providerId, oauthProviderIds)) {
+				continue;
+			}
+			options.push({
+				id: providerId,
+				name: this.modelRegistry.getProviderDisplayName(providerId),
+				authType: "api_key",
+			});
+		}
+
+		const filteredOptions = authType ? options.filter((option) => option.authType === authType) : options;
+		return filteredOptions.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	private getLogoutProviderOptions(): AuthSelectorProvider[] {
+		const options: AuthSelectorProvider[] = [];
+		for (const providerId of this.authStorage.list()) {
+			const credential = this.authStorage.get(providerId);
+			if (!credential) {
+				continue;
+			}
+			options.push({
+				id: providerId,
+				name: this.modelRegistry.getProviderDisplayName(providerId),
+				authType: credential.type,
+			});
+		}
+		return options.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	private showLoginAuthTypeSelector(): void {
+		const subscriptionLabel = "Use a subscription";
+		const apiKeyLabel = "Use an API key";
+		this.showSelector((done) => {
+			const selector = new ExtensionSelectorComponent(
+				"Select authentication method:",
+				[subscriptionLabel, apiKeyLabel],
+				(option) => {
+					done();
+					this.showLoginProviderSelector(option === subscriptionLabel ? "oauth" : "api_key");
+				},
+				() => {
+					done();
+					this.ui.requestRender();
+				},
+			);
+			return { component: selector, focus: selector };
+		});
+	}
+
+	private showLoginProviderSelector(authType: "oauth" | "api_key"): void {
+		const providerOptions = this.getLoginProviderOptions(authType);
+		if (providerOptions.length === 0) {
+			this.showStatus(
+				authType === "oauth" ? "No subscription providers available." : "No API key providers available.",
+			);
+			return;
+		}
+
+		this.showSelector((done) => {
+			const selector = new OAuthSelectorComponent(
+				"login",
+				this.authStorage,
+				providerOptions,
+				async (providerId: string) => {
+					done();
+					const providerOption = providerOptions.find((provider) => provider.id === providerId);
+					if (!providerOption) {
+						return;
+					}
+					if (providerOption.authType === "oauth") {
+						await this.showLoginDialog(providerOption.id, providerOption.name);
+					} else if (providerOption.id === BEDROCK_PROVIDER_ID) {
+						this.showBedrockSetupDialog(providerOption.id, providerOption.name);
+					} else {
+						await this.showApiKeyLoginDialog(providerOption.id, providerOption.name);
+					}
+				},
+				() => {
+					done();
+					this.showLoginAuthTypeSelector();
+				},
+				(providerId) => this.modelRegistry.getProviderAuthStatus(providerId),
+			);
+			return { component: selector, focus: selector };
+		});
+	}
+
+	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {
+		if (mode === "login") {
+			this.showLoginAuthTypeSelector();
+			return;
+		}
+
+		const providerOptions = this.getLogoutProviderOptions();
+		if (providerOptions.length === 0) {
+			this.showStatus(
+				"No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.",
+			);
+			return;
+		}
+
+		this.showSelector((done) => {
+			const selector = new OAuthSelectorComponent(
+				mode,
+				this.authStorage,
+				providerOptions,
+				async (providerId: string) => {
+					done();
+					const providerOption = providerOptions.find((provider) => provider.id === providerId);
+					if (!providerOption) {
+						return;
+					}
+					try {
+						this.authStorage.logout(providerOption.id);
+						const message =
+							providerOption.authType === "oauth"
+								? `Logged out of ${providerOption.name}`
+								: `Removed stored API key for ${providerOption.name}. Environment variables and models.json config are unchanged.`;
+						try {
+							await this.reloadAfterAuthChange();
+							this.showStatus(message);
+						} catch (error: unknown) {
+							const errorMessage = error instanceof Error ? error.message : String(error);
+							this.showWarning(`${message} Daemon reload failed: ${errorMessage}`);
+						}
+					} catch (error: unknown) {
+						this.showError(`Logout failed: ${error instanceof Error ? error.message : String(error)}`);
+					}
+				},
+				() => {
+					done();
+					this.ui.requestRender();
+				},
+			);
+			return { component: selector, focus: selector };
+		});
+	}
+
+	private async reloadAfterAuthChange(): Promise<void> {
+		this.modelRegistry.refresh();
+		await this.client.reload();
+		await this.refreshCommands();
+		await this.refreshState();
+	}
+
+	private async completeProviderAuthentication(providerName: string, authType: "oauth" | "api_key"): Promise<void> {
+		const actionLabel = authType === "oauth" ? `Logged in to ${providerName}` : `Saved API key for ${providerName}`;
+		const message = `${actionLabel}. Credentials saved to ${getAuthPath()}`;
+		try {
+			await this.reloadAfterAuthChange();
+			this.showStatus(message);
+		} catch (error: unknown) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			this.showWarning(`${message}. Daemon reload failed: ${errorMessage}`);
+		}
+	}
+
+	private showBedrockSetupDialog(providerId: string, providerName: string): void {
+		const dialog = new LoginDialogComponent(
+			this.ui,
+			providerId,
+			() => this.restoreEditorFocus(),
+			providerName,
+			"Amazon Bedrock setup",
+		);
+		dialog.showInfo([
+			theme.fg("text", "Amazon Bedrock uses AWS credentials instead of a single API key."),
+			theme.fg("text", "Configure an AWS profile, IAM keys, bearer token, or role-based credentials."),
+			theme.fg("muted", "See:"),
+			theme.fg("accent", `  ${path.join(getDocsPath(), "providers.md")}`),
+		]);
+		this.editorContainer.clear();
+		this.editorContainer.addChild(dialog);
+		this.ui.setFocus(dialog);
+		this.ui.requestRender();
+	}
+
+	private async showApiKeyLoginDialog(providerId: string, providerName: string): Promise<void> {
+		const dialog = new LoginDialogComponent(
+			this.ui,
+			providerId,
+			() => {
+				// Completion is handled below after the key is persisted.
+			},
+			providerName,
+		);
+
+		this.editorContainer.clear();
+		this.editorContainer.addChild(dialog);
+		this.ui.setFocus(dialog);
+		this.ui.requestRender();
+
+		try {
+			const apiKey = (await dialog.showPrompt("Enter API key:")).trim();
+			if (!apiKey) {
+				throw new Error("API key cannot be empty.");
+			}
+			this.authStorage.set(providerId, { type: "api_key", key: apiKey });
+			this.restoreEditorFocus();
+			await this.completeProviderAuthentication(providerName, "api_key");
+		} catch (error: unknown) {
+			this.restoreEditorFocus();
+			const message = error instanceof Error ? error.message : String(error);
+			if (message !== "Login cancelled") {
+				this.showError(`Failed to save API key for ${providerName}: ${message}`);
+			}
+		}
+	}
+
+	private showOAuthLoginSelect(dialog: LoginDialogComponent, prompt: OAuthSelectPrompt): Promise<string | undefined> {
+		return new Promise((resolve) => {
+			const restoreDialog = () => {
+				this.editorContainer.clear();
+				this.editorContainer.addChild(dialog);
+				this.ui.setFocus(dialog);
+				this.ui.requestRender();
+			};
+			const labels = prompt.options.map((option) => option.label);
+			const selector = new ExtensionSelectorComponent(
+				prompt.message,
+				labels,
+				(optionLabel) => {
+					restoreDialog();
+					resolve(prompt.options.find((option) => option.label === optionLabel)?.id);
+				},
+				() => {
+					restoreDialog();
+					resolve(undefined);
+				},
+			);
+			this.editorContainer.clear();
+			this.editorContainer.addChild(selector);
+			this.ui.setFocus(selector);
+			this.ui.requestRender();
+		});
+	}
+
+	private async showLoginDialog(providerId: string, providerName: string): Promise<void> {
+		const providerInfo = this.authStorage.getOAuthProviders().find((provider) => provider.id === providerId);
+		const usesCallbackServer = providerInfo?.usesCallbackServer ?? false;
+
+		const dialog = new LoginDialogComponent(
+			this.ui,
+			providerId,
+			() => {
+				// Completion is handled below after auth storage finishes login.
+			},
+			providerName,
+		);
+
+		this.editorContainer.clear();
+		this.editorContainer.addChild(dialog);
+		this.ui.setFocus(dialog);
+		this.ui.requestRender();
+
+		let manualCodeResolve: ((code: string) => void) | undefined;
+		let manualCodeReject: ((err: Error) => void) | undefined;
+		const manualCodePromise = new Promise<string>((resolve, reject) => {
+			manualCodeResolve = resolve;
+			manualCodeReject = reject;
+		});
+
+		try {
+			await this.authStorage.login(providerId as OAuthProviderId, {
+				onAuth: (info: { url: string; instructions?: string }) => {
+					dialog.showAuth(info.url, info.instructions);
+					if (usesCallbackServer) {
+						dialog
+							.showManualInput("Paste redirect URL below, or complete login in browser:")
+							.then((value) => {
+								if (value && manualCodeResolve) {
+									manualCodeResolve(value);
+									manualCodeResolve = undefined;
+								}
+							})
+							.catch(() => {
+								if (manualCodeReject) {
+									manualCodeReject(new Error("Login cancelled"));
+									manualCodeReject = undefined;
+								}
+							});
+					}
+				},
+				onDeviceCode: (info) => {
+					dialog.showDeviceCode(info);
+					dialog.showWaiting("Waiting for authentication...");
+				},
+				onPrompt: async (prompt: { message: string; placeholder?: string }) => {
+					return dialog.showPrompt(prompt.message, prompt.placeholder);
+				},
+				onProgress: (message: string) => {
+					dialog.showProgress(message);
+				},
+				onSelect: (prompt: OAuthSelectPrompt) => this.showOAuthLoginSelect(dialog, prompt),
+				onManualCodeInput: () => manualCodePromise,
+				signal: dialog.signal,
+			});
+			this.restoreEditorFocus();
+			await this.completeProviderAuthentication(providerName, "oauth");
+		} catch (error: unknown) {
+			this.restoreEditorFocus();
+			const message = error instanceof Error ? error.message : String(error);
+			if (message !== "Login cancelled") {
+				this.showError(`Failed to login to ${providerName}: ${message}`);
+			}
+		}
+	}
+
 	private async handleExportCommand(text: string): Promise<void> {
 		const outputPath = getPathCommandArgument(text, "/export");
 		try {
@@ -1816,8 +2423,8 @@ class DaemonInteractiveMode {
 	}
 }
 
-export async function runDaemonInteractiveMode(): Promise<void> {
+export async function runDaemonInteractiveMode(options: DaemonInteractiveStartupOptions = {}): Promise<void> {
 	const client = new DaemonClient({ requestTimeoutMs: 300000 });
-	const mode = new DaemonInteractiveMode(client);
+	const mode = new DaemonInteractiveMode(client, options);
 	await mode.run();
 }

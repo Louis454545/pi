@@ -14,7 +14,7 @@
 
 - Added a release-binary installer script with checksum verification and installer-managed self-update support.
 - Added automatic first-run launch of the full setup wizard when global settings do not exist.
-- Added a recommended setup profile, resumable setup state, non-interactive setup options, and `morgan doctor` diagnostics.
+- Added resumable setup state, non-interactive setup options, and `morgan doctor` diagnostics.
 - Added global memory at `~/.morgan/memory/snapshot.md`, updated during internal dreaming compaction.
 - Added bundled browser-harness as a default `browser` skill.
 - Added a built-in `reload` tool so the agent can reload runtime resources after modifying agent-affecting files.
@@ -22,10 +22,13 @@
 - Added a `monitor` tool for background commands that stream line-based events into the conversation while writing output to a file.
 - Added a built-in `subagent` tool for persistent named subagents with JSONL traces, async parent notifications, and a single `send` action for creating or messaging subagents.
 - Added `morgan daemon` commands for running the agent in the background and connecting to it over a local RPC socket.
+- Added daemon-first startup so normal `morgan` launches start or reuse the background daemon, plus Linux systemd user and macOS launchd autostart controls.
 
 ### Changed
 
 - Replaced the experimental theme/analytics first-time screen with the full setup wizard and made browser harness setup an explicit choice.
+- Removed the setup profile choice so setup always runs the custom flow.
+- Added daemon login startup configuration to setup and `/settings`.
 - Moved the default session storage root from `~/.morgan/agent/sessions/` to `~/.morgan/sessions/`.
 - Replaced the separate compaction summarizer and post-run memory curator with internal dreaming compaction.
 - Strengthened reload tool prompt guidance so agents call it autonomously after changing slash commands, extensions, skills, themes, keybindings, prompts, or loaded project instructions.

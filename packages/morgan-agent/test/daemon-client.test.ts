@@ -1,9 +1,16 @@
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/morgan-ai";
 import { afterEach, describe, expect, test } from "vitest";
+import { ENV_AGENT_DIR } from "../src/config.ts";
+import {
+	enableDaemonAutostart,
+	getDaemonAutostartProvider,
+	renderLaunchAgentPlist,
+	renderSystemdService,
+} from "../src/daemon/autostart.ts";
 import { DaemonClient } from "../src/daemon/client.ts";
 import { parseDaemonCommand } from "../src/daemon/command.ts";
 import {
@@ -18,6 +25,7 @@ import { attachJsonlLineReader, serializeJsonLine } from "../src/modes/rpc/jsonl
 
 const servers: Server[] = [];
 const socketPaths: string[] = [];
+const tempDirs: string[] = [];
 
 function makeSocketPath(): string {
 	const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -75,6 +83,9 @@ afterEach(async () => {
 		if (existsSync(socketPath)) {
 			rmSync(socketPath, { force: true });
 		}
+	}
+	for (const dir of tempDirs.splice(0)) {
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
@@ -273,6 +284,41 @@ describe("DaemonClient", () => {
 		}
 	});
 
+	test("can wait for prompt completion without requesting assistant text", async () => {
+		const socketPath = makeSocketPath();
+		const receivedCommands: Array<Record<string, unknown>> = [];
+		const server = createServer((socket) => {
+			const detach = attachJsonlLineReader(socket, (line) => {
+				const command = JSON.parse(line) as Record<string, unknown>;
+				receivedCommands.push(command);
+				if (command.type === "prompt") {
+					write(socket, { id: command.id, type: "response", command: "prompt", success: true });
+					write(socket, { type: "daemon_prompt_done", id: command.id });
+				} else if (command.type === "get_last_assistant_text") {
+					write(socket, {
+						id: command.id,
+						type: "response",
+						command: "get_last_assistant_text",
+						success: true,
+						data: { text: "unexpected" },
+					});
+				}
+			});
+			socket.on("close", detach);
+		});
+		await listen(server, socketPath);
+
+		const client = new DaemonClient({ socketPath, requestTimeoutMs: 1000 });
+		await client.connect();
+		try {
+			await expect(client.promptAndWait("hello", undefined, 1000)).resolves.toBeUndefined();
+			expect(receivedCommands.map((command) => command.type)).toEqual(["prompt"]);
+			expect(receivedCommands[0]).toMatchObject({ daemonAwaitCompletion: true });
+		} finally {
+			client.close();
+		}
+	});
+
 	test("handles prompts that complete without an agent_end event", async () => {
 		const socketPath = makeSocketPath();
 		const server = createServer((socket) => {
@@ -404,6 +450,66 @@ describe("parseDaemonCommand", () => {
 	test("parses connect as attach alias", () => {
 		expect(parseDaemonCommand(["daemon", "connect"])).toEqual({ type: "attach" });
 	});
+
+	test("parses autostart commands", () => {
+		expect(parseDaemonCommand(["daemon", "autostart", "enable"])).toEqual({
+			type: "autostart",
+			action: "enable",
+		});
+		expect(parseDaemonCommand(["daemon", "autostart", "disable"])).toEqual({
+			type: "autostart",
+			action: "disable",
+		});
+		expect(parseDaemonCommand(["daemon", "autostart", "status"])).toEqual({
+			type: "autostart",
+			action: "status",
+		});
+		expect(parseDaemonCommand(["daemon", "autostart"])).toEqual({
+			type: "error",
+			message: "autostart requires enable, disable, or status",
+		});
+	});
+});
+
+describe("daemon autostart", () => {
+	test("selects supported platform providers", () => {
+		expect(getDaemonAutostartProvider("linux")).toBe("systemd");
+		expect(getDaemonAutostartProvider("darwin")).toBe("launchd");
+		expect(getDaemonAutostartProvider("win32")).toBeUndefined();
+	});
+
+	test("renders systemd and launchd definitions", () => {
+		const paths = getDaemonPaths(join(tmpdir(), "morgan-daemon-autostart-test"));
+
+		expect(renderSystemdService(paths)).toContain("ExecStart=");
+		expect(renderSystemdService(paths)).toContain(`${ENV_AGENT_DIR}=${paths.agentDir}`);
+		expect(renderSystemdService(paths)).toContain("Restart=on-failure");
+		expect(renderSystemdService(paths)).toContain(`StandardOutput=append:${paths.logFile}`);
+
+		expect(renderLaunchAgentPlist(paths)).toContain("<key>RunAtLoad</key>");
+		expect(renderLaunchAgentPlist(paths)).not.toContain("<key>KeepAlive</key>");
+		expect(renderLaunchAgentPlist(paths)).toContain(`<key>${ENV_AGENT_DIR}</key>`);
+		expect(renderLaunchAgentPlist(paths)).toContain(`<string>${paths.agentDir}</string>`);
+		expect(renderLaunchAgentPlist(paths)).toContain("com.earendil-works.morgan.daemon");
+	});
+
+	test("creates the daemon log directory before enabling autostart", async () => {
+		const tempRoot = mkdtempSync(join(tmpdir(), "morgan-daemon-autostart-enable-"));
+		tempDirs.push(tempRoot);
+		const paths = getDaemonPaths(join(tempRoot, "agent"));
+		expect(existsSync(dirname(paths.logFile))).toBe(false);
+
+		await enableDaemonAutostart({
+			paths,
+			runner: {
+				platform: "linux",
+				homeDir: join(tempRoot, "home"),
+				execFile: async () => {},
+			},
+		});
+
+		expect(existsSync(dirname(paths.logFile))).toBe(true);
+	});
 });
 
 describe("parseDaemonModelQuery", () => {
@@ -431,6 +537,9 @@ describe("daemon attach helpers", () => {
 
 		expect(commandNames).not.toContain("session");
 		expect(commandNames).not.toContain("name");
+		expect(commandNames).toContain("settings");
+		expect(commandNames).toContain("login");
+		expect(commandNames).toContain("logout");
 		expect(DAEMON_ATTACH_BUILT_IN_COMMANDS.find((command) => command.name === "reset")?.description).toBe(
 			"Reset the global conversation",
 		);

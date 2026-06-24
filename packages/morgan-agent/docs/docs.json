@@ -16,6 +16,10 @@
           "path": "usage.md"
         },
         {
+          "title": "Daemon",
+          "path": "daemon.md"
+        },
+        {
           "title": "Providers",
           "path": "providers.md"
         },
