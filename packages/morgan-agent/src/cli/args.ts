@@ -173,7 +173,11 @@ export function parseArgs(args: string[]): Args {
 	return result;
 }
 
-export function printHelp(extensionFlags?: ExtensionFlag[]): void {
+interface HelpOutput {
+	write(text: string): unknown;
+}
+
+export function printHelp(extensionFlags?: ExtensionFlag[], output: HelpOutput = process.stdout): void {
 	const extensionFlagsText =
 		extensionFlags && extensionFlags.length > 0
 			? `\n${chalk.bold("Extension CLI Flags:")}\n${extensionFlags
@@ -184,7 +188,7 @@ export function printHelp(extensionFlags?: ExtensionFlag[]): void {
 					})
 					.join("\n")}\n`
 			: "";
-	console.log(`${chalk.bold(APP_NAME)} - universal computer agent with read, bash, edit, write tools
+	output.write(`${chalk.bold(APP_NAME)} - universal computer agent with read, bash, edit, write tools
 
 ${chalk.bold("Usage:")}
   ${APP_NAME} [options] [@files...] [messages...]

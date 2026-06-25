@@ -120,6 +120,10 @@ function isPlainRuntimeMetadataCommand(parsed: Args): boolean {
 	return !parsed.print && parsed.mode === undefined && (parsed.help === true || parsed.listModels !== undefined);
 }
 
+function shouldPrintHelpToStderr(parsed: Args): boolean {
+	return parsed.print === true || parsed.mode === "json" || parsed.mode === "rpc";
+}
+
 export function shouldRunStartupSetup(
 	appMode: AppMode,
 	parsed: Args,
@@ -185,6 +189,19 @@ function shouldRouteToDaemon(appMode: AppMode, parsed: Args, settingsManager: Se
 		return false;
 	}
 	return true;
+}
+
+async function isDaemonRunning(): Promise<boolean> {
+	const client = new DaemonClient({ requestTimeoutMs: 1000 });
+	try {
+		await client.connect();
+		await client.getStatus();
+		return true;
+	} catch {
+		return false;
+	} finally {
+		client.close();
+	}
 }
 
 async function sendDaemonPrompts(
@@ -455,7 +472,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (parsed.help) {
-		printHelp();
+		printHelp(undefined, shouldPrintHelpToStderr(parsed) ? process.stderr : process.stdout);
 		process.exit(0);
 	}
 
@@ -487,23 +504,25 @@ export async function main(args: string[], options?: MainOptions) {
 	if (shouldRouteToDaemon(appMode, parsed, startupSettingsManager)) {
 		const incompatibleReason = getDaemonIncompatibleReason(parsed);
 		if (incompatibleReason) {
-			console.error(
-				chalk.red(`Error: these options cannot be applied to an already-running daemon: ${incompatibleReason}.`),
-			);
-			console.error(
-				chalk.dim(
-					`Restart the daemon with "${APP_NAME} daemon restart -- <agent options>" or disable daemon startup in settings.`,
-				),
-			);
-			process.exit(1);
+			if (await isDaemonRunning()) {
+				console.error(
+					chalk.red(`Error: these options cannot be applied to an already-running daemon: ${incompatibleReason}.`),
+				);
+				console.error(
+					chalk.dim(
+						`Restart the daemon with "${APP_NAME} daemon restart -- <agent options>" or disable daemon startup in settings.`,
+					),
+				);
+				process.exit(1);
+			}
+		} else {
+			let stdinContent: string | undefined;
+			if (appMode !== "interactive") {
+				stdinContent = await readPipedStdin();
+			}
+			await runDaemonStartup(parsed, appMode, startupSettingsManager, stdinContent);
+			return;
 		}
-
-		let stdinContent: string | undefined;
-		if (appMode !== "interactive") {
-			stdinContent = await readPipedStdin();
-		}
-		await runDaemonStartup(parsed, appMode, startupSettingsManager, stdinContent);
-		return;
 	}
 
 	const shouldTakeOverStdout = appMode !== "interactive" && !isPlainRuntimeMetadataCommand(parsed);
