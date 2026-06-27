@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@earendil-works/pi-ai";
+import { getModel } from "@earendil-works/morgan-ai";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { InMemorySessionStorage } from "../../src/harness/session/memory-storage.ts";
 import {
@@ -23,15 +23,15 @@ const source = (type: Source["type"], dir: string) => ({ path: dir, source: { ty
 const { skills: sourcedSkills } = await loadSourcedSkills<Source, SourcedSkill>(
 	env,
 	[
-		source("project", join(env.cwd, ".pi/skills")),
-		source("user", join(homedir(), ".pi/agent/skills")),
-		source("path", join(env.cwd, "../../../pi-skills")),
+		source("project", join(env.cwd, ".morgan/skills")),
+		source("user", join(homedir(), ".morgan/agent/skills")),
+		source("path", join(env.cwd, "../../../morgan-skills")),
 	],
 	(skill, source) => ({ ...skill, source }),
 );
 const { promptTemplates: sourcedPromptTemplates } = await loadSourcedPromptTemplates<Source, SourcedPromptTemplate>(
 	env,
-	[source("project", join(env.cwd, ".pi/prompts")), source("user", join(homedir(), ".pi/agent/prompts"))],
+	[source("project", join(env.cwd, ".morgan/prompts")), source("user", join(homedir(), ".morgan/agent/prompts"))],
 	(promptTemplate, source) => ({ ...promptTemplate, source }),
 );
 

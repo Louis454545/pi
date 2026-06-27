@@ -1,0 +1,7 @@
+interface:
+  display_name: "Morgan Triggers"
+  short_description: "Create proactive Morgan event watchers"
+  default_prompt: "Use $morgan-triggers to create or review a proactive event watcher."
+
+policy:
+  allow_implicit_invocation: true

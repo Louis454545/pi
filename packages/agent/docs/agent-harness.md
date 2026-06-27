@@ -230,7 +230,7 @@ Preferred future structure:
 - `agent-harness-tools.test.ts`: tool registry getters, active-tool semantics, and update events.
 - `agent-harness-lifecycle.test.ts`: phase/save-point/settled/reentrancy behavior.
 
-Use the `pi-ai` faux provider (`registerFauxProvider`, `fauxAssistantMessage`) for deterministic harness/provider tests. Faux response factories can inspect `StreamOptions`, invoke `options.onPayload`, and return scripted assistant messages without real provider APIs or network access.
+Use the `morgan-ai` faux provider (`registerFauxProvider`, `fauxAssistantMessage`) for deterministic harness/provider tests. Faux response factories can inspect `StreamOptions`, invoke `options.onPayload`, and return scripted assistant messages without real provider APIs or network access.
 
 Harness coverage is configured separately from the default package test run:
 
@@ -317,7 +317,7 @@ Remaining:
 - Audit follow-up behavior around `agent_end`.
 - Implement auto-compaction decision point.
 - Implement retry handling.
-- Verify `before_agent_start` hook semantics against coding-agent.
+- Verify `before_agent_start` hook semantics against morgan-agent.
 - Decide whether `before_agent_start` needs more turn info such as tools/tool snippets.
 - Document or change runtime config event timing while busy.
 - Audit `abort()` barrier semantics.
@@ -392,7 +392,7 @@ Remaining:
 - Test no deadlocks when async listeners call harness APIs and await them.
 - Test phase cleanup through success, provider error, hook error, abort, compaction, and tree navigation.
 
-### 7. Later coding-agent migration plan
+### 7. Later morgan-agent migration plan
 
 Status: Planned
 
@@ -402,11 +402,11 @@ Done:
 
 Remaining:
 
-- Map coding-agent resources to sourced loaders.
+- Map morgan-agent resources to sourced loaders.
 - Keep app-level resource dedupe/provenance outside the harness.
 - Adapt extension loading to the future hook/session facade.
 - Preserve UI/session behavior outside core.
-- Move coding-agent stream/auth/retry/header behavior onto harness stream configuration and provider hooks.
+- Move morgan-agent stream/auth/retry/header behavior onto harness stream configuration and provider hooks.
 
 ---
 

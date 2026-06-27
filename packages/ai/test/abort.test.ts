@@ -83,7 +83,7 @@ async function testAbortThenNewMessage<TApi extends Api>(llm: Model<TApi>, optio
 	// The aborted message has empty content since we aborted before anything arrived
 	expect(abortedResponse.content.length).toBe(0);
 
-	// Add the aborted assistant message to context (this is what happens in the real coding agent)
+	// Add the aborted assistant message to context (this is what happens in the real universal agent)
 	context.messages.push(abortedResponse);
 
 	// Second request: send a new message - this should work even with the aborted message in context

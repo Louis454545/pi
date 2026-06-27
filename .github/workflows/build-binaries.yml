@@ -46,41 +46,46 @@ jobs:
       - name: Build binaries
         run: ./scripts/build-binaries.sh
 
+      - name: Check installer asset resolution
+        run: MORGAN_INSTALL_DRY_RUN=1 MORGAN_INSTALL_BASE_URL="https://github.com/earendil-works/morgan/releases/download/${RELEASE_TAG}" sh scripts/install.sh
+
       - name: Extract changelog for this version
         id: changelog
         run: |
           VERSION="${RELEASE_TAG}"
           VERSION="${VERSION#v}"  # Remove 'v' prefix
-          node scripts/release-notes.mjs extract --version "${VERSION}" --tag "${RELEASE_TAG}" --out /tmp/release-notes.md
+          node scripts/release-notes.mjs extract --version "${VERSION}" --tag "${RELEASE_TAG}" --changelog packages/morgan-agent/CHANGELOG.md --base-path packages/morgan-agent --out /tmp/release-notes.md
 
       - name: Create GitHub Release and upload binaries
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd packages/coding-agent/binaries
+          cd packages/morgan-agent/binaries
 
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             gh release edit "${RELEASE_TAG}" \
               --title "${RELEASE_TAG}" \
               --notes-file /tmp/release-notes.md
             gh release upload "${RELEASE_TAG}" \
-              pi-darwin-arm64.tar.gz \
-              pi-darwin-x64.tar.gz \
-              pi-linux-x64.tar.gz \
-              pi-linux-arm64.tar.gz \
-              pi-windows-x64.zip \
-              pi-windows-arm64.zip \
+              morgan-darwin-arm64.tar.gz \
+              morgan-darwin-x64.tar.gz \
+              morgan-linux-x64.tar.gz \
+              morgan-linux-arm64.tar.gz \
+              morgan-windows-x64.zip \
+              morgan-windows-arm64.zip \
+              SHA256SUMS \
               --clobber
           else
             gh release create "${RELEASE_TAG}" \
               --title "${RELEASE_TAG}" \
               --notes-file /tmp/release-notes.md \
-              pi-darwin-arm64.tar.gz \
-              pi-darwin-x64.tar.gz \
-              pi-linux-x64.tar.gz \
-              pi-linux-arm64.tar.gz \
-              pi-windows-x64.zip \
-              pi-windows-arm64.zip
+              morgan-darwin-arm64.tar.gz \
+              morgan-darwin-x64.tar.gz \
+              morgan-linux-x64.tar.gz \
+              morgan-linux-arm64.tar.gz \
+              morgan-windows-x64.zip \
+              morgan-windows-arm64.zip \
+              SHA256SUMS
           fi
 
   publish-npm:

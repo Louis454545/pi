@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build pi binaries for all platforms locally.
+# Build morgan binaries for all platforms locally.
 # Mirrors .github/workflows/build-binaries.yml
 #
 # Usage:
@@ -11,16 +11,16 @@
 #   --skip-deps         Skip installing cross-platform dependencies
 #   --skip-build        Skip npm run build
 #   --platform <name>   Build only for specified platform (darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64, windows-arm64)
-#   --out <dir>         Output directory (default: packages/coding-agent/binaries)
+#   --out <dir>         Output directory (default: packages/morgan-agent/binaries)
 #
 # Output:
-#   packages/coding-agent/binaries/
-#     pi-darwin-arm64.tar.gz
-#     pi-darwin-x64.tar.gz
-#     pi-linux-x64.tar.gz
-#     pi-linux-arm64.tar.gz
-#     pi-windows-x64.zip
-#     pi-windows-arm64.zip
+#   packages/morgan-agent/binaries/
+#     morgan-darwin-arm64.tar.gz
+#     morgan-darwin-x64.tar.gz
+#     morgan-linux-x64.tar.gz
+#     morgan-linux-arm64.tar.gz
+#     morgan-windows-x64.zip
+#     morgan-windows-arm64.zip
 
 set -euo pipefail
 
@@ -75,11 +75,24 @@ if [[ -n "$PLATFORM" ]]; then
 fi
 
 if [[ -z "$OUTPUT_DIR" ]]; then
-    OUTPUT_DIR="packages/coding-agent/binaries"
+    OUTPUT_DIR="packages/morgan-agent/binaries"
 fi
 if [[ "$OUTPUT_DIR" != /* ]]; then
     OUTPUT_DIR="$(pwd)/$OUTPUT_DIR"
 fi
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1"
+        return
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1"
+        return
+    fi
+    echo "sha256sum or shasum is required" >&2
+    exit 1
+}
 
 if [[ "$SKIP_INSTALL" == "false" ]]; then
     echo "==> Installing dependencies..."
@@ -90,7 +103,7 @@ fi
 
 if [[ "$SKIP_DEPS" == "false" ]]; then
     echo "==> Installing cross-platform native bindings..."
-    CLIPBOARD_VERSION=$(node -p "require('./packages/coding-agent/package.json').optionalDependencies['@mariozechner/clipboard']")
+    CLIPBOARD_VERSION=$(node -p "require('./packages/morgan-agent/package.json').optionalDependencies['@mariozechner/clipboard']")
     # npm ci only installs optional deps for the current platform
     # We need the base clipboard package and all platform bindings for bun cross-compilation
     # Use --force to bypass platform checks (os/cpu restrictions in package.json)
@@ -115,7 +128,7 @@ else
 fi
 
 echo "==> Building binaries..."
-cd packages/coding-agent
+cd packages/morgan-agent
 
 # Clean previous builds
 rm -rf "$OUTPUT_DIR"
@@ -134,9 +147,9 @@ for platform in "${PLATFORMS[@]}"; do
     # explicit build entrypoints. The runtime can still use new URL(...), but the
     # worker must be present in the compiled executable.
     if [[ "$platform" == windows-* ]]; then
-        bun build --compile --target=bun-$platform ./dist/bun/cli.js ./src/utils/image-resize-worker.ts --outfile "$OUTPUT_DIR/$platform/pi.exe"
+        bun build --compile --target=bun-$platform ./dist/bun/cli.js ./src/utils/image-resize-worker.ts --outfile "$OUTPUT_DIR/$platform/morgan.exe"
     else
-        bun build --compile --target=bun-$platform ./dist/bun/cli.js ./src/utils/image-resize-worker.ts --outfile "$OUTPUT_DIR/$platform/pi"
+        bun build --compile --target=bun-$platform ./dist/bun/cli.js ./src/utils/image-resize-worker.ts --outfile "$OUTPUT_DIR/$platform/morgan"
     fi
 done
 
@@ -150,11 +163,11 @@ for platform in "${PLATFORMS[@]}"; do
     cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm "$OUTPUT_DIR/$platform/"
     mkdir -p "$OUTPUT_DIR/$platform/theme"
     cp dist/modes/interactive/theme/*.json "$OUTPUT_DIR/$platform/theme/"
-    mkdir -p "$OUTPUT_DIR/$platform/assets"
-    cp dist/modes/interactive/assets/* "$OUTPUT_DIR/$platform/assets/"
-    cp -r dist/core/export-html "$OUTPUT_DIR/$platform/"
     cp -r docs "$OUTPUT_DIR/$platform/"
     cp -r examples "$OUTPUT_DIR/$platform/"
+    cp -r dist/browser-harness "$OUTPUT_DIR/$platform/"
+    cp -r dist/bundled-skills "$OUTPUT_DIR/$platform/"
+    cp -r dist/bundled-extensions "$OUTPUT_DIR/$platform/"
 
     case "$platform" in
         darwin-arm64)
@@ -202,12 +215,20 @@ cd "$OUTPUT_DIR"
 for platform in "${PLATFORMS[@]}"; do
     if [[ "$platform" == windows-* ]]; then
         # Windows (zip)
-        echo "Creating pi-$platform.zip..."
-        (cd "$platform" && zip -r ../pi-$platform.zip .)
+        echo "Creating morgan-$platform.zip..."
+        (cd "$platform" && zip -r ../morgan-$platform.zip .)
     else
         # Unix platforms (tar.gz) - use wrapper directory for mise compatibility
-        echo "Creating pi-$platform.tar.gz..."
-        mv "$platform" pi && tar -czf pi-$platform.tar.gz pi && mv pi "$platform"
+        echo "Creating morgan-$platform.tar.gz..."
+        mv "$platform" morgan && tar -czf morgan-$platform.tar.gz morgan && mv morgan "$platform"
+    fi
+done
+
+echo "==> Creating checksums..."
+rm -f SHA256SUMS
+for archive in morgan-*.tar.gz morgan-*.zip; do
+    if [[ -f "$archive" ]]; then
+        sha256_file "$archive" >> SHA256SUMS
     fi
 done
 
@@ -216,22 +237,22 @@ echo "==> Extracting archives for testing..."
 for platform in "${PLATFORMS[@]}"; do
     rm -rf "$platform"
     if [[ "$platform" == windows-* ]]; then
-        mkdir -p "$platform" && (cd "$platform" && unzip -q ../pi-$platform.zip)
+        mkdir -p "$platform" && (cd "$platform" && unzip -q ../morgan-$platform.zip)
     else
-        tar -xzf pi-$platform.tar.gz && mv pi "$platform"
+        tar -xzf morgan-$platform.tar.gz && mv morgan "$platform"
     fi
 done
 
 echo ""
 echo "==> Build complete!"
 echo "Archives available in $OUTPUT_DIR/"
-ls -lh *.tar.gz *.zip 2>/dev/null || true
+ls -lh *.tar.gz *.zip SHA256SUMS 2>/dev/null || true
 echo ""
 echo "Extracted directories for testing:"
 for platform in "${PLATFORMS[@]}"; do
     if [[ "$platform" == windows-* ]]; then
-        echo "  $OUTPUT_DIR/$platform/pi.exe"
+        echo "  $OUTPUT_DIR/$platform/morgan.exe"
     else
-        echo "  $OUTPUT_DIR/$platform/pi"
+        echo "  $OUTPUT_DIR/$platform/morgan"
     fi
 done

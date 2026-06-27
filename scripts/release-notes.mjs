@@ -5,11 +5,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const DEFAULT_REPO = "earendil-works/pi";
-const DEFAULT_BASE_PATH = "packages/coding-agent";
-const DEFAULT_CHANGELOG = "packages/coding-agent/CHANGELOG.md";
+const DEFAULT_REPO = "earendil-works/morgan";
+const DEFAULT_BASE_PATH = "packages/morgan-agent";
+const DEFAULT_CHANGELOG = "packages/morgan-agent/CHANGELOG.md";
 const DEFAULT_FIX_SINCE_TAG = "v0.74.0";
-const LEGACY_REPO_RE = /^https:\/\/github\.com\/(?:badlogic|earendil-works)\/pi-mono(?=\/|$)/;
+const LEGACY_REPO_RE = /^https:\/\/github\.com\/(?:badlogic|earendil-works)\/(?:pi|morgan)-mono(?=\/|$)/;
 const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
 const INLINE_MARKDOWN_LINK_RE = /(!?\[[^\]\n]+\]\()([^\s)]+)((?:\s+[^)]*)?\))/g;
 
@@ -17,7 +17,7 @@ function printUsage() {
 	console.log(`Usage: node scripts/release-notes.mjs <command> [options]
 
 Commands:
-  extract              Extract release notes from the coding-agent changelog
+  extract              Extract release notes from the Morgan agent changelog
   fix-github-releases  Rewrite existing GitHub release note links in place
 
 extract options:
@@ -291,7 +291,7 @@ function uniqueChanges(changes) {
 }
 
 function updateGithubRelease(repo, tag, body) {
-	const tempDir = mkdtempSync(path.join(tmpdir(), "pi-release-notes-"));
+	const tempDir = mkdtempSync(path.join(tmpdir(), "morgan-release-notes-"));
 	try {
 		const notesPath = path.join(tempDir, "notes.md");
 		writeFileSync(notesPath, body);

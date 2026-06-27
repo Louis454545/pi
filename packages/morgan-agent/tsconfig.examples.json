@@ -1,0 +1,16 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"paths": {
+			"@earendil-works/morgan-agent": ["./src/index.ts"],
+			"@earendil-works/morgan-agent/hooks": ["./src/core/hooks/index.ts"],
+			"@earendil-works/morgan-tui": ["../tui/src/index.ts"],
+			"@earendil-works/morgan-ai": ["../ai/src/index.ts"],
+			"typebox": ["../../node_modules/typebox"]
+		},
+		"skipLibCheck": true
+	},
+	"include": ["examples/**/*.ts"],
+	"exclude": ["node_modules", "dist"]
+}

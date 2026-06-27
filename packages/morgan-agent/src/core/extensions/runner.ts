@@ -1,0 +1,1326 @@
+/**
+ * Extension runner - executes extensions and manages their lifecycle.
+ */
+
+import { randomUUID } from "node:crypto";
+import type { AgentMessage } from "@earendil-works/morgan-agent-core";
+import type { ImageContent, Model } from "@earendil-works/morgan-ai";
+import type { KeyId } from "@earendil-works/morgan-tui";
+import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
+import type { ResourceDiagnostic } from "../diagnostics.ts";
+import { execCommand } from "../exec.ts";
+import type { KeybindingsConfig } from "../keybindings.ts";
+import type { ModelRegistry } from "../model-registry.ts";
+import type { SessionManager } from "../session-manager.ts";
+import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import { startScheduleTimer, validateTriggerSchedule } from "./trigger-cron.ts";
+import type {
+	BeforeAgentStartEvent,
+	BeforeAgentStartEventResult,
+	BeforeProviderRequestEvent,
+	CompactOptions,
+	ContextEvent,
+	ContextEventResult,
+	ContextUsage,
+	Extension,
+	ExtensionActions,
+	ExtensionCommandContext,
+	ExtensionCommandContextActions,
+	ExtensionContext,
+	ExtensionContextActions,
+	ExtensionError,
+	ExtensionEvent,
+	ExtensionFlag,
+	ExtensionMode,
+	ExtensionRuntime,
+	ExtensionShortcut,
+	ExtensionUIContext,
+	InputEvent,
+	InputEventResult,
+	InputSource,
+	MessageEndEvent,
+	MessageEndEventResult,
+	MessageRenderer,
+	ProactiveTriggerEvent,
+	ProviderConfig,
+	RegisteredCommand,
+	RegisteredTool,
+	RegisteredTrigger,
+	ReplacedSessionContext,
+	ResolvedCommand,
+	ResourcesDiscoverEvent,
+	ResourcesDiscoverResult,
+	SessionBeforeDreamResult,
+	SessionShutdownEvent,
+	ToolCallEvent,
+	ToolCallEventResult,
+	ToolResultEvent,
+	ToolResultEventResult,
+	TriggerCleanup,
+	TriggerContext,
+	TriggerEmit,
+	TriggerEventInput,
+	TriggerExecOptions,
+	TriggerExecResult,
+	UserBashEvent,
+	UserBashEventResult,
+} from "./types.ts";
+
+// Extension shortcuts compete with canonical keybinding ids from keybindings.json.
+// Only editor-global shortcuts are reserved here. Picker-specific bindings are not.
+const RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS = [
+	"app.interrupt",
+	"app.clear",
+	"app.exit",
+	"app.suspend",
+	"app.thinking.cycle",
+	"app.model.cycleForward",
+	"app.model.cycleBackward",
+	"app.model.select",
+	"app.tools.expand",
+	"app.thinking.toggle",
+	"app.editor.external",
+	"app.message.followUp",
+	"tui.input.submit",
+	"tui.select.confirm",
+	"tui.select.cancel",
+	"tui.input.copy",
+	"tui.editor.deleteToLineEnd",
+] as const;
+
+const TRIGGER_CLEANUP_TIMEOUT_MS = 5000;
+
+type BuiltInKeyBindings = Partial<Record<KeyId, { keybinding: string; restrictOverride: boolean }>>;
+
+const buildBuiltinKeybindings = (resolvedKeybindings: KeybindingsConfig): BuiltInKeyBindings => {
+	const builtinKeybindings = {} as BuiltInKeyBindings;
+	for (const [keybinding, keys] of Object.entries(resolvedKeybindings)) {
+		if (keys === undefined) continue;
+		const keyList = Array.isArray(keys) ? keys : [keys];
+		const restrictOverride = (RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS as readonly string[]).includes(keybinding);
+		for (const key of keyList) {
+			const normalizedKey = key.toLowerCase() as KeyId;
+			// If multiple actions bind the same key, the reserved action wins so extensions
+			// remain blocked by reserved shortcuts regardless of iteration order.
+			const existing = builtinKeybindings[normalizedKey];
+			if (existing?.restrictOverride && !restrictOverride) continue;
+			builtinKeybindings[normalizedKey] = {
+				keybinding,
+				restrictOverride,
+			};
+		}
+	}
+	return builtinKeybindings;
+};
+
+/** Combined result from all before_agent_start handlers */
+interface BeforeAgentStartCombinedResult {
+	messages?: NonNullable<BeforeAgentStartEventResult["message"]>[];
+	systemPrompt?: string;
+}
+
+/**
+ * Events handled by the generic emit() method.
+ * Events with dedicated emitXxx() methods are excluded for stronger type safety.
+ */
+type RunnerEmitEvent = Exclude<
+	ExtensionEvent,
+	| ToolCallEvent
+	| ToolResultEvent
+	| UserBashEvent
+	| ContextEvent
+	| BeforeProviderRequestEvent
+	| BeforeAgentStartEvent
+	| MessageEndEvent
+	| ResourcesDiscoverEvent
+	| InputEvent
+>;
+
+type SessionBeforeEvent = Extract<RunnerEmitEvent, { type: "session_before_dream" }>;
+
+type SessionBeforeEventResult = SessionBeforeDreamResult;
+
+type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "session_before_dream" }
+	? SessionBeforeDreamResult | undefined
+	: undefined;
+
+export type ExtensionErrorListener = (error: ExtensionError) => void;
+
+const TRIGGER_EXEC_TIMEOUT_MS = 60_000;
+const MAX_TRIGGER_EXEC_OUTPUT_CHARS = 65_536;
+
+function truncateExecOutput(value: string): { value: string; truncated: boolean } {
+	if (value.length <= MAX_TRIGGER_EXEC_OUTPUT_CHARS) {
+		return { value, truncated: false };
+	}
+	return {
+		value: `${value.slice(0, MAX_TRIGGER_EXEC_OUTPUT_CHARS)}\n[output truncated at ${MAX_TRIGGER_EXEC_OUTPUT_CHARS} characters]`,
+		truncated: true,
+	};
+}
+
+export type TriggerEventListener = (event: ProactiveTriggerEvent) => void | Promise<void>;
+
+interface StartedTrigger {
+	name: string;
+	extensionPath: string;
+	controller: AbortController;
+	cleanup: (() => void | Promise<void>) | undefined;
+}
+
+export type NewSessionHandler = (options?: {
+	withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+}) => Promise<{ cancelled: boolean }>;
+
+export type ReloadHandler = () => Promise<void>;
+
+export type ShutdownHandler = () => void;
+
+/**
+ * Helper function to emit session_shutdown event to extensions.
+ * Returns true if the event was emitted, false if there were no handlers.
+ */
+export async function emitSessionShutdownEvent(
+	extensionRunner: ExtensionRunner,
+	event: SessionShutdownEvent,
+): Promise<boolean> {
+	let emitted = false;
+	if (extensionRunner.hasHandlers("session_shutdown")) {
+		await extensionRunner.emit(event);
+		emitted = true;
+	}
+	await extensionRunner.stopTriggers(event.reason);
+	return emitted;
+}
+
+const noOpUIContext: ExtensionUIContext = {
+	select: async () => undefined,
+	confirm: async () => false,
+	input: async () => undefined,
+	notify: () => {},
+	onTerminalInput: () => () => {},
+	setStatus: () => {},
+	setWorkingMessage: () => {},
+	setWorkingVisible: () => {},
+	setWorkingIndicator: () => {},
+	setHiddenThinkingLabel: () => {},
+	setWidget: () => {},
+	setFooter: () => {},
+	setHeader: () => {},
+	setTitle: () => {},
+	custom: async () => undefined as never,
+	pasteToEditor: () => {},
+	setEditorText: () => {},
+	getEditorText: () => "",
+	editor: async () => undefined,
+	addAutocompleteProvider: () => {},
+	setEditorComponent: () => {},
+	getEditorComponent: () => undefined,
+	get theme() {
+		return theme;
+	},
+	getAllThemes: () => [],
+	getTheme: () => undefined,
+	setTheme: (_theme: string | Theme) => ({ success: false, error: "UI not available" }),
+	getToolsExpanded: () => false,
+	setToolsExpanded: () => {},
+};
+
+export class ExtensionRunner {
+	private extensions: Extension[];
+	private runtime: ExtensionRuntime;
+	private uiContext: ExtensionUIContext;
+	private mode: ExtensionMode = "print";
+	private cwd: string;
+	private sessionManager: SessionManager;
+	private modelRegistry: ModelRegistry;
+	private errorListeners: Set<ExtensionErrorListener> = new Set();
+	private getModel: () => Model<any> | undefined = () => undefined;
+	private isIdleFn: () => boolean = () => true;
+	private getSignalFn: () => AbortSignal | undefined = () => undefined;
+	private waitForIdleFn: () => Promise<void> = async () => {};
+	private abortFn: () => void = () => {};
+	private hasPendingMessagesFn: () => boolean = () => false;
+	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
+	private compactFn: (options?: CompactOptions) => void = () => {};
+	private getSystemPromptFn: () => string = () => "";
+	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
+	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
+	private reloadHandler: ReloadHandler = async () => {};
+	private shutdownHandler: ShutdownHandler = () => {};
+	private shortcutDiagnostics: ResourceDiagnostic[] = [];
+	private commandDiagnostics: ResourceDiagnostic[] = [];
+	private triggerDiagnostics: ResourceDiagnostic[] = [];
+	private activeTriggers: Map<string, StartedTrigger> = new Map();
+	private staleMessage: string | undefined;
+
+	constructor(
+		extensions: Extension[],
+		runtime: ExtensionRuntime,
+		cwd: string,
+		sessionManager: SessionManager,
+		modelRegistry: ModelRegistry,
+	) {
+		this.extensions = extensions;
+		this.runtime = runtime;
+		this.uiContext = noOpUIContext;
+		this.cwd = cwd;
+		this.sessionManager = sessionManager;
+		this.modelRegistry = modelRegistry;
+	}
+
+	bindCore(
+		actions: ExtensionActions,
+		contextActions: ExtensionContextActions,
+		providerActions?: {
+			registerProvider?: (name: string, config: ProviderConfig) => void;
+			unregisterProvider?: (name: string) => void;
+		},
+	): void {
+		// Copy actions into the shared runtime (all extension APIs reference this)
+		this.runtime.sendMessage = actions.sendMessage;
+		this.runtime.sendUserMessage = actions.sendUserMessage;
+		this.runtime.appendEntry = actions.appendEntry;
+		this.runtime.getActiveTools = actions.getActiveTools;
+		this.runtime.getAllTools = actions.getAllTools;
+		this.runtime.setActiveTools = actions.setActiveTools;
+		this.runtime.refreshTools = actions.refreshTools;
+		this.runtime.getCommands = actions.getCommands;
+		this.runtime.setModel = actions.setModel;
+		this.runtime.getThinkingLevel = actions.getThinkingLevel;
+		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+
+		// Context actions (required)
+		this.getModel = contextActions.getModel;
+		this.isIdleFn = contextActions.isIdle;
+		this.getSignalFn = contextActions.getSignal;
+		this.abortFn = contextActions.abort;
+		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
+		this.shutdownHandler = contextActions.shutdown;
+		this.getContextUsageFn = contextActions.getContextUsage;
+		this.compactFn = contextActions.compact;
+		this.getSystemPromptFn = contextActions.getSystemPrompt;
+		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
+
+		// Flush provider registrations queued during extension loading
+		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
+			try {
+				if (providerActions?.registerProvider) {
+					providerActions.registerProvider(name, config);
+				} else {
+					this.modelRegistry.registerProvider(name, config);
+				}
+			} catch (err) {
+				this.emitError({
+					extensionPath,
+					event: "register_provider",
+					error: err instanceof Error ? err.message : String(err),
+					stack: err instanceof Error ? err.stack : undefined,
+				});
+			}
+		}
+		this.runtime.pendingProviderRegistrations = [];
+
+		// From this point on, provider registration/unregistration takes effect immediately
+		// without requiring a /reload.
+		this.runtime.registerProvider = (name, config) => {
+			if (providerActions?.registerProvider) {
+				providerActions.registerProvider(name, config);
+				return;
+			}
+			this.modelRegistry.registerProvider(name, config);
+		};
+		this.runtime.unregisterProvider = (name) => {
+			if (providerActions?.unregisterProvider) {
+				providerActions.unregisterProvider(name);
+				return;
+			}
+			this.modelRegistry.unregisterProvider(name);
+		};
+	}
+
+	bindCommandContext(actions?: ExtensionCommandContextActions): void {
+		if (actions) {
+			this.waitForIdleFn = actions.waitForIdle;
+			this.newSessionHandler = actions.newSession;
+			this.reloadHandler = actions.reload;
+			return;
+		}
+
+		this.waitForIdleFn = async () => {};
+		this.newSessionHandler = async () => ({ cancelled: false });
+		this.reloadHandler = async () => {};
+	}
+
+	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
+		this.uiContext = uiContext ?? noOpUIContext;
+		this.mode = mode;
+	}
+
+	getUIContext(): ExtensionUIContext {
+		return this.uiContext;
+	}
+
+	hasUI(): boolean {
+		return this.uiContext !== noOpUIContext;
+	}
+
+	getExtensionPaths(): string[] {
+		return this.extensions.map((e) => e.path);
+	}
+
+	/** Get all registered tools from all extensions (first registration per name wins). */
+	getAllRegisteredTools(): RegisteredTool[] {
+		const toolsByName = new Map<string, RegisteredTool>();
+		for (const ext of this.extensions) {
+			for (const tool of ext.tools.values()) {
+				if (!toolsByName.has(tool.definition.name)) {
+					toolsByName.set(tool.definition.name, tool);
+				}
+			}
+		}
+		return Array.from(toolsByName.values());
+	}
+
+	/** Get a tool definition by name. Returns undefined if not found. */
+	getToolDefinition(toolName: string): RegisteredTool["definition"] | undefined {
+		for (const ext of this.extensions) {
+			const tool = ext.tools.get(toolName);
+			if (tool) {
+				return tool.definition;
+			}
+		}
+		return undefined;
+	}
+
+	getFlags(): Map<string, ExtensionFlag> {
+		const allFlags = new Map<string, ExtensionFlag>();
+		for (const ext of this.extensions) {
+			for (const [name, flag] of ext.flags) {
+				if (!allFlags.has(name)) {
+					allFlags.set(name, flag);
+				}
+			}
+		}
+		return allFlags;
+	}
+
+	setFlagValue(name: string, value: boolean | string): void {
+		this.runtime.flagValues.set(name, value);
+	}
+
+	getFlagValues(): Map<string, boolean | string> {
+		return new Map(this.runtime.flagValues);
+	}
+
+	getShortcuts(resolvedKeybindings: KeybindingsConfig): Map<KeyId, ExtensionShortcut> {
+		this.shortcutDiagnostics = [];
+		const builtinKeybindings = buildBuiltinKeybindings(resolvedKeybindings);
+		const extensionShortcuts = new Map<KeyId, ExtensionShortcut>();
+
+		const addDiagnostic = (message: string, extensionPath: string) => {
+			this.shortcutDiagnostics.push({ type: "warning", message, path: extensionPath });
+			if (!this.hasUI()) {
+				console.warn(message);
+			}
+		};
+
+		for (const ext of this.extensions) {
+			for (const [key, shortcut] of ext.shortcuts) {
+				const normalizedKey = key.toLowerCase() as KeyId;
+
+				const builtInKeybinding = builtinKeybindings[normalizedKey];
+				if (builtInKeybinding?.restrictOverride === true) {
+					addDiagnostic(
+						`Extension shortcut '${key}' from ${shortcut.extensionPath} conflicts with built-in shortcut. Skipping.`,
+						shortcut.extensionPath,
+					);
+					continue;
+				}
+
+				if (builtInKeybinding?.restrictOverride === false) {
+					addDiagnostic(
+						`Extension shortcut conflict: '${key}' is built-in shortcut for ${builtInKeybinding.keybinding} and ${shortcut.extensionPath}. Using ${shortcut.extensionPath}.`,
+						shortcut.extensionPath,
+					);
+				}
+
+				const existingExtensionShortcut = extensionShortcuts.get(normalizedKey);
+				if (existingExtensionShortcut) {
+					addDiagnostic(
+						`Extension shortcut conflict: '${key}' registered by both ${existingExtensionShortcut.extensionPath} and ${shortcut.extensionPath}. Using ${shortcut.extensionPath}.`,
+						shortcut.extensionPath,
+					);
+				}
+				extensionShortcuts.set(normalizedKey, shortcut);
+			}
+		}
+		return extensionShortcuts;
+	}
+
+	getShortcutDiagnostics(): ResourceDiagnostic[] {
+		return this.shortcutDiagnostics;
+	}
+
+	invalidate(
+		message = "This extension ctx is stale after conversation reset or reload. After ctx.newSession(), continue work through withSession. After ctx.reload(), do not use the old ctx.",
+	): void {
+		if (!this.staleMessage) {
+			this.staleMessage = message;
+			void this.stopTriggers("invalidate");
+			this.runtime.invalidate(message);
+		}
+	}
+
+	private assertActive(): void {
+		if (this.staleMessage) {
+			throw new Error(this.staleMessage);
+		}
+	}
+
+	onError(listener: ExtensionErrorListener): () => void {
+		this.errorListeners.add(listener);
+		return () => this.errorListeners.delete(listener);
+	}
+
+	emitError(error: ExtensionError): void {
+		for (const listener of this.errorListeners) {
+			listener(error);
+		}
+	}
+
+	hasHandlers(eventType: string): boolean {
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get(eventType);
+			if (handlers && handlers.length > 0) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	getMessageRenderer(customType: string): MessageRenderer | undefined {
+		for (const ext of this.extensions) {
+			const renderer = ext.messageRenderers.get(customType);
+			if (renderer) {
+				return renderer;
+			}
+		}
+		return undefined;
+	}
+
+	private resolveRegisteredCommands(): ResolvedCommand[] {
+		const commands: RegisteredCommand[] = [];
+		const counts = new Map<string, number>();
+
+		for (const ext of this.extensions) {
+			for (const command of ext.commands.values()) {
+				commands.push(command);
+				counts.set(command.name, (counts.get(command.name) ?? 0) + 1);
+			}
+		}
+
+		const seen = new Map<string, number>();
+		const takenInvocationNames = new Set<string>();
+
+		return commands.map((command) => {
+			const occurrence = (seen.get(command.name) ?? 0) + 1;
+			seen.set(command.name, occurrence);
+
+			let invocationName = (counts.get(command.name) ?? 0) > 1 ? `${command.name}:${occurrence}` : command.name;
+
+			if (takenInvocationNames.has(invocationName)) {
+				let suffix = occurrence;
+				do {
+					suffix++;
+					invocationName = `${command.name}:${suffix}`;
+				} while (takenInvocationNames.has(invocationName));
+			}
+
+			takenInvocationNames.add(invocationName);
+			return {
+				...command,
+				invocationName,
+			};
+		});
+	}
+
+	getRegisteredCommands(): ResolvedCommand[] {
+		this.commandDiagnostics = [];
+		return this.resolveRegisteredCommands();
+	}
+
+	getCommandDiagnostics(): ResourceDiagnostic[] {
+		return this.commandDiagnostics;
+	}
+
+	getCommand(name: string): ResolvedCommand | undefined {
+		return this.resolveRegisteredCommands().find((command) => command.invocationName === name);
+	}
+
+	getRegisteredTriggers(): RegisteredTrigger[] {
+		this.triggerDiagnostics = [];
+		const triggersByName = new Map<string, RegisteredTrigger>();
+
+		const addDiagnostic = (message: string, extensionPath: string) => {
+			this.triggerDiagnostics.push({ type: "warning", message, path: extensionPath });
+			if (!this.hasUI()) {
+				console.warn(message);
+			}
+		};
+
+		for (const ext of this.extensions) {
+			for (const trigger of ext.triggers.values()) {
+				if (typeof trigger.definition.name !== "string" || !trigger.definition.name.trim()) {
+					addDiagnostic(
+						`Extension trigger from ${trigger.extensionPath} has an empty name. Skipping.`,
+						trigger.extensionPath,
+					);
+					continue;
+				}
+				const hasStart = typeof trigger.definition.start === "function";
+				const hasSchedule = trigger.definition.schedule !== undefined;
+				const hasRun = typeof trigger.definition.run === "function";
+				if (!hasStart && !(hasSchedule && hasRun)) {
+					addDiagnostic(
+						`Extension trigger '${trigger.definition.name}' from ${trigger.extensionPath} must define start() or schedule + run(). Skipping.`,
+						trigger.extensionPath,
+					);
+					continue;
+				}
+
+				const existing = triggersByName.get(trigger.definition.name);
+				if (existing) {
+					addDiagnostic(
+						`Extension trigger conflict: '${trigger.definition.name}' registered by both ${existing.extensionPath} and ${trigger.extensionPath}. Using ${existing.extensionPath}.`,
+						trigger.extensionPath,
+					);
+					continue;
+				}
+				triggersByName.set(trigger.definition.name, trigger);
+			}
+		}
+
+		return Array.from(triggersByName.values());
+	}
+
+	getTriggerDiagnostics(): ResourceDiagnostic[] {
+		return this.triggerDiagnostics;
+	}
+
+	async startTriggers(onEvent: TriggerEventListener): Promise<void> {
+		await this.stopTriggers("restart");
+
+		for (const trigger of this.getRegisteredTriggers()) {
+			const controller = new AbortController();
+			const started: StartedTrigger = {
+				name: trigger.definition.name,
+				extensionPath: trigger.extensionPath,
+				controller,
+				cleanup: undefined,
+			};
+			this.activeTriggers.set(trigger.definition.name, started);
+
+			try {
+				const definition = trigger.definition;
+				const context = this.createTriggerContext(definition.name, controller.signal);
+				const emit = this.createTriggerEmit(started, onEvent);
+				let cleanup: TriggerCleanup;
+				if (definition.schedule) {
+					if (typeof definition.run !== "function") {
+						throw new Error(`Trigger '${definition.name}' has a schedule but no run() function`);
+					}
+					validateTriggerSchedule(definition.schedule);
+					const run = definition.run.bind(definition);
+					cleanup = startScheduleTimer(
+						definition.schedule,
+						async () => {
+							try {
+								await run(context, emit);
+							} catch (err) {
+								this.emitError({
+									extensionPath: started.extensionPath,
+									event: "trigger_run",
+									error: err instanceof Error ? err.message : String(err),
+									stack: err instanceof Error ? err.stack : undefined,
+								});
+							}
+						},
+						{ signal: controller.signal },
+					);
+				} else if (typeof definition.start === "function") {
+					cleanup = await definition.start(context, emit);
+				} else {
+					throw new Error(`Trigger '${definition.name}' must define start() or schedule + run()`);
+				}
+				if (this.activeTriggers.get(trigger.definition.name) !== started) {
+					if (typeof cleanup === "function") {
+						await this.runTriggerCleanup(started, cleanup);
+					}
+					continue;
+				}
+				if (typeof cleanup === "function") {
+					started.cleanup = cleanup;
+				}
+			} catch (err) {
+				this.activeTriggers.delete(trigger.definition.name);
+				controller.abort();
+				this.emitError({
+					extensionPath: trigger.extensionPath,
+					event: "trigger_start",
+					error: err instanceof Error ? err.message : String(err),
+					stack: err instanceof Error ? err.stack : undefined,
+				});
+			}
+		}
+	}
+
+	async stopTriggers(reason: string): Promise<void> {
+		if (this.activeTriggers.size === 0) {
+			return;
+		}
+
+		const triggers = Array.from(this.activeTriggers.values());
+		this.activeTriggers.clear();
+		for (const trigger of triggers) {
+			trigger.controller.abort();
+		}
+
+		await Promise.all(
+			triggers.map(async (trigger) => {
+				if (!trigger.cleanup) {
+					return;
+				}
+				await this.runTriggerCleanup(trigger, trigger.cleanup, reason);
+			}),
+		);
+	}
+
+	private createTriggerContext(triggerName: string, signal: AbortSignal): TriggerContext {
+		const context = Object.defineProperties(
+			{},
+			Object.getOwnPropertyDescriptors(this.createContext()),
+		) as TriggerContext;
+		Object.defineProperty(context, "triggerName", {
+			enumerable: true,
+			value: triggerName,
+		});
+		Object.defineProperty(context, "signal", {
+			enumerable: true,
+			get: () => signal,
+		});
+		Object.defineProperty(context, "exec", {
+			enumerable: true,
+			value: this.createTriggerExec(signal),
+		});
+		return context;
+	}
+
+	private createTriggerExec(
+		signal: AbortSignal,
+	): (command: string, args: string[], options?: TriggerExecOptions) => Promise<TriggerExecResult> {
+		const cwd = this.cwd;
+		return async (command, args, options) => {
+			const result = await execCommand(command, args, cwd, {
+				timeout: options?.timeout ?? TRIGGER_EXEC_TIMEOUT_MS,
+				signal,
+			});
+			const stdout = truncateExecOutput(result.stdout);
+			const stderr = truncateExecOutput(result.stderr);
+			return {
+				stdout: stdout.value,
+				stderr: stderr.value,
+				code: result.code,
+				killed: result.killed,
+				truncated: stdout.truncated || stderr.truncated,
+				stdoutTruncated: stdout.truncated,
+				stderrTruncated: stderr.truncated,
+			};
+		};
+	}
+
+	private createTriggerEmit(started: StartedTrigger, onEvent: TriggerEventListener): TriggerEmit {
+		return (event: TriggerEventInput) => {
+			if (
+				this.activeTriggers.get(started.name) !== started ||
+				started.controller.signal.aborted ||
+				this.staleMessage
+			) {
+				return;
+			}
+			if (typeof event.summary !== "string" || !event.summary.trim()) {
+				this.emitError({
+					extensionPath: started.extensionPath,
+					event: "trigger_emit",
+					error: `Trigger '${started.name}' emitted an event with an empty summary. Skipping.`,
+				});
+				return;
+			}
+			const eventId = typeof event.eventId === "string" ? event.eventId.trim() : "";
+			const createdAt = typeof event.createdAt === "string" ? event.createdAt.trim() : "";
+
+			const triggerEvent: ProactiveTriggerEvent = {
+				triggerName: started.name,
+				eventId: eventId || randomUUID(),
+				summary: event.summary,
+				payload: event.payload,
+				createdAt: createdAt || new Date().toISOString(),
+			};
+
+			Promise.resolve(onEvent(triggerEvent)).catch((err) => {
+				this.emitError({
+					extensionPath: started.extensionPath,
+					event: "trigger_emit",
+					error: err instanceof Error ? err.message : String(err),
+					stack: err instanceof Error ? err.stack : undefined,
+				});
+			});
+		};
+	}
+
+	private async runTriggerCleanup(
+		trigger: StartedTrigger,
+		cleanup: () => void | Promise<void>,
+		reason = "stop",
+	): Promise<void> {
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const result = await Promise.race([
+				Promise.resolve()
+					.then(cleanup)
+					.then(() => "done" as const),
+				new Promise<"timeout">((resolve) => {
+					timeout = setTimeout(() => resolve("timeout"), TRIGGER_CLEANUP_TIMEOUT_MS);
+				}),
+			]);
+			if (result === "timeout") {
+				this.emitError({
+					extensionPath: trigger.extensionPath,
+					event: "trigger_cleanup",
+					error: `Trigger '${trigger.name}' cleanup timed out after ${TRIGGER_CLEANUP_TIMEOUT_MS}ms during ${reason}.`,
+				});
+			}
+		} catch (err) {
+			this.emitError({
+				extensionPath: trigger.extensionPath,
+				event: "trigger_cleanup",
+				error: err instanceof Error ? err.message : String(err),
+				stack: err instanceof Error ? err.stack : undefined,
+			});
+		} finally {
+			if (timeout) {
+				clearTimeout(timeout);
+			}
+		}
+	}
+
+	/**
+	 * Request a graceful shutdown. Called by extension tools and event handlers.
+	 * The actual shutdown behavior is provided by the mode via bindExtensions().
+	 */
+	shutdown(): void {
+		this.shutdownHandler();
+	}
+
+	/**
+	 * Create an ExtensionContext for use in event handlers and tool execution.
+	 * Context values are resolved at call time, so changes via bindCore/bindUI are reflected.
+	 */
+	createContext(): ExtensionContext {
+		const runner = this;
+		const getModel = this.getModel;
+		return {
+			get ui() {
+				runner.assertActive();
+				return runner.uiContext;
+			},
+			get mode() {
+				runner.assertActive();
+				return runner.mode;
+			},
+			get hasUI() {
+				runner.assertActive();
+				return runner.hasUI();
+			},
+			get cwd() {
+				runner.assertActive();
+				return runner.cwd;
+			},
+			get sessionManager() {
+				runner.assertActive();
+				return runner.sessionManager;
+			},
+			get modelRegistry() {
+				runner.assertActive();
+				return runner.modelRegistry;
+			},
+			get model() {
+				runner.assertActive();
+				return getModel();
+			},
+			isIdle: () => {
+				runner.assertActive();
+				return runner.isIdleFn();
+			},
+			get signal() {
+				runner.assertActive();
+				return runner.getSignalFn();
+			},
+			abort: () => {
+				runner.assertActive();
+				runner.abortFn();
+			},
+			hasPendingMessages: () => {
+				runner.assertActive();
+				return runner.hasPendingMessagesFn();
+			},
+			shutdown: () => {
+				runner.assertActive();
+				runner.shutdownHandler();
+			},
+			getContextUsage: () => {
+				runner.assertActive();
+				return runner.getContextUsageFn();
+			},
+			compact: (options) => {
+				runner.assertActive();
+				runner.compactFn(options);
+			},
+			getSystemPrompt: () => {
+				runner.assertActive();
+				return runner.getSystemPromptFn();
+			},
+		};
+	}
+
+	createCommandContext(): ExtensionCommandContext {
+		// Use property descriptors instead of object spread so the guarded getters from
+		// createContext() stay lazy. A spread would eagerly read them once and freeze the
+		// old values into the returned object, bypassing stale-instance checks.
+		const context = Object.defineProperties(
+			{},
+			Object.getOwnPropertyDescriptors(this.createContext()),
+		) as ExtensionCommandContext;
+		context.getSystemPromptOptions = () => {
+			this.assertActive();
+			return this.getSystemPromptOptionsFn();
+		};
+		context.waitForIdle = () => {
+			this.assertActive();
+			return this.waitForIdleFn();
+		};
+		context.newSession = (options) => {
+			this.assertActive();
+			return this.newSessionHandler(options);
+		};
+		context.reload = () => {
+			this.assertActive();
+			return this.reloadHandler();
+		};
+		return context;
+	}
+
+	private isSessionBeforeEvent(event: RunnerEmitEvent): event is SessionBeforeEvent {
+		return event.type === "session_before_dream";
+	}
+
+	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
+		const ctx = this.createContext();
+		let result: SessionBeforeEventResult | undefined;
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get(event.type);
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				try {
+					const handlerResult = await handler(event, ctx);
+
+					if (this.isSessionBeforeEvent(event) && handlerResult) {
+						result = handlerResult as SessionBeforeEventResult;
+						if (result.cancel) {
+							return result as RunnerEmitResult<TEvent>;
+						}
+					}
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: event.type,
+						error: message,
+						stack,
+					});
+				}
+			}
+		}
+
+		return result as RunnerEmitResult<TEvent>;
+	}
+
+	async emitMessageEnd(event: MessageEndEvent): Promise<AgentMessage | undefined> {
+		const ctx = this.createContext();
+		let currentMessage = event.message;
+		let modified = false;
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("message_end");
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				try {
+					const currentEvent: MessageEndEvent = { ...event, message: currentMessage };
+					const handlerResult = (await handler(currentEvent, ctx)) as MessageEndEventResult | undefined;
+					if (!handlerResult?.message) continue;
+
+					if (handlerResult.message.role !== currentMessage.role) {
+						this.emitError({
+							extensionPath: ext.path,
+							event: "message_end",
+							error: "message_end handlers must return a message with the same role",
+						});
+						continue;
+					}
+
+					currentMessage = handlerResult.message;
+					modified = true;
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: "message_end",
+						error: message,
+						stack,
+					});
+				}
+			}
+		}
+
+		return modified ? currentMessage : undefined;
+	}
+
+	async emitToolResult(event: ToolResultEvent): Promise<ToolResultEventResult | undefined> {
+		const ctx = this.createContext();
+		const currentEvent: ToolResultEvent = { ...event };
+		let modified = false;
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("tool_result");
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				try {
+					const handlerResult = (await handler(currentEvent, ctx)) as ToolResultEventResult | undefined;
+					if (!handlerResult) continue;
+
+					if (handlerResult.content !== undefined) {
+						currentEvent.content = handlerResult.content;
+						modified = true;
+					}
+					if (handlerResult.details !== undefined) {
+						currentEvent.details = handlerResult.details;
+						modified = true;
+					}
+					if (handlerResult.isError !== undefined) {
+						currentEvent.isError = handlerResult.isError;
+						modified = true;
+					}
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: "tool_result",
+						error: message,
+						stack,
+					});
+				}
+			}
+		}
+
+		if (!modified) {
+			return undefined;
+		}
+
+		return {
+			content: currentEvent.content,
+			details: currentEvent.details,
+			isError: currentEvent.isError,
+		};
+	}
+
+	async emitToolCall(event: ToolCallEvent): Promise<ToolCallEventResult | undefined> {
+		const ctx = this.createContext();
+		let result: ToolCallEventResult | undefined;
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("tool_call");
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				const handlerResult = await handler(event, ctx);
+
+				if (handlerResult) {
+					result = handlerResult as ToolCallEventResult;
+					if (result.block) {
+						return result;
+					}
+				}
+			}
+		}
+
+		return result;
+	}
+
+	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
+		const ctx = this.createContext();
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("user_bash");
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				try {
+					const handlerResult = await handler(event, ctx);
+					if (handlerResult) {
+						return handlerResult as UserBashEventResult;
+					}
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: "user_bash",
+						error: message,
+						stack,
+					});
+				}
+			}
+		}
+
+		return undefined;
+	}
+
+	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
+		const ctx = this.createContext();
+		let currentMessages = structuredClone(messages);
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("context");
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				try {
+					const event: ContextEvent = { type: "context", messages: currentMessages };
+					const handlerResult = await handler(event, ctx);
+
+					if (handlerResult && (handlerResult as ContextEventResult).messages) {
+						currentMessages = (handlerResult as ContextEventResult).messages!;
+					}
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: "context",
+						error: message,
+						stack,
+					});
+				}
+			}
+		}
+
+		return currentMessages;
+	}
+
+	async emitBeforeProviderRequest(payload: unknown): Promise<unknown> {
+		const ctx = this.createContext();
+		let currentPayload = payload;
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("before_provider_request");
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				try {
+					const event: BeforeProviderRequestEvent = {
+						type: "before_provider_request",
+						payload: currentPayload,
+					};
+					const handlerResult = await handler(event, ctx);
+					if (handlerResult !== undefined) {
+						currentPayload = handlerResult;
+					}
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: "before_provider_request",
+						error: message,
+						stack,
+					});
+				}
+			}
+		}
+
+		return currentPayload;
+	}
+
+	async emitBeforeAgentStart(
+		prompt: string,
+		images: ImageContent[] | undefined,
+		systemPrompt: string,
+		systemPromptOptions: BuildSystemPromptOptions,
+	): Promise<BeforeAgentStartCombinedResult | undefined> {
+		let currentSystemPrompt = systemPrompt;
+		const ctx = Object.defineProperties(
+			{},
+			Object.getOwnPropertyDescriptors(this.createContext()),
+		) as ExtensionContext;
+		ctx.getSystemPrompt = () => {
+			this.assertActive();
+			return currentSystemPrompt;
+		};
+		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
+		let systemPromptModified = false;
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("before_agent_start");
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				try {
+					const event: BeforeAgentStartEvent = {
+						type: "before_agent_start",
+						prompt,
+						images,
+						systemPrompt: currentSystemPrompt,
+						systemPromptOptions,
+					};
+					const handlerResult = await handler(event, ctx);
+
+					if (handlerResult) {
+						const result = handlerResult as BeforeAgentStartEventResult;
+						if (result.message) {
+							messages.push(result.message);
+						}
+						if (result.systemPrompt !== undefined) {
+							currentSystemPrompt = result.systemPrompt;
+							systemPromptModified = true;
+						}
+					}
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: "before_agent_start",
+						error: message,
+						stack,
+					});
+				}
+			}
+		}
+
+		if (messages.length > 0 || systemPromptModified) {
+			return {
+				messages: messages.length > 0 ? messages : undefined,
+				systemPrompt: systemPromptModified ? currentSystemPrompt : undefined,
+			};
+		}
+
+		return undefined;
+	}
+
+	async emitResourcesDiscover(
+		cwd: string,
+		reason: ResourcesDiscoverEvent["reason"],
+	): Promise<{
+		skillPaths: Array<{ path: string; extensionPath: string }>;
+		promptPaths: Array<{ path: string; extensionPath: string }>;
+		themePaths: Array<{ path: string; extensionPath: string }>;
+	}> {
+		const ctx = this.createContext();
+		const skillPaths: Array<{ path: string; extensionPath: string }> = [];
+		const promptPaths: Array<{ path: string; extensionPath: string }> = [];
+		const themePaths: Array<{ path: string; extensionPath: string }> = [];
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("resources_discover");
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				try {
+					const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
+					const handlerResult = await handler(event, ctx);
+					const result = handlerResult as ResourcesDiscoverResult | undefined;
+
+					if (result?.skillPaths?.length) {
+						skillPaths.push(...result.skillPaths.map((path) => ({ path, extensionPath: ext.path })));
+					}
+					if (result?.promptPaths?.length) {
+						promptPaths.push(...result.promptPaths.map((path) => ({ path, extensionPath: ext.path })));
+					}
+					if (result?.themePaths?.length) {
+						themePaths.push(...result.themePaths.map((path) => ({ path, extensionPath: ext.path })));
+					}
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: "resources_discover",
+						error: message,
+						stack,
+					});
+				}
+			}
+		}
+
+		return { skillPaths, promptPaths, themePaths };
+	}
+
+	/** Emit input event. Transforms chain, "handled" short-circuits. */
+	async emitInput(
+		text: string,
+		images: ImageContent[] | undefined,
+		source: InputSource,
+		streamingBehavior?: "steer" | "followUp",
+	): Promise<InputEventResult> {
+		const ctx = this.createContext();
+		let currentText = text;
+		let currentImages = images;
+
+		for (const ext of this.extensions) {
+			for (const handler of ext.handlers.get("input") ?? []) {
+				try {
+					const event: InputEvent = {
+						type: "input",
+						text: currentText,
+						images: currentImages,
+						source,
+						streamingBehavior,
+					};
+					const result = (await handler(event, ctx)) as InputEventResult | undefined;
+					if (result?.action === "handled") return result;
+					if (result?.action === "transform") {
+						currentText = result.text;
+						currentImages = result.images ?? currentImages;
+					}
+				} catch (err) {
+					this.emitError({
+						extensionPath: ext.path,
+						event: "input",
+						error: err instanceof Error ? err.message : String(err),
+						stack: err instanceof Error ? err.stack : undefined,
+					});
+				}
+			}
+		}
+		return currentText !== text || currentImages !== images
+			? { action: "transform", text: currentText, images: currentImages }
+			: { action: "continue" };
+	}
+}

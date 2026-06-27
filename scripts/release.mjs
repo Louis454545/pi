@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Release script for pi-mono
+ * Release script for morgan-mono
  *
  * Usage:
  *   node scripts/release.mjs <major|minor|patch>
@@ -168,7 +168,7 @@ console.log();
 console.log("Regenerating release artifacts...");
 run("npm --prefix packages/ai run generate-models");
 run("npm --prefix packages/ai run generate-image-models");
-run("npm run shrinkwrap:coding-agent");
+run("npm run shrinkwrap:morgan-agent");
 console.log();
 
 // 5. Run checks

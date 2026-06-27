@@ -7,7 +7,7 @@ import {
 	type TextContent,
 	type ThinkingBudgets,
 	type Transport,
-} from "@earendil-works/pi-ai";
+} from "@earendil-works/morgan-ai";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
 import type {
 	AfterToolCallContext,
@@ -113,6 +113,21 @@ export interface AgentOptions {
 	transport?: Transport;
 	maxRetryDelayMs?: number;
 	toolExecution?: ToolExecutionMode;
+}
+
+export interface InternalPromptOptions {
+	systemPrompt?: string;
+	messages?: AgentMessage[];
+	tools?: AgentTool<any>[];
+	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
+	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
+	signal?: AbortSignal;
+	maxTokens?: number;
+}
+
+export interface InternalPromptResult {
+	messages: AgentMessage[];
+	events: AgentEvent[];
 }
 
 class PendingMessageQueue {
@@ -364,6 +379,48 @@ export class Agent {
 		await this.runContinuation();
 	}
 
+	/**
+	 * Run an internal prompt through the normal agent loop without appending to
+	 * `state.messages`, notifying public listeners, or draining queued messages.
+	 */
+	async runInternalPrompt(
+		input: AgentMessage | AgentMessage[],
+		options: InternalPromptOptions = {},
+	): Promise<InternalPromptResult> {
+		if (this.activeRun) {
+			throw new Error("Agent is already processing.");
+		}
+
+		const prompts = Array.isArray(input) ? input : [input];
+		const events: AgentEvent[] = [];
+		let messages: AgentMessage[] = [];
+
+		await this.runInternalLifecycle(options.signal, async (signal) => {
+			messages = await runAgentLoop(
+				prompts,
+				this.createContextSnapshot({
+					systemPrompt: options.systemPrompt,
+					messages: options.messages,
+					tools: options.tools,
+				}),
+				this.createLoopConfig({
+					disableQueues: true,
+					beforeToolCall: options.beforeToolCall,
+					afterToolCall: options.afterToolCall,
+					maxTokens: options.maxTokens,
+					disablePrepareNextTurn: true,
+				}),
+				(event) => {
+					events.push(event);
+				},
+				signal,
+				this.streamFn,
+			);
+		});
+
+		return { messages, events };
+	}
+
 	private normalizePromptInput(
 		input: string | AgentMessage | AgentMessage[],
 		images?: ImageContent[],
@@ -411,19 +468,29 @@ export class Agent {
 		});
 	}
 
-	private createContextSnapshot(): AgentContext {
+	private createContextSnapshot(overrides: Partial<AgentContext> = {}): AgentContext {
 		return {
-			systemPrompt: this._state.systemPrompt,
-			messages: this._state.messages.slice(),
-			tools: this._state.tools.slice(),
+			systemPrompt: overrides.systemPrompt ?? this._state.systemPrompt,
+			messages: overrides.messages?.slice() ?? this._state.messages.slice(),
+			tools: overrides.tools?.slice() ?? this._state.tools.slice(),
 		};
 	}
 
-	private createLoopConfig(options: { skipInitialSteeringPoll?: boolean } = {}): AgentLoopConfig {
+	private createLoopConfig(
+		options: {
+			skipInitialSteeringPoll?: boolean;
+			disableQueues?: boolean;
+			disablePrepareNextTurn?: boolean;
+			beforeToolCall?: AgentLoopConfig["beforeToolCall"];
+			afterToolCall?: AgentLoopConfig["afterToolCall"];
+			maxTokens?: number;
+		} = {},
+	): AgentLoopConfig {
 		let skipInitialSteeringPoll = options.skipInitialSteeringPoll === true;
 		return {
 			model: this._state.model,
 			reasoning: this._state.thinkingLevel === "off" ? undefined : this._state.thinkingLevel,
+			maxTokens: options.maxTokens,
 			sessionId: this.sessionId,
 			onPayload: this.onPayload,
 			onResponse: this.onResponse,
@@ -431,21 +498,61 @@ export class Agent {
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
 			toolExecution: this.toolExecution,
-			beforeToolCall: this.beforeToolCall,
-			afterToolCall: this.afterToolCall,
-			prepareNextTurn: this.prepareNextTurn ? async () => await this.prepareNextTurn?.(this.signal) : undefined,
+			beforeToolCall: options.beforeToolCall ?? this.beforeToolCall,
+			afterToolCall: options.afterToolCall ?? this.afterToolCall,
+			prepareNextTurn:
+				!options.disablePrepareNextTurn && this.prepareNextTurn
+					? async () => await this.prepareNextTurn?.(this.signal)
+					: undefined,
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
 			getApiKey: this.getApiKey,
 			getSteeringMessages: async () => {
+				if (options.disableQueues) {
+					return [];
+				}
 				if (skipInitialSteeringPoll) {
 					skipInitialSteeringPoll = false;
 					return [];
 				}
 				return this.steeringQueue.drain();
 			},
-			getFollowUpMessages: async () => this.followUpQueue.drain(),
+			getFollowUpMessages: async () => (options.disableQueues ? [] : this.followUpQueue.drain()),
 		};
+	}
+
+	private async runInternalLifecycle(
+		externalSignal: AbortSignal | undefined,
+		executor: (signal: AbortSignal) => Promise<void>,
+	): Promise<void> {
+		if (this.activeRun) {
+			throw new Error("Agent is already processing.");
+		}
+
+		const abortController = new AbortController();
+		const abortFromExternalSignal = (): void => abortController.abort();
+		if (externalSignal?.aborted) {
+			abortController.abort();
+		} else {
+			externalSignal?.addEventListener("abort", abortFromExternalSignal, { once: true });
+		}
+
+		let resolvePromise = () => {};
+		const promise = new Promise<void>((resolve) => {
+			resolvePromise = resolve;
+		});
+		this.activeRun = { promise, resolve: resolvePromise, abortController };
+
+		this._state.isStreaming = true;
+		this._state.streamingMessage = undefined;
+		this._state.errorMessage = undefined;
+
+		try {
+			await executor(abortController.signal);
+		} finally {
+			externalSignal?.removeEventListener("abort", abortFromExternalSignal);
+			this.finishRun();
+		}
 	}
 
 	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>): Promise<void> {
