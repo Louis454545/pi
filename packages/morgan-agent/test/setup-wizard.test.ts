@@ -10,7 +10,7 @@ import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { BrowserHarnessRunner } from "../src/setup/browser-harness-setup.ts";
 import type { SelectOption, SetupPrompter } from "../src/setup/prompter.ts";
-import { handleSetupCommand } from "../src/setup/setup-cli.ts";
+import { handleSetupCommand, reloadRunningDaemonAfterSetup } from "../src/setup/setup-cli.ts";
 import { SetupStateStore } from "../src/setup/setup-state.ts";
 import { runSetupWizard } from "../src/setup/setup-wizard.ts";
 import type {
@@ -436,6 +436,43 @@ describe("setup wizard", () => {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();
 		}
+	});
+
+	it("reloads an already-running daemon after setup changes", async () => {
+		const calls: string[] = [];
+		const client = {
+			async connect() {
+				calls.push("connect");
+			},
+			async reload() {
+				calls.push("reload");
+			},
+			close() {
+				calls.push("close");
+			},
+		};
+
+		await expect(reloadRunningDaemonAfterSetup(client)).resolves.toBe("reloaded");
+		expect(calls).toEqual(["connect", "reload", "close"]);
+	});
+
+	it("does not fail setup activation when no daemon is running", async () => {
+		const calls: string[] = [];
+		const client = {
+			async connect() {
+				calls.push("connect");
+				throw new Error("not running");
+			},
+			async reload() {
+				calls.push("reload");
+			},
+			close() {
+				calls.push("close");
+			},
+		};
+
+		await expect(reloadRunningDaemonAfterSetup(client)).resolves.toBe("not-running");
+		expect(calls).toEqual(["connect", "close"]);
 	});
 
 	it("runs setup non-interactively", async () => {

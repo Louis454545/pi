@@ -8,6 +8,7 @@ import { AuthStorage } from "../core/auth-storage.ts";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import { ModelRegistry } from "../core/model-registry.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
+import { DaemonClient } from "../daemon/client.ts";
 import { initTheme, stopThemeWatcher } from "../modes/interactive/theme/theme.ts";
 import { type SelectOption, SetupCancelledError, type SetupPrompter, TuiSetupPrompter } from "./prompter.ts";
 import type { BrowserSetupChoice, CommunicationSetupChoice, DaemonAutostartSetupChoice } from "./setup-state.ts";
@@ -45,6 +46,28 @@ export interface RunSetupOptions {
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
 	apiKey?: string;
+}
+
+interface SetupDaemonClient {
+	connect(): Promise<void>;
+	reload(): Promise<void>;
+	close(): void;
+}
+
+export async function reloadRunningDaemonAfterSetup(
+	client: SetupDaemonClient = new DaemonClient({ requestTimeoutMs: 30000 }),
+): Promise<"reloaded" | "not-running" | "failed"> {
+	let connected = false;
+	try {
+		await client.connect();
+		connected = true;
+		await client.reload();
+		return "reloaded";
+	} catch {
+		return connected ? "failed" : "not-running";
+	} finally {
+		client.close();
+	}
 }
 
 function printSetupHelp(): void {
@@ -285,6 +308,13 @@ export async function handleSetupCommand(args: string[]): Promise<SetupCommandRe
 		console.error(chalk.red(error instanceof Error ? error.message : String(error)));
 		process.exitCode = 1;
 		return { handled: true };
+	}
+
+	const daemonReload = await reloadRunningDaemonAfterSetup();
+	if (daemonReload === "reloaded") {
+		console.log("Reloaded the running daemon to apply setup changes.");
+	} else if (daemonReload === "failed") {
+		console.error(chalk.yellow("Warning: setup completed, but the running daemon could not reload its resources."));
 	}
 
 	if (options.noLaunch || !result.launchMorgan) {

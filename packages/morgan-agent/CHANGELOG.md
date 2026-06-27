@@ -38,6 +38,7 @@
 
 ### Fixed
 
+- Fixed Telegram setup so an already-running daemon reloads and starts the newly installed bridge immediately.
 - Fixed tool-triggered reloads so interactive slash commands and extension shortcuts refresh without requiring a manual `/reload`.
 - Fixed auto-discovery for global trigger extensions stored under `~/.morgan/agent/extensions/triggers/<id>/`.
 - Fixed opening and listing very large JSONL session files by reading session entries line-by-line instead of materializing the full file as one string ([#5231](https://github.com/earendil-works/morgan/issues/5231)).
