@@ -34,10 +34,13 @@
 - Strengthened reload tool prompt guidance so agents call it autonomously after changing slash commands, extensions, skills, themes, keybindings, prompts, or loaded project instructions.
 - Rendered built-in task, monitor, and subagent notifications in structured TUI cards instead of raw XML.
 - Strengthened agent guidance to reuse existing capabilities, complete ordinary human-delegated work, recover from implementation difficulties without permission loops, preserve contextual model judgment in automations, factor costly repeated work, prefer quiet event-driven monitoring, and maintain contextually valuable proactive information and reminders.
+- Instructed agents to keep substantial ad hoc scripts in editable temporary files so failures can be repaired and rerun without reconstructing the script.
 - Clarified built-in monitor and background task tool instructions so agents use monitors as live event sources without replacing them with output-file polling.
 
 ### Fixed
 
+- Fixed repeated Telegram connection errors so they update the footer status instead of appending warning lines to the conversation.
+- Fixed Telegram messages queued during foreground Bash commands so they interrupt the current run after promoting the command to a background task.
 - Fixed Telegram setup so an already-running daemon reloads and starts the newly installed bridge immediately.
 - Fixed tool-triggered reloads so interactive slash commands and extension shortcuts refresh without requiring a manual `/reload`.
 - Fixed auto-discovery for global trigger extensions stored under `~/.morgan/agent/extensions/triggers/<id>/`.

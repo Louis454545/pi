@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TriggerEmit } from "@earendil-works/morgan-agent";
+import type { ExtensionAPI, TriggerEmit } from "@earendil-works/morgan-agent";
 import { type Context, fauxAssistantMessage, fauxToolCall, type TextContent } from "@earendil-works/morgan-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { BackgroundTaskManager, type BackgroundTaskNotification } from "../../src/core/background-tasks.ts";
@@ -426,11 +426,19 @@ describe("AgentSession background bash tasks", () => {
 		expect(createdLogs).toEqual([]);
 	});
 
-	it("promotes foreground bash when user input is queued during tool execution", async () => {
-		const harness = await createHarness();
+	it("promotes foreground bash and immediately delivers extension-origin steering input", async () => {
+		let extensionApi: ExtensionAPI | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(morgan) => {
+					extensionApi = morgan;
+				},
+			],
+		});
 		harnesses.push(harness);
 		let promotedTaskId: string | undefined;
 		let queuedUserReachedModel = false;
+		let firstPostToolTurnCount = 0;
 
 		harness.setResponses([
 			fauxAssistantMessage(
@@ -445,6 +453,7 @@ describe("AgentSession background bash tasks", () => {
 				{ stopReason: "toolUse" },
 			),
 			(context) => {
+				firstPostToolTurnCount++;
 				promotedTaskId = getBackgroundTaskId(context);
 				queuedUserReachedModel = contextHasUserText(context, "new input");
 				return fauxAssistantMessage("handled queued input");
@@ -455,12 +464,14 @@ describe("AgentSession background bash tasks", () => {
 		const sawBashUpdate = waitForBashUpdateContaining(harness, "before input");
 		const promptPromise = harness.session.prompt("run bash and accept user input");
 		await sawBashUpdate;
-		await harness.session.prompt("new input", { streamingBehavior: "steer" });
+		extensionApi?.sendUserMessage("new input", { deliverAs: "steer" });
 		await promptPromise;
 		await harness.session.waitForBackgroundTasks();
 
 		expect(promotedTaskId).toBeDefined();
 		expect(queuedUserReachedModel).toBe(true);
+		expect(firstPostToolTurnCount).toBe(1);
+		expect(harness.session.getSteeringMessages()).not.toContain("new input");
 		if (promotedTaskId) {
 			expect(harness.session.getBackgroundTask(promotedTaskId)?.finalStatus).toBe("completed");
 		}

@@ -83,6 +83,10 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("Optimize execution proactively when the expected savings justify the setup");
 			expect(prompt).toContain("costly, repetitive, or long-running task");
 			expect(prompt).toContain("factor it into a compact helper or script");
+			expect(prompt).toContain("Put substantial or multi-step ad hoc scripts in a file");
+			expect(prompt).toContain("inspect and edit that same file before rerunning it");
+			expect(prompt).toContain("Remove the temporary file when the task is complete");
+			expect(prompt).toContain("Keep short, simple shell commands direct");
 			expect(prompt).toContain("Reuse the environment before creating another path");
 			expect(prompt).toContain("lowest reliable execution layer that preserves the user's intent");
 			expect(prompt).toContain("prefer event-driven signals, subscriptions, watchers, streams");

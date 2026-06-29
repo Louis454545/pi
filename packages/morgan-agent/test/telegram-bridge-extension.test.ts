@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getBundledExtensionsDir } from "../src/config.ts";
-import type { ExtensionContext } from "../src/core/extensions/types.ts";
+import type { ExtensionContext, TriggerContext } from "../src/core/extensions/types.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
@@ -36,6 +36,7 @@ describe("telegram bridge extension", () => {
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
 		vi.unstubAllGlobals();
 		if (existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true, force: true });
@@ -69,14 +70,17 @@ describe("telegram bridge extension", () => {
 	}
 
 	async function loadBridgeExtension() {
+		return (await loadBridge()).extension;
+	}
+
+	async function loadBridge() {
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
 		const loader = new DefaultResourceLoader({ cwd: tempDir, agentDir, settingsManager });
 		await loader.reload();
-		const extension = loader
-			.getExtensions()
-			.extensions.find((candidate) => candidate.path === join(bridgeDir, "index.ts"));
+		const extensions = loader.getExtensions();
+		const extension = extensions.extensions.find((candidate) => candidate.path === join(bridgeDir, "index.ts"));
 		expect(extension).toBeDefined();
-		return extension!;
+		return { extension: extension!, runtime: extensions.runtime };
 	}
 
 	async function loadSendMessageTool() {
@@ -105,6 +109,140 @@ describe("telegram bridge extension", () => {
 		expect(extension.tools.get("send_message")?.definition.promptGuidelines).toEqual([
 			'Use send_message with integration "telegram" to reply to Telegram messages; final assistant text is not sent to Telegram automatically.',
 			"When replying to a Telegram message, pass the chatId shown in the Telegram message prompt unless there is exactly one allowed Telegram chat.",
+		]);
+	});
+
+	it("steers authorized inbound messages in Telegram update order", async () => {
+		writeBridgeConfig([123]);
+		const controller = new AbortController();
+		const deliveries: Array<{
+			content: string | unknown[];
+			options: { deliverAs?: "steer" | "followUp" } | undefined;
+		}> = [];
+		vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+			calls.push({ url: String(input), method: init?.method, body: init?.body });
+			const url = String(input);
+			const result = url.endsWith("/getUpdates")
+				? [
+						{
+							update_id: 10,
+							message: { message_id: 1, chat: { id: 123 }, from: { id: 123 }, text: "first" },
+						},
+						{
+							update_id: 11,
+							message: { message_id: 2, chat: { id: 123 }, from: { id: 123 }, text: "second" },
+						},
+					]
+				: true;
+			return new Response(JSON.stringify({ ok: true, result }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		});
+		const { extension, runtime } = await loadBridge();
+		runtime.sendUserMessage = (content, options) => {
+			deliveries.push({ content, options });
+			if (deliveries.length === 2) {
+				controller.abort();
+			}
+		};
+		const trigger = extension.triggers.get("telegram-bridge");
+		expect(trigger).toBeDefined();
+		const cleanup = await trigger?.definition.start?.(
+			{
+				...createContext(),
+				triggerName: "telegram-bridge",
+				signal: controller.signal,
+				exec: async () => ({
+					stdout: "",
+					stderr: "",
+					code: 0,
+					killed: false,
+					truncated: false,
+					stdoutTruncated: false,
+					stderrTruncated: false,
+				}),
+			} as TriggerContext,
+			() => {},
+		);
+
+		await vi.waitFor(() => expect(deliveries).toHaveLength(2));
+		await cleanup?.();
+
+		expect(deliveries.map((delivery) => delivery.options)).toEqual([{ deliverAs: "steer" }, { deliverAs: "steer" }]);
+		expect(deliveries.map((delivery) => delivery.content)).toEqual([
+			expect.stringContaining("first"),
+			expect.stringContaining("second"),
+		]);
+	});
+
+	it("keeps repeated polling errors in the footer and clears the error after recovery", async () => {
+		vi.useFakeTimers();
+		writeBridgeConfig([123]);
+		const controller = new AbortController();
+		const statuses: Array<string | undefined> = [];
+		const notifications: string[] = [];
+		let getUpdatesCalls = 0;
+		const ui = {
+			...createContext().ui,
+			notify: (message: string) => notifications.push(message),
+			setStatus: (_key: string, text: string | undefined) => {
+				statuses.push(text);
+				if (statuses.filter((status) => status === "Telegram polling").length === 2) {
+					controller.abort();
+				}
+			},
+		};
+		vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+			const url = String(input);
+			if (url.endsWith("/getUpdates")) {
+				getUpdatesCalls++;
+				if (getUpdatesCalls <= 2) {
+					return new Response(JSON.stringify({ ok: false, description: "connection lost" }), {
+						status: 502,
+						headers: { "content-type": "application/json" },
+					});
+				}
+			}
+			return new Response(JSON.stringify({ ok: true, result: url.endsWith("/getUpdates") ? [] : true }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		});
+		const { extension } = await loadBridge();
+		const trigger = extension.triggers.get("telegram-bridge");
+		expect(trigger).toBeDefined();
+		const cleanup = await trigger?.definition.start?.(
+			{
+				...createContext(),
+				triggerName: "telegram-bridge",
+				signal: controller.signal,
+				hasUI: true,
+				ui,
+				exec: async () => ({
+					stdout: "",
+					stderr: "",
+					code: 0,
+					killed: false,
+					truncated: false,
+					stdoutTruncated: false,
+					stderrTruncated: false,
+				}),
+			} as TriggerContext,
+			() => {},
+		);
+
+		await vi.advanceTimersByTimeAsync(6000);
+		await cleanup?.();
+
+		expect(notifications).toEqual([]);
+		expect(statuses).toEqual([
+			"Telegram polling",
+			"Telegram error: connection lost",
+			"Telegram error: connection lost",
+			"Telegram polling",
+			undefined,
+			undefined,
 		]);
 	});
 

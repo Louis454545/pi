@@ -510,7 +510,6 @@ export default function telegramBridge(morgan: MorganApi) {
 		description: "Receive Telegram bot messages and forward them to Morgan.",
 		start(ctx, _emit) {
 			const ui = ctx.ui;
-			const hasUI = ctx.hasUI;
 			const signal = ctx.signal;
 			let stopped = false;
 			const isStopped = () => stopped || signal.aborted;
@@ -551,6 +550,7 @@ export default function telegramBridge(morgan: MorganApi) {
 						if (isStopped()) {
 							return;
 						}
+						setStatus("Telegram polling");
 						for (const update of updates) {
 							if (typeof update.update_id === "number") {
 								state.offset = Math.max(state.offset, update.update_id + 1);
@@ -567,7 +567,7 @@ export default function telegramBridge(morgan: MorganApi) {
 								return;
 							}
 							try {
-								morgan.sendUserMessage(prompt, { deliverAs: "followUp" });
+								morgan.sendUserMessage(prompt, { deliverAs: "steer" });
 							} catch (error) {
 								if (!isStaleRuntimeError(error)) {
 									throw error;
@@ -579,13 +579,7 @@ export default function telegramBridge(morgan: MorganApi) {
 						if (isStopped() || isStaleRuntimeError(error)) {
 							return;
 						}
-						setStatus("Telegram error");
-						if (hasUI) {
-							ui.notify(
-								`Telegram bridge error: ${error instanceof Error ? error.message : String(error)}`,
-								"warning",
-							);
-						}
+						setStatus(`Telegram error: ${error instanceof Error ? error.message : String(error)}`);
 						await sleep(3000, signal);
 					}
 				}
@@ -595,10 +589,7 @@ export default function telegramBridge(morgan: MorganApi) {
 				if (isStopped() || isStaleRuntimeError(error)) {
 					return;
 				}
-				setStatus("Telegram error");
-				if (hasUI) {
-					ui.notify(`Telegram bridge error: ${error instanceof Error ? error.message : String(error)}`, "warning");
-				}
+				setStatus(`Telegram error: ${error instanceof Error ? error.message : String(error)}`);
 			});
 			signal.addEventListener(
 				"abort",
